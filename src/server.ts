@@ -1,5 +1,6 @@
 import { buildApp } from './app.js';
 import { ConfigError, loadConfig } from './config.js';
+import { createPool } from './db/pool.js';
 
 async function main(): Promise<void> {
   let config;
@@ -13,7 +14,23 @@ async function main(): Promise<void> {
     throw err;
   }
 
-  const app = await buildApp({ config });
+  const pool = config.databaseUrl === undefined ? undefined : createPool(config.databaseUrl);
+
+  const app = await buildApp({
+    config,
+    readinessChecks:
+      pool === undefined
+        ? []
+        : [
+            {
+              name: 'database',
+              check: async () => {
+                await pool.query('SELECT 1');
+              },
+            },
+          ],
+  });
+  if (pool !== undefined) app.addHook('onClose', async () => pool.end());
 
   // Encerramento ordenado: deixa de aceitar pedidos e termina os que estão em curso.
   let shuttingDown = false;

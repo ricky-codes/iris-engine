@@ -28,6 +28,15 @@ export default tseslint.config(
     rules: { 'no-restricted-properties': 'off' },
   },
   {
+    // Nos testes, `rows[0]!` depois de um INSERT ... RETURNING é seguro, e o URL da
+    // base de dados de teste vem do ambiente.
+    files: ['test/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-non-null-assertion': 'off',
+      'no-restricted-properties': 'off',
+    },
+  },
+  {
     files: ['eslint.config.js'],
     ...tseslint.configs.disableTypeChecked,
   },

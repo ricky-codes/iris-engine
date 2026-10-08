@@ -11,6 +11,8 @@ describe('loadConfig', () => {
       logLevel: 'info',
       maxBodyBytes: 1_048_576,
       shutdownTimeoutMs: 10_000,
+      databaseUrl: undefined,
+      migrationsDir: 'migrations',
     });
   });
 

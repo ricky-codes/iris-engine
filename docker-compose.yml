@@ -1,4 +1,33 @@
+# Ambiente de desenvolvimento. As credenciais abaixo são só para uso local.
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: iris
+      POSTGRES_PASSWORD: iris
+      POSTGRES_DB: iris
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U iris -d iris']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Corre as migrações e termina. O serviço só arranca depois de ele acabar bem.
+  migrate:
+    build: .
+    image: iris-engine:local
+    command: ['node', 'dist/db/migrate-cli.js']
+    environment:
+      DATABASE_URL: postgres://iris:iris@postgres:5432/iris
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
   iris-engine:
     build: .
     image: iris-engine:local
@@ -9,5 +38,12 @@ services:
       - '${PORT:-8080}:8080'
     environment:
       PORT: 8080
+      DATABASE_URL: postgres://iris:iris@postgres:5432/iris
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     init: true
     restart: unless-stopped
+
+volumes:
+  pgdata:

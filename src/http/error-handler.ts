@@ -54,7 +54,7 @@ export function registerErrorHandling(app: FastifyInstance): void {
         requestId: request.id,
       },
     };
-    return reply.status(appError.httpStatus).send(body);
+    return reply.status(appError.httpStatus).headers(appError.headers).send(body);
   });
 
   app.setNotFoundHandler((request: FastifyRequest, reply: FastifyReply) => {

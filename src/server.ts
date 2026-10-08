@@ -1,5 +1,6 @@
 import { buildApp } from './app.js';
 import { ConfigError, loadConfig } from './config.js';
+import { PgCredentialStore } from './auth/credential-store.js';
 import { createPool } from './db/pool.js';
 
 async function main(): Promise<void> {
@@ -18,6 +19,7 @@ async function main(): Promise<void> {
 
   const app = await buildApp({
     config,
+    ...(pool && { credentialStore: new PgCredentialStore(pool) }),
     readinessChecks:
       pool === undefined
         ? []

@@ -45,5 +45,18 @@ services:
     init: true
     restart: unless-stopped
 
+  # Comandos de administração (clientes, orgs, chaves):
+  #   docker compose run --rm admin create-tenant --slug iris-dev --name "IRIS Dev"
+  admin:
+    build: .
+    image: iris-engine:local
+    entrypoint: ['node', 'dist/admin/cli.js']
+    environment:
+      DATABASE_URL: postgres://iris:iris@postgres:5432/iris
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    profiles: ['tools']
+
 volumes:
   pgdata:

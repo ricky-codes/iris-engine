@@ -14,6 +14,8 @@
     "start": "node dist/server.js",
     "migrate": "tsx src/db/migrate-cli.ts",
     "migrate:prod": "node dist/db/migrate-cli.js",
+    "admin": "tsx src/admin/cli.ts",
+    "admin:prod": "node dist/admin/cli.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",

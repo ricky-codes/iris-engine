@@ -69,6 +69,10 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new ConfigError(issues);
   }
 
+  if (converted.NODE_ENV === 'production' && converted.DATABASE_URL === undefined) {
+    throw new ConfigError(['DATABASE_URL: obrigatório em produção']);
+  }
+
   return {
     env: converted.NODE_ENV,
     host: converted.HOST,

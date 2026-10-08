@@ -26,6 +26,19 @@ describe('loadConfig', () => {
     expect(loadConfig({ PORT: '' }).port).toBe(8080);
   });
 
+  it('exige DATABASE_URL em produção', () => {
+    expect(() => loadConfig({ NODE_ENV: 'production' })).toThrow(/DATABASE_URL/);
+    const config = loadConfig({
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgres://u:p@localhost:5432/d',
+    });
+    expect(config.databaseUrl).toBe('postgres://u:p@localhost:5432/d');
+  });
+
+  it('rejeita um DATABASE_URL que não é postgres', () => {
+    expect(() => loadConfig({ DATABASE_URL: 'mysql://x' })).toThrow(/DATABASE_URL/);
+  });
+
   it('rejeita configuração inválida com a lista de problemas', () => {
     let error: unknown;
     try {

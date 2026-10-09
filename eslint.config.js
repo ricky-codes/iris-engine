@@ -37,6 +37,11 @@ export default tseslint.config(
     },
   },
   {
+    // Nos manipuladores de teclado, `return acao()` é o idioma para sair cedo.
+    files: ['src/admin/tui/**/*.tsx'],
+    rules: { '@typescript-eslint/no-confusing-void-expression': 'off' },
+  },
+  {
     files: ['eslint.config.js'],
     ...tseslint.configs.disableTypeChecked,
   },

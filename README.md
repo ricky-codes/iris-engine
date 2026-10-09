@@ -25,6 +25,7 @@ npm run dev
 | `npm run build`   | Compila para `dist/`                                           |
 | `npm start`       | Corre a versão compilada                                       |
 | `npm run migrate` | Aplica as migrações SQL (precisa de `DATABASE_URL`)            |
+| `npm run tui`     | Interface interativa de administração                          |
 | `npm test`        | Testes (os de base de dados só correm com `TEST_DATABASE_URL`) |
 | `npm run check`   | Typecheck, lint, formatação e testes (usar no CI)              |
 
@@ -82,7 +83,31 @@ O serviço procura a chave pelo prefixo, compara o hash do segredo em tempo cons
 
 ### Administração
 
-Não há API de administração; faz-se pelo terminal. Com Docker:
+Não há API de administração; faz-se pelo terminal, com uma **interface interativa** ou com comandos soltos.
+
+#### Interface interativa
+
+```bash
+docker compose run --rm admin tui      # com Docker
+npm run tui                            # sem Docker (precisa de DATABASE_URL)
+```
+
+Cinco separadores (`1`–`5`, ou `←` `→`): **Relações** (a árvore cliente → org → utilizadores e chaves), **Clientes**, **Orgs**, **Utilizadores** e **Chaves**. `?` mostra todos os atalhos.
+
+| Tecla           | O que faz                                                                             |
+| --------------- | ------------------------------------------------------------------------------------- |
+| `n`             | Novo (cliente, org, utilizador ou chave, conforme o separador)                        |
+| `o` · `u` · `k` | Clientes: nova org neste cliente · Orgs: novo utilizador · nova chave nesta org       |
+| `a`             | Ativar / desativar um cliente ou uma org (desativar recusa as chaves)                 |
+| `r`             | Revogar uma chave (pede confirmação)                                                  |
+| `d`             | Apagar um utilizador e tudo o que é dele (mostra o que desaparece antes de confirmar) |
+| `R` · `q`       | Recarregar · sair                                                                     |
+
+A chave de API é mostrada **uma única vez**, ao criá-la. Funciona a partir de 80×24. Um utilizador pertence sempre a uma só org: "associar um utilizador a uma org" é criá-lo nessa org.
+
+#### Comandos soltos
+
+Para scripts e automação. Com Docker:
 
 ```bash
 A="docker compose run --rm admin"
@@ -142,8 +167,12 @@ src/
     authenticate.ts       hook de autenticação e verificação do orgId
     org-user.ts           cria o utilizador no primeiro pedido
   admin/
-    commands.ts           criar cliente, org e chaves; revogar; listar
+    commands.ts           criar cliente, org, utilizador e chaves; revogar; ativar; apagar
+    queries.ts            listas e árvore de relações
+    validation.ts         validações dos dados que o administrador escreve
+    api.ts                o que a interface pode fazer (e a versão sobre a base de dados)
     cli.ts                `npm run admin`
+    tui/                  interface de terminal (Ink): ecrã, tabela, formulário, avisos
   db/
     pool.ts               ligação ao Postgres
     migrate.ts            runner de migrações (transação por ficheiro, checksum, bloqueio)

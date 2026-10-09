@@ -17,6 +17,7 @@ const USAGE = `Uso: admin <comando> [opções]
   create-key    --org-id <00D…> [--expires-in-days <n>]
   revoke-key    --prefix <8 hexadecimais>
   list-keys
+  tui           interface interativa (clientes, orgs, utilizadores, chaves)
 `;
 
 function required(value: string | undefined, flag: string): string {
@@ -119,6 +120,18 @@ async function main(): Promise<void> {
               expiresAt: k.expiresAt?.toISOString() ?? '',
             })),
           );
+        break;
+      }
+      case 'tui': {
+        if (!process.stdin.isTTY || !process.stdout.isTTY) {
+          throw new AdminError(
+            'A interface precisa de um terminal interativo. Com Docker: docker compose run --rm admin tui',
+          );
+        }
+        // Só se carrega aqui: os outros comandos não precisam do Ink nem do React.
+        const { runTui } = await import('./tui/run.js');
+        const { createAdminApi } = await import('./api.js');
+        await runTui(createAdminApi(pool));
         break;
       }
       default:

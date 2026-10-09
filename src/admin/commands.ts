@@ -1,5 +1,13 @@
 import type { Pool } from 'pg';
 import { generateApiKey } from '../auth/api-key.js';
+import {
+  firstError,
+  validateInstanceUrl,
+  validateName,
+  validateOrgRef,
+  validateSlug,
+  validateUserRef,
+} from './validation.js';
 
 /**
  * Operações de administração: criar clientes, orgs e chaves. Corre-se a partir do
@@ -24,6 +32,12 @@ export async function createTenant(
   pool: Pool,
   input: { slug: string; name: string; retentionDays?: number },
 ): Promise<{ tenantId: string }> {
+  const invalid = firstError([
+    ['slug', validateSlug, input.slug],
+    ['nome', validateName, input.name],
+  ]);
+  if (invalid) throw new AdminError(`${invalid.field}: ${invalid.message}`);
+
   try {
     const { rows } = await pool.query<{ tenant_id: string }>(
       `INSERT INTO tenant (slug, name, result_retention_days)
@@ -42,6 +56,12 @@ export async function createOrg(
   pool: Pool,
   input: { tenantSlug: string; sfOrgRef: string; instanceUrl: string; isSandbox: boolean },
 ): Promise<{ sfOrgId: string }> {
+  const invalid = firstError([
+    ['org-id', validateOrgRef, input.sfOrgRef],
+    ['instance-url', validateInstanceUrl, input.instanceUrl],
+  ]);
+  if (invalid) throw new AdminError(`${invalid.field}: ${invalid.message}`);
+
   const tenant = await pool.query<{ tenant_id: string }>(
     'SELECT tenant_id FROM tenant WHERE slug = $1',
     [input.tenantSlug],
@@ -184,4 +204,89 @@ export async function listKeys(pool: Pool, now: Date = new Date()): Promise<KeyS
     createdAt: r.created_at,
     expiresAt: r.expires_at,
   }));
+}
+
+/** Ativa ou desativa um cliente. Com o cliente desativado, todas as chaves das suas orgs são recusadas. */
+export async function setTenantActive(
+  pool: Pool,
+  input: { slug: string; isActive: boolean },
+): Promise<void> {
+  const { rowCount } = await pool.query('UPDATE tenant SET is_active = $2 WHERE slug = $1', [
+    input.slug,
+    input.isActive,
+  ]);
+  if (rowCount !== 1) throw new AdminError(`O cliente "${input.slug}" não existe.`);
+}
+
+/** Ativa ou desativa uma org. Com a org desativada, as suas chaves são recusadas. */
+export async function setOrgActive(
+  pool: Pool,
+  input: { sfOrgRef: string; isActive: boolean },
+): Promise<void> {
+  const { rowCount } = await pool.query('UPDATE sf_org SET is_active = $2 WHERE sf_org_ref = $1', [
+    input.sfOrgRef,
+    input.isActive,
+  ]);
+  if (rowCount !== 1) throw new AdminError(`A org ${input.sfOrgRef} não existe.`);
+}
+
+/**
+ * Cria um utilizador numa org antes de ele fazer o primeiro pedido. Normalmente não é
+ * preciso: o utilizador é criado sozinho no primeiro pedido.
+ */
+export async function createOrgUser(
+  pool: Pool,
+  input: { sfOrgRef: string; sfUserRef: string },
+): Promise<{ orgUserId: string }> {
+  const invalid = firstError([
+    ['org-id', validateOrgRef, input.sfOrgRef],
+    ['user-id', validateUserRef, input.sfUserRef],
+  ]);
+  if (invalid) throw new AdminError(`${invalid.field}: ${invalid.message}`);
+
+  const org = await pool.query<{ sf_org_id: string }>(
+    'SELECT sf_org_id FROM sf_org WHERE sf_org_ref = $1',
+    [input.sfOrgRef],
+  );
+  const sfOrgId = org.rows[0]?.sf_org_id;
+  if (sfOrgId === undefined) throw new AdminError(`A org ${input.sfOrgRef} não existe.`);
+
+  try {
+    const { rows } = await pool.query<{ org_user_id: string }>(
+      'INSERT INTO org_user (sf_org_id, sf_user_ref) VALUES ($1, $2) RETURNING org_user_id',
+      [sfOrgId, input.sfUserRef],
+    );
+    return { orgUserId: rows[0]?.org_user_id ?? '' };
+  } catch (err) {
+    if (isPgError(err, UNIQUE_VIOLATION)) {
+      throw new AdminError(`O utilizador ${input.sfUserRef} já existe na org ${input.sfOrgRef}.`);
+    }
+    throw err;
+  }
+}
+
+export interface UserDeletionPreview {
+  requests: number;
+  memories: number;
+}
+
+/** O que desaparece se o utilizador for apagado: pedidos (com resultados) e memórias dele. */
+export async function previewUserDeletion(
+  pool: Pool,
+  input: { orgUserId: string },
+): Promise<UserDeletionPreview> {
+  const { rows } = await pool.query<{ requests: number; memories: number }>(
+    `SELECT (SELECT count(*) FROM inference_request WHERE org_user_id = $1)::int AS requests,
+            (SELECT count(*) FROM org_user_memory WHERE org_user_id = $1)::int AS memories`,
+    [input.orgUserId],
+  );
+  return rows[0] ?? { requests: 0, memories: 0 };
+}
+
+/** Apaga um utilizador e, em cascata, os pedidos, resultados e memórias dele (direito ao apagamento). */
+export async function deleteOrgUser(pool: Pool, input: { orgUserId: string }): Promise<void> {
+  const { rowCount } = await pool.query('DELETE FROM org_user WHERE org_user_id = $1', [
+    input.orgUserId,
+  ]);
+  if (rowCount !== 1) throw new AdminError('O utilizador já não existe.');
 }

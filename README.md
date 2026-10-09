@@ -10,6 +10,7 @@ Stack: TypeScript, Node.js 22, Fastify 5, TypeBox (validação por JSON Schema),
 # Docker (Postgres + migrações + serviço)
 docker compose up --build
 curl localhost:8080/readyz
+# Se a porta 8080 ou a 55432 estiverem ocupadas: PORT=8081 POSTGRES_PORT=55433 docker compose up --build
 
 # Local
 npm ci

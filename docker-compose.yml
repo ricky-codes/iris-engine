@@ -6,8 +6,11 @@ services:
       POSTGRES_USER: iris
       POSTGRES_PASSWORD: iris
       POSTGRES_DB: iris
+    # Só acessível a partir deste computador (127.0.0.1), numa porta pouco comum para não
+    # chocar com um Postgres já instalado. Os outros serviços falam com ele pela rede interna
+    # do Docker, por isso esta porta só serve para ferramentas como o psql.
     ports:
-      - '${POSTGRES_PORT:-5432}:5432'
+      - '127.0.0.1:${POSTGRES_PORT:-55432}:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

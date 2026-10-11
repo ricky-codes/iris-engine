@@ -15,7 +15,7 @@ import {
 } from '../../src/admin/commands.js';
 import { buildTree, listOrgs, listTenants, listUsers } from '../../src/admin/queries.js';
 import { PgCredentialStore } from '../../src/auth/credential-store.js';
-import { ensureOrgUser } from '../../src/auth/org-user.js';
+import { requireOrgUser } from '../../src/auth/org-user.js';
 import { buildTestApp } from '../helpers.js';
 import { TEST_DATABASE_URL, createTestDb, sfId, type TestDb } from './helpers.js';
 
@@ -71,14 +71,14 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('administração', () => {
   });
 
   describe('utilizadores', () => {
-    it('cria um utilizador antes do primeiro pedido, e o primeiro pedido reutiliza-o', async () => {
+    it('o utilizador criado pelo admin é reconhecido nos pedidos', async () => {
       const org = await newOrg();
       const ref = sfId('005');
       const { orgUserId } = await createOrgUser(db.pool, {
         sfOrgRef: org.sfOrgRef,
         sfUserRef: ref,
       });
-      expect(await ensureOrgUser(db.pool, org.sfOrgId, ref)).toBe(orgUserId);
+      expect(await requireOrgUser(db.pool, org.sfOrgId, ref)).toBe(orgUserId);
     });
 
     it('recusa duplicados, org inexistente e ids inválidos', async () => {
@@ -96,18 +96,11 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('administração', () => {
       ).rejects.toBeInstanceOf(AdminError);
     });
 
-    it('mostra o que desaparece e apaga tudo do utilizador, só dele', async () => {
+    it('mostra o que desaparece e apaga as memórias do utilizador, só dele', async () => {
       const org = await newOrg();
       const gone = await createOrgUser(db.pool, { sfOrgRef: org.sfOrgRef, sfUserRef: sfId('005') });
       const kept = await createOrgUser(db.pool, { sfOrgRef: org.sfOrgRef, sfUserRef: sfId('005') });
 
-      for (const id of [gone.orgUserId, gone.orgUserId, kept.orgUserId]) {
-        await db.pool.query(
-          `INSERT INTO inference_request (org_user_id, action_id, request_status_id, sf_record_id, payload_sha256, payload_bytes, received_at)
-           VALUES ($1, 1, 3, $2, $3, 10, now())`,
-          [id, sfId('500'), randomBytes(32)],
-        );
-      }
       const client = await db.pool.connect();
       try {
         await client.query('BEGIN');
@@ -124,22 +117,18 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('administração', () => {
       }
 
       expect(await previewUserDeletion(db.pool, { orgUserId: gone.orgUserId })).toEqual({
-        requests: 2,
         memories: 1,
       });
       expect(await previewUserDeletion(db.pool, { orgUserId: kept.orgUserId })).toEqual({
-        requests: 1,
         memories: 0,
       });
 
       await deleteOrgUser(db.pool, { orgUserId: gone.orgUserId });
 
       expect(await previewUserDeletion(db.pool, { orgUserId: gone.orgUserId })).toEqual({
-        requests: 0,
         memories: 0,
       });
       expect(await previewUserDeletion(db.pool, { orgUserId: kept.orgUserId })).toEqual({
-        requests: 1,
         memories: 0,
       });
       await expect(deleteOrgUser(db.pool, { orgUserId: gone.orgUserId })).rejects.toThrow(
@@ -186,23 +175,17 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('administração', () => {
   });
 
   describe('consultas', () => {
-    it('contam orgs, utilizadores, pedidos e memórias', async () => {
+    it('contam orgs, utilizadores e memórias', async () => {
       const org = await newOrg(true);
       const user = await createOrgUser(db.pool, { sfOrgRef: org.sfOrgRef, sfUserRef: sfId('005') });
-      await db.pool.query(
-        `INSERT INTO inference_request (org_user_id, action_id, request_status_id, sf_record_id, payload_sha256, payload_bytes, received_at)
-         VALUES ($1, 1, 3, $2, $3, 10, now())`,
-        [user.orgUserId, sfId('500'), randomBytes(32)],
-      );
-
       const tenant = (await listTenants(db.pool)).find((t) => t.slug === org.slug);
-      expect(tenant).toMatchObject({ orgCount: 1, isActive: true, retentionDays: 30 });
+      expect(tenant).toMatchObject({ orgCount: 1, isActive: true });
 
       const o = (await listOrgs(db.pool)).find((x) => x.sfOrgRef === org.sfOrgRef);
       expect(o).toMatchObject({ userCount: 1, isSandbox: true, tenantSlug: org.slug });
 
       const u = (await listUsers(db.pool)).find((x) => x.orgUserId === user.orgUserId);
-      expect(u).toMatchObject({ requestCount: 1, memoryCount: 0, sfOrgRef: org.sfOrgRef });
+      expect(u).toMatchObject({ memoryCount: 0, sfOrgRef: org.sfOrgRef });
     });
 
     it('a API de administração carrega tudo e a árvore liga as peças', async () => {

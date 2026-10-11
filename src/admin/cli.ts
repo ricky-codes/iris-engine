@@ -12,7 +12,7 @@ import {
 
 const USAGE = `Uso: admin <comando> [opções]
 
-  create-tenant --slug <slug> --name <nome> [--retention-days <n>]
+  create-tenant --slug <slug> --name <nome>
   create-org    --tenant <slug> --org-id <00D…> --instance-url <https://…> [--sandbox]
   create-key    --org-id <00D…> [--expires-in-days <n>]
   revoke-key    --prefix <8 hexadecimais>
@@ -45,7 +45,6 @@ async function main(): Promise<void> {
     options: {
       slug: { type: 'string' },
       name: { type: 'string' },
-      'retention-days': { type: 'string' },
       tenant: { type: 'string' },
       'org-id': { type: 'string' },
       'instance-url': { type: 'string' },
@@ -63,11 +62,9 @@ async function main(): Promise<void> {
   try {
     switch (command) {
       case 'create-tenant': {
-        const retentionDays = positiveInt(values['retention-days'], 'retention-days');
         await createTenant(pool, {
           slug: required(values.slug, 'slug'),
           name: required(values.name, 'name'),
-          ...(retentionDays !== undefined && { retentionDays }),
         });
         console.log(`Cliente "${values.slug}" criado.`);
         break;

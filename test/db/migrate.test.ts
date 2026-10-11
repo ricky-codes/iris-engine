@@ -20,32 +20,25 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('migrações', () => {
     expect(result.skipped.length).toBeGreaterThanOrEqual(6);
   });
 
-  it('cria os catálogos com os valores literais que o Salesforce compara', async () => {
-    const sentiment = await db.pool.query<{ code: string }>(
-      'SELECT code FROM sentiment_label ORDER BY sort_order',
+  it('o catálogo de ferramentas vem do código: sem is_implemented e com ids gerados', async () => {
+    const tools = await db.pool.query<{ code: string }>('SELECT code FROM tool ORDER BY tool_id');
+    expect(tools.rows.map((r) => r.code)).toEqual(['sentiment', 'tipification', 'reply']);
+    const created = await db.pool.query<{ tool_id: number }>(
+      `INSERT INTO tool (code) VALUES ('remember') RETURNING tool_id`,
     );
-    expect(sentiment.rows.map((r) => r.code)).toEqual([
-      'Positivo',
-      'Neutro',
-      'Negativo',
-      'Muito Negativo',
-      'Misto',
-    ]);
+    expect(created.rows[0]?.tool_id).toBeGreaterThan(3);
+  });
 
-    const urgency = await db.pool.query<{ code: string }>(
-      'SELECT code FROM urgency_level ORDER BY sort_order',
+  it('já não existem tabelas de pedidos nem de resultados', async () => {
+    const { rows } = await db.pool.query<{ table_name: string }>(
+      `SELECT table_name FROM information_schema.tables
+       WHERE table_schema = current_schema()
+         AND table_name IN ('inference_request', 'llm_call', 'sentiment_result', 'sentiment_signal',
+                            'tipification_result', 'tipification_result_value', 'reply_request',
+                            'reply_result', 'request_status', 'error_type', 'sentiment_label',
+                            'urgency_level', 'message_item_type', 'action')`,
     );
-    expect(urgency.rows.map((r) => r.code)).toEqual(['Baixa', 'Média', 'Alta']);
-
-    const actions = await db.pool.query<{ code: string; is_implemented: boolean }>(
-      'SELECT code, is_implemented FROM action ORDER BY action_id',
-    );
-    expect(actions.rows).toEqual([
-      { code: 'sentiment', is_implemented: true },
-      { code: 'tipification', is_implemented: true },
-      { code: 'reply', is_implemented: true },
-      { code: 'knowledge', is_implemented: false },
-    ]);
+    expect(rows).toEqual([]);
   });
 
   describe('com ficheiros próprios', () => {

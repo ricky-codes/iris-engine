@@ -17,15 +17,15 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('configuração', () => {
     await db.close();
   });
 
-  async function promptFor(action: number, tenantId: string | null): Promise<number> {
+  async function promptFor(tool: number, tenantId: string | null): Promise<number> {
     const { rows } = await db.pool.query<{ prompt_id: number }>(
-      'INSERT INTO prompt (action_id, tenant_id) VALUES ($1, $2) RETURNING prompt_id',
-      [action, tenantId],
+      'INSERT INTO prompt (tool_id, tenant_id) VALUES ($1, $2) RETURNING prompt_id',
+      [tool, tenantId],
     );
     return rows[0]!.prompt_id;
   }
 
-  it('só há um prompt por omissão por ação', async () => {
+  it('só há um prompt por omissão por ferramenta', async () => {
     await promptFor(1, null);
     const code = await sqlState(promptFor(1, null));
     expect(code).toBe(SQLSTATE.uniqueViolation);
@@ -147,7 +147,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('configuração', () => {
     }
   });
 
-  it('a configuração por ação exige temperatura entre 0 e 2', async () => {
+  it('a configuração por ferramenta exige temperatura entre 0 e 2', async () => {
     const t = await seedTenant(db.pool);
     const model = await db.pool.query<{ llm_model_id: number }>(
       `INSERT INTO llm_model (ai_provider_id, code) VALUES (1, 'modelo-teste') RETURNING llm_model_id`,
@@ -155,14 +155,14 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('configuração', () => {
     const modelId = model.rows[0]!.llm_model_id;
     const bad = await sqlState(
       db.pool.query(
-        `INSERT INTO tenant_action_config (tenant_id, action_id, llm_model_id, temperature, max_output_tokens, timeout_ms)
+        `INSERT INTO tenant_tool_config (tenant_id, tool_id, llm_model_id, temperature, max_output_tokens, timeout_ms)
          VALUES ($1, 1, $2, 2.5, 800, 15000)`,
         [t.tenantId, modelId],
       ),
     );
     expect(bad).toBe(SQLSTATE.checkViolation);
     await db.pool.query(
-      `INSERT INTO tenant_action_config (tenant_id, action_id, llm_model_id, temperature, max_output_tokens, timeout_ms)
+      `INSERT INTO tenant_tool_config (tenant_id, tool_id, llm_model_id, temperature, max_output_tokens, timeout_ms)
        VALUES ($1, 1, $2, 0.1, 800, 15000)`,
       [t.tenantId, modelId],
     );

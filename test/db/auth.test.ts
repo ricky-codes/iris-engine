@@ -11,8 +11,7 @@ import {
   revokeApiKey,
 } from '../../src/admin/commands.js';
 import { PgCredentialStore } from '../../src/auth/credential-store.js';
-import { ensureOrgUser } from '../../src/auth/org-user.js';
-import { ERROR_CODES } from '../../src/http/errors.js';
+import { requireOrgUser } from '../../src/auth/org-user.js';
 import { buildTestApp } from '../helpers.js';
 import { TEST_DATABASE_URL, createTestDb, sfId, type TestDb } from './helpers.js';
 
@@ -246,51 +245,51 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('autenticação com base de dad
   });
 
   describe('utilizadores', () => {
-    it('cria o utilizador no primeiro pedido e reutiliza-o nos seguintes', async () => {
+    async function registerUser(sfOrgId: string, ref: string): Promise<string> {
+      const { rows } = await db.pool.query<{ org_user_id: string }>(
+        'INSERT INTO org_user (sf_org_id, sf_user_ref) VALUES ($1, $2) RETURNING org_user_id',
+        [sfOrgId, ref],
+      );
+      return rows[0]!.org_user_id;
+    }
+
+    it('devolve o utilizador criado por um admin', async () => {
       const org = await newOrg();
       const ref = sfId('005');
-      const first = await ensureOrgUser(db.pool, org.sfOrgId, ref);
-      const second = await ensureOrgUser(db.pool, org.sfOrgId, ref);
-      expect(second).toBe(first);
+      const id = await registerUser(org.sfOrgId, ref);
+      expect(await requireOrgUser(db.pool, org.sfOrgId, ref)).toBe(id);
+    });
+
+    it('recusa um utilizador que não existe e não o cria', async () => {
+      const org = await newOrg();
+      await expect(requireOrgUser(db.pool, org.sfOrgId, sfId('005'))).rejects.toMatchObject({
+        code: 'user_not_registered',
+        httpStatus: 403,
+      });
       const { rows } = await db.pool.query('SELECT 1 FROM org_user WHERE sf_org_id = $1', [
         org.sfOrgId,
       ]);
-      expect(rows).toHaveLength(1);
+      expect(rows).toHaveLength(0);
     });
 
-    it('o mesmo id em duas orgs dá dois utilizadores', async () => {
+    it('o mesmo id noutra org não é reconhecido', async () => {
       const a = await newOrg();
       const b = await newOrg();
       const ref = sfId('005');
-      expect(await ensureOrgUser(db.pool, a.sfOrgId, ref)).not.toBe(
-        await ensureOrgUser(db.pool, b.sfOrgId, ref),
-      );
-    });
-
-    it('pedidos simultâneos do mesmo utilizador novo não duplicam nem falham', async () => {
-      const org = await newOrg();
-      const ref = sfId('005');
-      const ids = await Promise.all(
-        Array.from({ length: 10 }, () => ensureOrgUser(db.pool, org.sfOrgId, ref)),
-      );
-      expect(new Set(ids).size).toBe(1);
+      await registerUser(a.sfOrgId, ref);
+      await expect(requireOrgUser(db.pool, b.sfOrgId, ref)).rejects.toMatchObject({
+        code: 'user_not_registered',
+      });
     });
 
     it.each(['', '005', '500gL00001HzOO5QAN', '005gL00000GpOQT', '005gL00000GpOQTQA3X'])(
       'recusa um userId inválido (%j)',
       async (ref) => {
         const org = await newOrg();
-        await expect(ensureOrgUser(db.pool, org.sfOrgId, ref)).rejects.toMatchObject({
+        await expect(requireOrgUser(db.pool, org.sfOrgId, ref)).rejects.toMatchObject({
           httpStatus: 422,
         });
       },
     );
-  });
-
-  it('todos os códigos de erro da API existem no catálogo da base de dados', async () => {
-    const { rows } = await db.pool.query<{ code: string }>('SELECT code FROM error_type');
-    const inDb = new Set(rows.map((r) => r.code));
-    for (const code of ERROR_CODES) expect(inDb.has(code), code).toBe(true);
-    expect(inDb.size).toBe(ERROR_CODES.length);
   });
 });

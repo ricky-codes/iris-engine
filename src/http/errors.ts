@@ -1,16 +1,14 @@
 /**
  * Erros de domínio. Cada um tem um código estável (consumido pelo Salesforce)
  * e o estado HTTP correspondente. Nunca se lança uma string.
- *
- * Cada código existe também no catálogo `error_type` da base de dados; um teste
- * garante que as duas listas não divergem.
  */
 export const ERROR_CODES = [
   'invalid_request',
   'unauthorized',
   'forbidden',
   'not_found',
-  'unknown_action',
+  'unknown_tool',
+  'user_not_registered',
   'payload_too_large',
   'unsupported_media_type',
   'rate_limited',

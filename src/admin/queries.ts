@@ -6,7 +6,6 @@ export interface TenantRow {
   slug: string;
   name: string;
   isActive: boolean;
-  retentionDays: number;
   orgCount: number;
   createdAt: Date;
 }
@@ -27,8 +26,7 @@ export interface UserRow {
   sfUserRef: string;
   sfOrgRef: string;
   tenantSlug: string;
-  firstSeenAt: Date;
-  requestCount: number;
+  createdAt: Date;
   memoryCount: number;
 }
 
@@ -38,11 +36,10 @@ export async function listTenants(pool: Pool): Promise<TenantRow[]> {
     slug: string;
     name: string;
     is_active: boolean;
-    result_retention_days: number;
     org_count: number;
     created_at: Date;
   }>(
-    `SELECT t.tenant_id, t.slug, t.name, t.is_active, t.result_retention_days, t.created_at,
+    `SELECT t.tenant_id, t.slug, t.name, t.is_active, t.created_at,
             (SELECT count(*) FROM sf_org o WHERE o.tenant_id = t.tenant_id)::int AS org_count
      FROM tenant t ORDER BY t.slug`,
   );
@@ -51,7 +48,6 @@ export async function listTenants(pool: Pool): Promise<TenantRow[]> {
     slug: r.slug,
     name: r.name,
     isActive: r.is_active,
-    retentionDays: r.result_retention_days,
     orgCount: r.org_count,
     createdAt: r.created_at,
   }));
@@ -91,25 +87,22 @@ export async function listUsers(pool: Pool): Promise<UserRow[]> {
     sf_user_ref: string;
     sf_org_ref: string;
     slug: string;
-    first_seen_at: Date;
-    request_count: number;
+    created_at: Date;
     memory_count: number;
   }>(
-    `SELECT u.org_user_id, u.sf_user_ref, o.sf_org_ref, t.slug, u.first_seen_at,
-            (SELECT count(*) FROM inference_request r WHERE r.org_user_id = u.org_user_id)::int AS request_count,
+    `SELECT u.org_user_id, u.sf_user_ref, o.sf_org_ref, t.slug, u.created_at,
             (SELECT count(*) FROM org_user_memory m WHERE m.org_user_id = u.org_user_id)::int AS memory_count
      FROM org_user u
      JOIN sf_org o ON o.sf_org_id = u.sf_org_id
      JOIN tenant t ON t.tenant_id = o.tenant_id
-     ORDER BY t.slug, o.sf_org_ref, u.first_seen_at, u.sf_user_ref`,
+     ORDER BY t.slug, o.sf_org_ref, u.created_at, u.sf_user_ref`,
   );
   return rows.map((r) => ({
     orgUserId: r.org_user_id,
     sfUserRef: r.sf_user_ref,
     sfOrgRef: r.sf_org_ref,
     tenantSlug: r.slug,
-    firstSeenAt: r.first_seen_at,
-    requestCount: r.request_count,
+    createdAt: r.created_at,
     memoryCount: r.memory_count,
   }));
 }

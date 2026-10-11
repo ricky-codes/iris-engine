@@ -9,7 +9,6 @@ export const tenantRow = (slug: string, o: Partial<TenantRow> = {}): TenantRow =
   slug,
   name: `Cliente ${slug}`,
   isActive: true,
-  retentionDays: 30,
   orgCount: 0,
   createdAt: D,
   ...o,
@@ -37,8 +36,7 @@ export const userRow = (
   sfUserRef: ref,
   sfOrgRef,
   tenantSlug,
-  firstSeenAt: D,
-  requestCount: 0,
+  createdAt: D,
   memoryCount: 0,
   ...o,
 });
@@ -80,9 +78,7 @@ export function createFakeApi(seed: Partial<AdminData> = {}) {
     createTenant: async (input) => {
       calls.push(`createTenant ${JSON.stringify(input)}`);
       maybeFail();
-      state.tenants.push(
-        tenantRow(input.slug, { name: input.name, retentionDays: input.retentionDays ?? 30 }),
-      );
+      state.tenants.push(tenantRow(input.slug, { name: input.name }));
     },
     createOrg: async (input) => {
       calls.push(`createOrg ${JSON.stringify(input)}`);
@@ -127,7 +123,7 @@ export function createFakeApi(seed: Partial<AdminData> = {}) {
     },
     previewUserDeletion: async (id) => {
       const u = state.users.find((x) => x.orgUserId === id);
-      return { requests: u?.requestCount ?? 0, memories: u?.memoryCount ?? 0 };
+      return { memories: u?.memoryCount ?? 0 };
     },
     deleteOrgUser: async (id) => {
       calls.push(`deleteOrgUser ${id}`);

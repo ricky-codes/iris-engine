@@ -178,23 +178,10 @@ export function App({ api }: { api: AdminApi }) {
           hint: 'minúsculas e hífenes, ex.: pingo-doce',
         },
         { kind: 'text', name: 'name', label: 'Nome', validate: validateName },
-        {
-          kind: 'text',
-          name: 'days',
-          label: 'Retenção de resultados (dias)',
-          optional: true,
-          validate: validateOptionalPositiveInt,
-          hint: 'vazio = 30 dias',
-        },
       ],
       'criar',
       async (v) => {
-        const days = (v['days'] ?? '').trim();
-        await api.createTenant({
-          slug: v['slug'] ?? '',
-          name: v['name'] ?? '',
-          ...(days !== '' && { retentionDays: Number(days) }),
-        });
+        await api.createTenant({ slug: v['slug'] ?? '', name: v['name'] ?? '' });
         await refresh();
         close();
         notify(`Cliente "${v['slug'] ?? ''}" criado.`);
@@ -374,8 +361,8 @@ export function App({ api }: { api: AdminApi }) {
         title: `Apagar o utilizador ${user.sfUserRef}?`,
         lines: [
           `Org ${user.sfOrgRef} (${user.tenantSlug}).`,
-          `Apaga também ${plural(preview.requests, 'pedido', 'pedidos')} (com os resultados) e ${plural(preview.memories, 'memória', 'memórias')} deste utilizador.`,
-          'Não se desfaz. Se ele voltar a fazer um pedido, será criado de novo, sem histórico.',
+          `Apaga também ${plural(preview.memories, 'memória', 'memórias')} deste utilizador.`,
+          'Não se desfaz. Os pedidos deste utilizador passam a ser recusados até um admin o criar de novo.',
         ],
         confirmLabel: 'apaga',
         danger: true,
@@ -457,7 +444,6 @@ export function App({ api }: { api: AdminApi }) {
       color: (t) => activeColor(t.isActive),
     },
     { header: 'Orgs', width: 5, render: (t) => String(t.orgCount) },
-    { header: 'Retenção', width: 10, render: (t) => `${String(t.retentionDays)} dias` },
   ];
   const orgCols: Column<OrgRow>[] = [
     { header: 'Cliente', width: 18, render: (o) => o.tenantSlug },
@@ -476,8 +462,7 @@ export function App({ api }: { api: AdminApi }) {
     { header: 'Cliente', width: 18, render: (u) => u.tenantSlug },
     { header: 'Org', width: 20, render: (u) => u.sfOrgRef },
     { header: 'Utilizador', width: 20, render: (u) => u.sfUserRef },
-    { header: 'Desde', width: 11, render: (u) => fmtDate(u.firstSeenAt) },
-    { header: 'Pedidos', width: 8, render: (u) => String(u.requestCount) },
+    { header: 'Criado', width: 11, render: (u) => fmtDate(u.createdAt) },
     { header: 'Memórias', render: (u) => String(u.memoryCount) },
   ];
   const keyCols: Column<KeySummary>[] = [
@@ -502,9 +487,7 @@ export function App({ api }: { api: AdminApi }) {
       }
       case 'users': {
         const u = data.users[selected];
-        return u
-          ? `${u.sfUserRef} · ${plural(u.requestCount, 'pedido', 'pedidos')} · ${plural(u.memoryCount, 'memória', 'memórias')}`
-          : '';
+        return u ? `${u.sfUserRef} · ${plural(u.memoryCount, 'memória', 'memórias')}` : '';
       }
       case 'keys': {
         const k = data.keys[selected];
@@ -549,7 +532,7 @@ export function App({ api }: { api: AdminApi }) {
             {...common}
             columns={userCols}
             rows={data.users}
-            empty="Sem utilizadores. Aparecem sozinhos no primeiro pedido, ou prima n."
+            empty="Sem utilizadores. Só um admin os cria: prima n."
             rowKey={(u) => u.orgUserId}
           />
         );

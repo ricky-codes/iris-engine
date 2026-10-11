@@ -205,14 +205,13 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('memórias', () => {
     expect(rows[0]?.created_by).toBeNull();
   });
 
-  it('a restrição por ação é opcional e aceita várias ações', async () => {
+  it('a restrição por ferramenta é opcional e aceita várias ferramentas', async () => {
     const t = await seedTenant(db.pool);
     const id = await addMemory(db.pool, 'user', t.userId);
-    await db.pool.query(
-      `INSERT INTO memory_action (memory_id, action_id) VALUES ($1, 3), ($1, 1)`,
-      [id],
-    );
-    const { rows } = await db.pool.query('SELECT 1 FROM memory_action WHERE memory_id = $1', [id]);
+    await db.pool.query(`INSERT INTO memory_tool (memory_id, tool_id) VALUES ($1, 3), ($1, 1)`, [
+      id,
+    ]);
+    const { rows } = await db.pool.query('SELECT 1 FROM memory_tool WHERE memory_id = $1', [id]);
     expect(rows).toHaveLength(2);
   });
 

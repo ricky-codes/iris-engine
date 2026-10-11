@@ -74,7 +74,7 @@ Cada org Salesforce tem chaves de API. O Salesforce envia a chave em cada pedido
 Authorization: Bearer iris_<8 hexadecimais>_<43 caracteres>
 ```
 
-O serviço procura a chave pelo prefixo, compara o hash do segredo em tempo constante e fica a saber a org e o cliente. O `orgId` que vem no corpo do pedido tem de coincidir com o da chave (`assertOrgMatches`, 403 se não); o `userId` identifica quem, dentro dessa org, fez o pedido, e o utilizador é criado no primeiro pedido (`ensureOrgUser`).
+O serviço procura a chave pelo prefixo, compara o hash do segredo em tempo constante e fica a saber a org e o cliente. O `orgId` que vem no corpo do pedido tem de coincidir com o da chave (`assertOrgMatches`, 403 se não); o `userId` identifica quem, dentro dessa org, fez o pedido, e o utilizador tem de ter sido criado por um administrador (`requireOrgUser`): se não existir, 403 `user_not_registered`.
 
 - Sem chave, chave errada, revogada, expirada, ou org/cliente desativados: **401**, sempre com a mesma resposta (o motivo só vai para os logs).
 - Base de dados indisponível durante a verificação: **503**, nunca 401.
@@ -123,23 +123,22 @@ $A revoke-key --prefix <8 hexadecimais>
 curl -H "Authorization: Bearer <chave>" localhost:8080/v1/whoami
 ```
 
-Sem Docker, `npm run admin -- <comando> …` (precisa de `DATABASE_URL`). Opções: `--expires-in-days <n>` em `create-key`, `--retention-days <n>` em `create-tenant`.
+Sem Docker, `npm run admin -- <comando> …` (precisa de `DATABASE_URL`). Opção: `--expires-in-days <n>` em `create-key`.
 
 ## Base de dados
 
 PostgreSQL 16, 3.ª forma normal. As migrações são ficheiros SQL em `migrations/`, aplicados por ordem e uma só vez (`npm run migrate`). Um ficheiro já aplicado não pode ser alterado: cria-se outro.
 
-| Ficheiro                             | Conteúdo                                                                   |
-| ------------------------------------ | -------------------------------------------------------------------------- |
-| `0001_catalogs.sql`                  | Listas fechadas: ações, estados, erros, sentimentos, urgências, âmbitos    |
-| `0002_identity.sql`                  | `tenant` → `sf_org` → `org_user`, e `api_credential`                       |
-| `0003_memory.sql`                    | Memórias do cliente, da org ou do utilizador (exatamente um dono)          |
-| `0004_configuration.sql`             | Modelos, configuração por ação, prompts versionados, níveis de tipificação |
-| `0005_requests.sql`                  | `inference_request` e `llm_call`: só metadados, nunca o conteúdo dos Cases |
-| `0006_results.sql`                   | Resultados de sentimento, tipificação e resposta                           |
-| `0007_error_service_unavailable.sql` | Código de erro `service_unavailable` no catálogo                           |
+| Ficheiro                        | Conteúdo                                                              |
+| ------------------------------- | --------------------------------------------------------------------- |
+| `0001_catalogs.sql`             | Listas fechadas (ferramentas, fornecedores de IA, âmbitos de memória) |
+| `0002_identity.sql`             | `tenant` → `sf_org` → `org_user`, e `api_credential`                  |
+| `0003_memory.sql`               | Memórias do cliente, da org ou do utilizador (exatamente um dono)     |
+| `0004_configuration.sql`        | Modelos, configuração por ferramenta, prompts versionados, níveis     |
+| `0005`–`0007`                   | Pedidos e resultados; removidos pela `0008`                           |
+| `0008_motor_de_ferramentas.sql` | Sem pedidos nem resultados; "ação" passa a "ferramenta"; sem retenção |
 
-Regras garantidas pela própria base de dados (e não só pela aplicação): uma memória tem exatamente um dono; um resultado só existe para a ação certa; um nível de tipificação pertence ao cliente do pedido; o prompt de uma chamada é da ação do pedido; uma versão de prompt publicada não muda. Apagar um utilizador apaga os pedidos, resultados e memórias dele.
+Regras garantidas pela própria base de dados (e não só pela aplicação): uma memória tem exatamente um dono; uma versão de prompt publicada não muda. O motor não guarda pedidos nem resultados. Só um administrador cria utilizadores; apagar um utilizador apaga as memórias dele.
 
 Testes de base de dados, com um Postgres local:
 
@@ -166,7 +165,7 @@ src/
     api-key.ts            gerar, ler e comparar chaves
     credential-store.ts   procura da chave na base de dados
     authenticate.ts       hook de autenticação e verificação do orgId
-    org-user.ts           cria o utilizador no primeiro pedido
+    org-user.ts           procura o utilizador; um desconhecido é recusado (403)
   admin/
     commands.ts           criar cliente, org, utilizador e chaves; revogar; ativar; apagar
     queries.ts            listas e árvore de relações

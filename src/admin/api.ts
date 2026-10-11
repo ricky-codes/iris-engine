@@ -21,7 +21,7 @@ import { listOrgs, listTenants, listUsers, type AdminData } from './queries.js';
  */
 export interface AdminApi {
   load(): Promise<AdminData>;
-  createTenant(input: { slug: string; name: string; retentionDays?: number }): Promise<void>;
+  createTenant(input: { slug: string; name: string }): Promise<void>;
   createOrg(input: {
     tenantSlug: string;
     sfOrgRef: string;

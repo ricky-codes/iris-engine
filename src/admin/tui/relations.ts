@@ -36,7 +36,7 @@ export function relationLines(tree: TenantNode[]): RelationLine[] {
       });
       for (const user of users.slice(0, MAX_USERS_PER_ORG)) {
         lines.push({
-          text: `        ${user.sfUserRef}  desde ${fmtDate(user.firstSeenAt)}  ${plural(user.requestCount, 'pedido', 'pedidos')}  ${plural(user.memoryCount, 'memória', 'memórias')}`,
+          text: `        ${user.sfUserRef}  criado ${fmtDate(user.createdAt)}  ${plural(user.memoryCount, 'memória', 'memórias')}`,
         });
       }
       if (users.length > MAX_USERS_PER_ORG) {

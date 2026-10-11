@@ -30,7 +30,7 @@ const isPgError = (err: unknown, code: string): boolean =>
 
 export async function createTenant(
   pool: Pool,
-  input: { slug: string; name: string; retentionDays?: number },
+  input: { slug: string; name: string },
 ): Promise<{ tenantId: string }> {
   const invalid = firstError([
     ['slug', validateSlug, input.slug],
@@ -40,9 +40,8 @@ export async function createTenant(
 
   try {
     const { rows } = await pool.query<{ tenant_id: string }>(
-      `INSERT INTO tenant (slug, name, result_retention_days)
-       VALUES ($1, $2, COALESCE($3, 30)) RETURNING tenant_id`,
-      [input.slug, input.name, input.retentionDays ?? null],
+      'INSERT INTO tenant (slug, name) VALUES ($1, $2) RETURNING tenant_id',
+      [input.slug, input.name],
     );
     return { tenantId: rows[0]?.tenant_id ?? '' };
   } catch (err) {
@@ -231,8 +230,8 @@ export async function setOrgActive(
 }
 
 /**
- * Cria um utilizador numa org antes de ele fazer o primeiro pedido. Normalmente não é
- * preciso: o utilizador é criado sozinho no primeiro pedido.
+ * Cria um utilizador numa org. É a única forma de um utilizador passar a existir: um
+ * pedido de um utilizador desconhecido é recusado.
  */
 export async function createOrgUser(
   pool: Pool,
@@ -266,24 +265,22 @@ export async function createOrgUser(
 }
 
 export interface UserDeletionPreview {
-  requests: number;
   memories: number;
 }
 
-/** O que desaparece se o utilizador for apagado: pedidos (com resultados) e memórias dele. */
+/** O que desaparece se o utilizador for apagado: as memórias dele. */
 export async function previewUserDeletion(
   pool: Pool,
   input: { orgUserId: string },
 ): Promise<UserDeletionPreview> {
-  const { rows } = await pool.query<{ requests: number; memories: number }>(
-    `SELECT (SELECT count(*) FROM inference_request WHERE org_user_id = $1)::int AS requests,
-            (SELECT count(*) FROM org_user_memory WHERE org_user_id = $1)::int AS memories`,
+  const { rows } = await pool.query<{ memories: number }>(
+    'SELECT count(*)::int AS memories FROM org_user_memory WHERE org_user_id = $1',
     [input.orgUserId],
   );
-  return rows[0] ?? { requests: 0, memories: 0 };
+  return rows[0] ?? { memories: 0 };
 }
 
-/** Apaga um utilizador e, em cascata, os pedidos, resultados e memórias dele (direito ao apagamento). */
+/** Apaga um utilizador e, em cascata, as memórias dele (direito ao apagamento). */
 export async function deleteOrgUser(pool: Pool, input: { orgUserId: string }): Promise<void> {
   const { rowCount } = await pool.query('DELETE FROM org_user WHERE org_user_id = $1', [
     input.orgUserId,

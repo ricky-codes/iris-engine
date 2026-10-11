@@ -15,7 +15,6 @@ const tenant = (slug: string, isActive = true): TenantRow => ({
   slug,
   name: slug.toUpperCase(),
   isActive,
-  retentionDays: 30,
   orgCount: 0,
   createdAt: D,
 });
@@ -34,8 +33,7 @@ const user = (ref: string, sfOrgRef: string, tenantSlug: string): UserRow => ({
   sfUserRef: ref,
   sfOrgRef,
   tenantSlug,
-  firstSeenAt: D,
-  requestCount: 2,
+  createdAt: D,
   memoryCount: 0,
 });
 const key = (
@@ -95,9 +93,7 @@ describe('árvore de relações', () => {
     expect(text).toContain('  ▾ org 00DBBBBBBBBBBBBBBB  produção');
     expect(text).toContain('      2 utilizadores');
     expect(text).toContain('      0 utilizadores');
-    expect(text.some((t) => t.includes('005AAAAAAAAAAAAAAA') && t.includes('2 pedidos'))).toBe(
-      true,
-    );
+    expect(text.some((t) => t.includes('005AAAAAAAAAAAAAAA') && t.includes('criado'))).toBe(true);
     expect(text.some((t) => t.includes('11111111') && t.includes('ativa'))).toBe(true);
     expect(text.some((t) => t.includes('22222222') && t.includes('revogada'))).toBe(true);
     expect(text.some((t) => t.startsWith('▾ b') && t.includes('(desativado)'))).toBe(true);
@@ -121,7 +117,7 @@ describe('árvore de relações', () => {
     };
     const text = relationLines(buildTree(many)).map((l) => l.text);
     expect(text).toContain('      60 utilizadores');
-    expect(text.filter((t) => t.includes('desde')).length).toBe(25);
+    expect(text.filter((t) => t.includes('criado')).length).toBe(25);
     expect(text).toContain('        … e mais 35');
   });
 });

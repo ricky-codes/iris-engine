@@ -4,10 +4,11 @@ import { AppError } from '../http/errors.js';
 const SF_USER_REF = /^005[A-Za-z0-9]{15}$/;
 
 /**
- * Devolve o utilizador da org, criando-o no primeiro pedido. A org já foi provada pela
- * chave; o `userId` do corpo só identifica quem, dentro dela, fez o pedido.
+ * Devolve o utilizador da org. Só um administrador cria utilizadores, por isso um
+ * `userId` desconhecido é recusado (403) e nada é criado. A org já foi provada pela
+ * chave; o `userId` do corpo só identifica quem, dentro dela, faz o pedido.
  */
-export async function ensureOrgUser(
+export async function requireOrgUser(
   pool: Pool,
   sfOrgId: string,
   sfUserRef: string,
@@ -18,14 +19,13 @@ export async function ensureOrgUser(
     ]);
   }
 
-  // O `DO UPDATE` não altera nada: só serve para o RETURNING devolver a linha existente.
   const { rows } = await pool.query<{ org_user_id: string }>(
-    `INSERT INTO org_user (sf_org_id, sf_user_ref) VALUES ($1, $2)
-     ON CONFLICT (sf_org_id, sf_user_ref) DO UPDATE SET sf_user_ref = EXCLUDED.sf_user_ref
-     RETURNING org_user_id`,
+    'SELECT org_user_id FROM org_user WHERE sf_org_id = $1 AND sf_user_ref = $2',
     [sfOrgId, sfUserRef],
   );
   const row = rows[0];
-  if (row === undefined) throw new Error('INSERT de org_user não devolveu linha');
+  if (row === undefined) {
+    throw new AppError('user_not_registered', 403, 'O utilizador não está registado na IRIS.');
+  }
   return row.org_user_id;
 }

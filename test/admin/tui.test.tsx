@@ -45,7 +45,7 @@ const seeded = {
     orgRow(ORG_A, 'pingo-doce', { userCount: 1 }),
     orgRow(ORG_B, 'pingo-doce', { isSandbox: true }),
   ],
-  users: [userRow(USER_A, ORG_A, 'pingo-doce', { requestCount: 3, memoryCount: 1 })],
+  users: [userRow(USER_A, ORG_A, 'pingo-doce', { memoryCount: 1 })],
   keys: [
     keyRow('11111111', ORG_A, 'pingo-doce'),
     keyRow('22222222', ORG_A, 'pingo-doce', 'revogada'),
@@ -76,9 +76,8 @@ describe('interface de terminal', () => {
       const ui = await open(seeded);
 
       await ui.press('2');
-      expect(ui.frame()).toMatch(/Cliente\s+Nome\s+Estado\s+Orgs\s+Retenção/);
+      expect(ui.frame()).toMatch(/Cliente\s+Nome\s+Estado\s+Orgs/);
       expect(ui.frame()).toContain('banco-x');
-      expect(ui.frame()).toContain('30 dias');
 
       await ui.press('3');
       expect(ui.frame()).toMatch(/Cliente\s+Org\s+Tipo\s+Estado/);
@@ -86,7 +85,7 @@ describe('interface de terminal', () => {
       expect(ui.frame()).toContain('produção');
 
       await ui.press('4');
-      expect(ui.frame()).toMatch(/Utilizador\s+Desde\s+Pedidos/);
+      expect(ui.frame()).toMatch(/Utilizador\s+Criado\s+Memórias/);
       expect(ui.frame()).toContain(USER_A);
 
       await ui.press('5');
@@ -138,20 +137,12 @@ describe('interface de terminal', () => {
       await ui.press('2', 'n');
       expect(ui.frame()).toContain('Novo cliente');
 
-      await ui.press('novo-cliente', ENTER, 'Novo Cliente', ENTER, '45', ENTER);
+      await ui.press('novo-cliente', ENTER, 'Novo Cliente', ENTER);
 
-      expect(ui.calls).toEqual([
-        'createTenant {"slug":"novo-cliente","name":"Novo Cliente","retentionDays":45}',
-      ]);
+      expect(ui.calls).toEqual(['createTenant {"slug":"novo-cliente","name":"Novo Cliente"}']);
       expect(ui.frame()).toContain('Cliente "novo-cliente" criado.');
       expect(ui.frame()).toContain('Nome');
       expect(ui.frame()).not.toContain('Novo cliente\n');
-    });
-
-    it('a retenção é opcional', async () => {
-      const ui = await open();
-      await ui.press('2', 'n', 'x-y', ENTER, 'Nome', ENTER, ENTER);
-      expect(ui.calls).toEqual(['createTenant {"slug":"x-y","name":"Nome"}']);
     });
 
     it('mostra o erro e não chama a API quando o identificador é inválido', async () => {
@@ -172,14 +163,14 @@ describe('interface de terminal', () => {
 
     it('o backspace apaga e o texto pode ser corrigido', async () => {
       const ui = await open();
-      await ui.press('2', 'n', 'abcx', '\u007F', 'd', ENTER, 'N', ENTER, ENTER);
+      await ui.press('2', 'n', 'abcx', '\u007F', 'd', ENTER, 'N', ENTER);
       expect(ui.calls).toEqual(['createTenant {"slug":"abcd","name":"N"}']);
     });
 
     it('um erro da API aparece no formulário, que fica aberto para corrigir', async () => {
       const ui = await open();
       ui.control.failNext = 'Já existe o cliente "dup".';
-      await ui.press('2', 'n', 'dup', ENTER, 'Dup', ENTER, ENTER);
+      await ui.press('2', 'n', 'dup', ENTER, 'Dup', ENTER);
       expect(ui.frame()).toContain('Já existe o cliente "dup".');
       expect(ui.frame()).toContain('Novo cliente');
 
@@ -307,7 +298,6 @@ describe('interface de terminal', () => {
       const ui = await open(seeded);
       await ui.press('4', 'd');
       expect(ui.frame()).toContain(`Apagar o utilizador ${USER_A}?`);
-      expect(ui.frame()).toContain('3 pedidos');
       expect(ui.frame()).toContain('1 memória');
       expect(ui.calls).toEqual([]);
 

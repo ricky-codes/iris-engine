@@ -1,12 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import {
-  SQLSTATE,
-  TEST_DATABASE_URL,
-  createTestDb,
-  seedTenant,
-  sqlState,
-  type TestDb,
-} from './helpers.js';
+import { SQLSTATE, TEST_DATABASE_URL, createTestDb, sqlState, type TestDb } from './helpers.js';
 
 describe.skipIf(TEST_DATABASE_URL === undefined)('configuração', () => {
   let db: TestDb;
@@ -17,29 +10,26 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('configuração', () => {
     await db.close();
   });
 
-  async function promptFor(tool: number, tenantId: string | null): Promise<number> {
+  /** Cada teste usa uma ferramenta nova, porque só há um prompt por ferramenta. */
+  async function promptForNewTool(): Promise<number> {
+    const tool = await db.pool.query<{ tool_id: number }>(
+      `INSERT INTO tool (code) VALUES ('t_' || translate(substr(md5(random()::text), 1, 8), '0123456789', 'ghijklmnop')) RETURNING tool_id`,
+    );
     const { rows } = await db.pool.query<{ prompt_id: number }>(
-      'INSERT INTO prompt (tool_id, tenant_id) VALUES ($1, $2) RETURNING prompt_id',
-      [tool, tenantId],
+      'INSERT INTO prompt (tool_id) VALUES ($1) RETURNING prompt_id',
+      [tool.rows[0]!.tool_id],
     );
     return rows[0]!.prompt_id;
   }
 
-  it('só há um prompt por omissão por ferramenta', async () => {
-    await promptFor(1, null);
-    const code = await sqlState(promptFor(1, null));
+  it('só há um prompt por ferramenta', async () => {
+    await db.pool.query('INSERT INTO prompt (tool_id) VALUES (1)');
+    const code = await sqlState(db.pool.query('INSERT INTO prompt (tool_id) VALUES (1)'));
     expect(code).toBe(SQLSTATE.uniqueViolation);
   });
 
-  it('um cliente pode ter prompt próprio além do prompt por omissão', async () => {
-    const t = await seedTenant(db.pool);
-    await promptFor(3, null);
-    await promptFor(3, t.tenantId);
-  });
-
   it('no máximo uma versão ativa por prompt', async () => {
-    const t = await seedTenant(db.pool);
-    const prompt = await promptFor(2, t.tenantId);
+    const prompt = await promptForNewTool();
     await db.pool.query(
       `INSERT INTO prompt_version (prompt_id, version, system_template, is_active) VALUES ($1, 1, 'a', true)`,
       [prompt],
@@ -54,8 +44,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('configuração', () => {
   });
 
   it('trocar a versão ativa numa transação funciona', async () => {
-    const t = await seedTenant(db.pool);
-    const prompt = await promptFor(1, t.tenantId);
+    const prompt = await promptForNewTool();
     await db.pool.query(
       `INSERT INTO prompt_version (prompt_id, version, system_template, is_active)
        VALUES ($1, 1, 'a', true), ($1, 2, 'b', false)`,
@@ -84,8 +73,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('configuração', () => {
   });
 
   it('o texto de uma versão publicada nunca muda', async () => {
-    const t = await seedTenant(db.pool);
-    const prompt = await promptFor(3, t.tenantId);
+    const prompt = await promptForNewTool();
     const { rows } = await db.pool.query<{ prompt_version_id: number }>(
       `INSERT INTO prompt_version (prompt_id, version, system_template) VALUES ($1, 1, 'original')
        RETURNING prompt_version_id`,
@@ -108,63 +96,23 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('configuração', () => {
     );
   });
 
-  it('os níveis de um cliente têm chave e posição únicas', async () => {
-    const t = await seedTenant(db.pool);
-    await db.pool.query(
-      `INSERT INTO classification_dimension (tenant_id, output_key, label, position)
-       VALUES ($1, 'tipo', 'Tipo', 1)`,
-      [t.tenantId],
-    );
-    const dupKey = await sqlState(
-      db.pool.query(
-        `INSERT INTO classification_dimension (tenant_id, output_key, label, position)
-         VALUES ($1, 'tipo', 'Outro', 2)`,
-        [t.tenantId],
-      ),
-    );
-    const dupPos = await sqlState(
-      db.pool.query(
-        `INSERT INTO classification_dimension (tenant_id, output_key, label, position)
-         VALUES ($1, 'subTipo', 'Sub-Tipo', 1)`,
-        [t.tenantId],
-      ),
-    );
-    expect(dupKey).toBe(SQLSTATE.uniqueViolation);
-    expect(dupPos).toBe(SQLSTATE.uniqueViolation);
-  });
-
-  it('a chave de saída é camelCase sem espaços', async () => {
-    const t = await seedTenant(db.pool);
-    for (const key of ['Tipo', 'sub tipo', 'sub-tipo', '1tipo']) {
-      const code = await sqlState(
-        db.pool.query(
-          `INSERT INTO classification_dimension (tenant_id, output_key, label, position)
-           VALUES ($1, $2, 'x', 9)`,
-          [t.tenantId, key],
-        ),
-      );
-      expect(code, key).toBe(SQLSTATE.checkViolation);
-    }
-  });
-
   it('a configuração por ferramenta exige temperatura entre 0 e 2', async () => {
-    const t = await seedTenant(db.pool);
     const model = await db.pool.query<{ llm_model_id: number }>(
       `INSERT INTO llm_model (ai_provider_id, code) VALUES (1, 'modelo-teste') RETURNING llm_model_id`,
     );
     const modelId = model.rows[0]!.llm_model_id;
     const bad = await sqlState(
       db.pool.query(
-        `INSERT INTO tenant_tool_config (tenant_id, tool_id, llm_model_id, temperature, max_output_tokens, timeout_ms)
-         VALUES ($1, 1, $2, 2.5, 800, 15000)`,
-        [t.tenantId, modelId],
+        `INSERT INTO tool_config (tool_id, llm_model_id, temperature, max_output_tokens, timeout_ms)
+         VALUES (1, $1, 2.5, 800, 15000)`,
+        [modelId],
       ),
     );
     expect(bad).toBe(SQLSTATE.checkViolation);
     await db.pool.query(
-      `INSERT INTO tenant_tool_config (tenant_id, tool_id, llm_model_id, temperature, max_output_tokens, timeout_ms)
-       VALUES ($1, 1, $2, 0.1, 800, 15000)`,
-      [t.tenantId, modelId],
+      `INSERT INTO tool_config (tool_id, llm_model_id, temperature, max_output_tokens, timeout_ms)
+       VALUES (1, $1, 0.1, 800, 15000)`,
+      [modelId],
     );
   });
 });

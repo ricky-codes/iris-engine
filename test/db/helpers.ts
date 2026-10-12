@@ -44,27 +44,43 @@ export async function createTestDb(): Promise<TestDb> {
   };
 }
 
-/** Inserções mínimas, devolvendo os ids. */
-export async function seedTenant(
+/** Insere uma memória e a ligação ao dono na mesma transação. Devolve o id. */
+export async function addMemory(
   pool: pg.Pool,
-  slug = `t-${randomBytes(3).toString('hex')}`,
-): Promise<{ tenantId: string; orgId: string; userId: string }> {
-  const tenant = await pool.query<{ tenant_id: string }>(
-    `INSERT INTO tenant (slug, name) VALUES ($1, $1) RETURNING tenant_id`,
-    [slug],
-  );
-  const tenantId = tenant.rows[0]!.tenant_id;
-  const org = await pool.query<{ sf_org_id: string }>(
-    `INSERT INTO sf_org (tenant_id, sf_org_ref, instance_url, is_sandbox)
-     VALUES ($1, $2, 'https://example.my.salesforce.com', true) RETURNING sf_org_id`,
-    [tenantId, sfId('00D')],
-  );
-  const orgId = org.rows[0]!.sf_org_id;
-  const user = await pool.query<{ org_user_id: string }>(
-    `INSERT INTO org_user (sf_org_id, sf_user_ref) VALUES ($1, $2) RETURNING org_user_id`,
-    [orgId, sfId('005')],
-  );
-  return { tenantId, orgId, userId: user.rows[0]!.org_user_id };
+  owner: { org: string; user?: string },
+  content = 'Tratar sempre o cliente por você.',
+): Promise<string> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Âmbito 2 = org (origem admin), 3 = utilizador (origem utilizador).
+    const scope = owner.user === undefined ? 2 : 3;
+    const source = owner.user === undefined ? 2 : 1;
+    const { rows } = await client.query<{ memory_id: string }>(
+      `INSERT INTO memory (memory_scope_id, memory_source_id, content) VALUES ($1, $2, $3)
+       RETURNING memory_id`,
+      [scope, source, content],
+    );
+    const id = rows[0]!.memory_id;
+    if (owner.user === undefined) {
+      await client.query('INSERT INTO org_memory (memory_id, sf_org_ref) VALUES ($1, $2)', [
+        id,
+        owner.org,
+      ]);
+    } else {
+      await client.query(
+        'INSERT INTO user_memory (memory_id, sf_org_ref, sf_user_ref) VALUES ($1, $2, $3)',
+        [id, owner.org, owner.user],
+      );
+    }
+    await client.query('COMMIT');
+    return id;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /** Códigos SQLSTATE usados nas asserções. */

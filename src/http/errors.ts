@@ -8,7 +8,6 @@ export const ERROR_CODES = [
   'forbidden',
   'not_found',
   'unknown_tool',
-  'user_not_registered',
   'payload_too_large',
   'unsupported_media_type',
   'rate_limited',

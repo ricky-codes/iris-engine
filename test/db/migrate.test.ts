@@ -29,16 +29,26 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('migrações', () => {
     expect(created.rows[0]?.tool_id).toBeGreaterThan(3);
   });
 
-  it('já não existem tabelas de pedidos nem de resultados', async () => {
+  it('a base de dados só tem memórias, configuração e catálogos', async () => {
     const { rows } = await db.pool.query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables
-       WHERE table_schema = current_schema()
-         AND table_name IN ('inference_request', 'llm_call', 'sentiment_result', 'sentiment_signal',
-                            'tipification_result', 'tipification_result_value', 'reply_request',
-                            'reply_result', 'request_status', 'error_type', 'sentiment_label',
-                            'urgency_level', 'message_item_type', 'action')`,
+       WHERE table_schema = current_schema() AND table_name <> 'schema_migration'
+       ORDER BY table_name`,
     );
-    expect(rows).toEqual([]);
+    expect(rows.map((r) => r.table_name)).toEqual([
+      'ai_provider',
+      'llm_model',
+      'memory',
+      'memory_scope',
+      'memory_source',
+      'memory_tool',
+      'org_memory',
+      'prompt',
+      'prompt_version',
+      'tool',
+      'tool_config',
+      'user_memory',
+    ]);
   });
 
   describe('com ficheiros próprios', () => {

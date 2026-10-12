@@ -1,12 +1,12 @@
 import { render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 import { App } from '../../src/admin/tui/App.js';
-import { FAKE_KEY, createFakeApi, keyRow, orgRow, tenantRow, userRow } from './fake-api.js';
+import { createFakeApi, orgMemory, userMemory } from './fake-api.js';
 
 const ENTER = '\r';
-const TAB = '\t';
 const DOWN = '\u001B[B';
 const RIGHT = '\u001B[C';
+const ESC = '\u001B';
 
 const tick = (ms = 40): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -40,290 +40,129 @@ const ORG_B = '00DBBBBBBBBBBBBBBB';
 const USER_A = '005AAAAAAAAAAAAAAA';
 
 const seeded = {
-  tenants: [tenantRow('pingo-doce', { orgCount: 2 }), tenantRow('banco-x')],
-  orgs: [
-    orgRow(ORG_A, 'pingo-doce', { userCount: 1 }),
-    orgRow(ORG_B, 'pingo-doce', { isSandbox: true }),
-  ],
-  users: [userRow(USER_A, ORG_A, 'pingo-doce', { memoryCount: 1 })],
-  keys: [
-    keyRow('11111111', ORG_A, 'pingo-doce'),
-    keyRow('22222222', ORG_A, 'pingo-doce', 'revogada'),
+  memories: [
+    orgMemory('m-1', ORG_A, 'Tratar sempre o cliente por você.'),
+    orgMemory('m-2', ORG_B, 'Nunca prometer prazos.', { tools: ['reply'] }),
+    userMemory('m-3', ORG_A, USER_A, 'Assinar com o meu nome.'),
   ],
 };
 
 describe('interface de terminal', () => {
   describe('ver', () => {
-    it('sem dados, explica como começar', async () => {
+    it('sem dados, explica de onde vêm as memórias', async () => {
       const ui = await open();
-      expect(ui.frame()).toContain('IRIS Hub · administração');
-      expect(ui.frame()).toContain('Relações');
-      expect(ui.frame()).toContain('Ainda não há nada');
-    });
-
-    it('a vista de relações mostra a árvore completa', async () => {
-      const ui = await open(seeded);
-      const f = ui.frame();
-      expect(f).toContain('pingo-doce');
-      expect(f).toContain(`org ${ORG_A}`);
-      expect(f).toContain(`org ${ORG_B}`);
-      expect(f).toContain(USER_A);
-      expect(f).toContain('11111111');
-      expect(f).toContain('revogada');
-    });
-
-    it('os números mudam de separador e cada um mostra os seus dados', async () => {
-      const ui = await open(seeded);
-
+      expect(ui.frame()).toContain('IRIS · memórias');
+      expect(ui.frame()).toContain('Sem memórias da org');
       await ui.press('2');
-      expect(ui.frame()).toMatch(/Cliente\s+Nome\s+Estado\s+Orgs/);
-      expect(ui.frame()).toContain('banco-x');
-
-      await ui.press('3');
-      expect(ui.frame()).toMatch(/Cliente\s+Org\s+Tipo\s+Estado/);
-      expect(ui.frame()).toContain('sandbox');
-      expect(ui.frame()).toContain('produção');
-
-      await ui.press('4');
-      expect(ui.frame()).toMatch(/Utilizador\s+Criado\s+Memórias/);
-      expect(ui.frame()).toContain(USER_A);
-
-      await ui.press('5');
-      expect(ui.frame()).toMatch(/Prefixo\s+Estado\s+Criada/);
-      expect(ui.frame()).toContain('11111111');
-      expect(ui.frame()).toContain('22222222');
+      expect(ui.frame()).toContain('Nascem quando');
     });
 
-    it('as setas e o Tab percorrem os separadores', async () => {
+    it('separa as memórias da org das dos utilizadores', async () => {
       const ui = await open(seeded);
+      expect(ui.frame()).toContain('Memórias da org (2)');
+      expect(ui.frame()).toContain('Memórias de utilizadores (1)');
+      expect(ui.frame()).toContain('Tratar sempre o cliente por você.');
+      expect(ui.frame()).toContain('Nunca prometer prazos.');
+      expect(ui.frame()).not.toContain('Assinar com o meu nome.');
+
       await ui.press(RIGHT);
-      expect(ui.frame()).toMatch(/Nome\s+Estado/);
-      await ui.press(TAB);
-      expect(ui.frame()).toMatch(/Tipo\s+Estado/);
-      await ui.press('\u001B[D', '\u001B[D');
-      expect(ui.frame()).toContain('pingo-doce');
-      expect(ui.frame()).toContain(`org ${ORG_A}`);
+      expect(ui.frame()).toMatch(/Org\s+Utilizador\s+Ferramentas\s+Origem\s+Texto/);
+      expect(ui.frame()).toContain(USER_A);
+      expect(ui.frame()).toContain('Assinar com o meu nome.');
     });
 
-    it('a seleção desce e a linha de detalhe acompanha', async () => {
+    it('mostra a que ferramentas se aplica cada memória', async () => {
       const ui = await open(seeded);
-      await ui.press('3');
-      expect(ui.frame()).toContain(`https://${ORG_A.toLowerCase()}.my.salesforce.com`);
+      expect(ui.frame()).toContain('todas');
       await ui.press(DOWN);
-      const lines = ui.frame().split('\n');
-      const detail = lines.find((l) => l.trim().startsWith('https://'));
-      expect(detail?.trim()).toBe(`https://${ORG_B.toLowerCase()}.my.salesforce.com`);
+      expect(ui.frame()).toMatch(/reply · admin/);
     });
 
-    it('a ajuda lista os atalhos e qualquer tecla a fecha', async () => {
-      const ui = await open(seeded);
+    it('? mostra os atalhos e qualquer tecla fecha', async () => {
+      const ui = await open();
       await ui.press('?');
       expect(ui.frame()).toContain('Atalhos');
-      expect(ui.frame()).toContain('revogar');
       await ui.press('x');
       expect(ui.frame()).not.toContain('Atalhos');
-    });
-
-    it('nunca mostra um segredo de chave', async () => {
-      const ui = await open(seeded);
-      await ui.press('5');
-      expect(ui.frame()).not.toMatch(/iris_[0-9a-f]{8}_[A-Za-z0-9_-]{43}/);
     });
   });
 
   describe('criar', () => {
-    it('cria um cliente preenchendo o formulário', async () => {
+    it('cria uma memória da org, por omissão para todas as ferramentas', async () => {
       const ui = await open();
-      await ui.press('2', 'n');
-      expect(ui.frame()).toContain('Novo cliente');
-
-      await ui.press('novo-cliente', ENTER, 'Novo Cliente', ENTER);
-
-      expect(ui.calls).toEqual(['createTenant {"slug":"novo-cliente","name":"Novo Cliente"}']);
-      expect(ui.frame()).toContain('Cliente "novo-cliente" criado.');
-      expect(ui.frame()).toContain('Nome');
-      expect(ui.frame()).not.toContain('Novo cliente\n');
-    });
-
-    it('mostra o erro e não chama a API quando o identificador é inválido', async () => {
-      const ui = await open();
-      await ui.press('2', 'n', 'Pingo Doce', ENTER);
-      expect(ui.frame()).toContain('minúsculas');
-      await ui.press(ENTER, ENTER);
-      expect(ui.calls).toEqual([]);
-      expect(ui.frame()).toContain('Novo cliente');
-    });
-
-    it('campos obrigatórios em branco impedem a gravação', async () => {
-      const ui = await open();
-      await ui.press('2', 'n', '\u0013');
-      expect(ui.frame()).toContain('Obrigatório.');
-      expect(ui.calls).toEqual([]);
-    });
-
-    it('o backspace apaga e o texto pode ser corrigido', async () => {
-      const ui = await open();
-      await ui.press('2', 'n', 'abcx', '\u007F', 'd', ENTER, 'N', ENTER);
-      expect(ui.calls).toEqual(['createTenant {"slug":"abcd","name":"N"}']);
-    });
-
-    it('um erro da API aparece no formulário, que fica aberto para corrigir', async () => {
-      const ui = await open();
-      ui.control.failNext = 'Já existe o cliente "dup".';
-      await ui.press('2', 'n', 'dup', ENTER, 'Dup', ENTER);
-      expect(ui.frame()).toContain('Já existe o cliente "dup".');
-      expect(ui.frame()).toContain('Novo cliente');
-
-      await ui.press('\u0013');
-      expect(ui.calls).toHaveLength(2);
-      expect(ui.frame()).toContain('Cliente "dup" criado.');
-    });
-
-    it('Esc cancela sem criar nada', async () => {
-      const ui = await open();
-      await ui.press('2', 'n', 'abc');
-      await ui.press('\u001B');
-      await tick(150);
-      expect(ui.calls).toEqual([]);
-      expect(ui.frame()).not.toContain('Novo cliente');
-    });
-
-    it('cria uma org no cliente seleccionado (atalho o)', async () => {
-      const ui = await open({ tenants: [tenantRow('a'), tenantRow('b')] });
-      await ui.press('2', DOWN, 'o');
-      expect(ui.frame()).toContain('Nova org');
-      expect(ui.frame()).toContain('b (Cliente b)');
-
-      await ui.press(ENTER, ORG_A, ENTER, 'https://x.my.salesforce.com', ENTER, ' ', ENTER);
+      await ui.press('n');
+      expect(ui.frame()).toContain('Nova memória da org');
+      await ui.press(ORG_A, ENTER, 'Tratar por você.', ENTER, ENTER);
       expect(ui.calls).toEqual([
-        `createOrg {"tenantSlug":"b","sfOrgRef":"${ORG_A}","instanceUrl":"https://x.my.salesforce.com","isSandbox":true}`,
+        `createOrgMemory {"sfOrgRef":"${ORG_A}","content":"Tratar por você.","tools":[]}`,
+      ]);
+      expect(ui.frame()).toContain(`Memória da org ${ORG_A} criada.`);
+      expect(ui.frame()).toContain('Memórias da org (1)');
+    });
+
+    it('pode limitar a memória a uma ferramenta', async () => {
+      const ui = await open();
+      await ui.press('n', ORG_A, ENTER, 'Curto.', ENTER, RIGHT, ENTER);
+      expect(ui.calls).toEqual([
+        `createOrgMemory {"sfOrgRef":"${ORG_A}","content":"Curto.","tools":["reply"]}`,
       ]);
     });
 
-    it('valida o id da org e o URL', async () => {
-      const ui = await open({ tenants: [tenantRow('a')] });
-      await ui.press('3', 'n', ENTER, 'abc', ENTER);
-      expect(ui.frame()).toContain('00D');
-      await ui.press('http://x.com', ENTER);
-      expect(ui.frame()).toContain('https');
-      expect(ui.calls).toEqual([]);
-    });
-
-    it('cria um utilizador numa org (atalho u)', async () => {
+    it('a org da memória selecionada vem preenchida', async () => {
       const ui = await open(seeded);
-      await ui.press('3', DOWN, 'u');
-      expect(ui.frame()).toContain('Novo utilizador');
-      await ui.press(ENTER, '005BBBBBBBBBBBBBBB', ENTER);
-      expect(ui.calls).toEqual([
-        `createOrgUser {"sfOrgRef":"${ORG_B}","sfUserRef":"005BBBBBBBBBBBBBBB"}`,
-      ]);
-      await ui.press('4');
-      expect(ui.frame()).toContain('005BBBBBBBBBBBBBBB');
+      await ui.press(DOWN, 'n');
+      expect(ui.frame()).toContain(ORG_B);
     });
 
-    it('sem orgs, o formulário avisa que não há opções', async () => {
-      const ui = await open({ tenants: [tenantRow('a')] });
-      await ui.press('4', 'n');
-      expect(ui.frame()).toContain('sem opções');
-      await ui.press('\u0013');
-      expect(ui.frame()).toContain('Não há opções disponíveis.');
+    it('não grava com um id de org inválido', async () => {
+      const ui = await open();
+      await ui.press('n', '00Dxxx', ENTER, 'Texto', ENTER, ENTER);
       expect(ui.calls).toEqual([]);
+      expect(ui.frame()).toContain('18 caracteres');
     });
 
-    it('cria uma chave e mostra-a uma única vez', async () => {
-      const ui = await open(seeded);
-      await ui.press('3', 'k');
-      expect(ui.frame()).toContain('Nova chave de API');
-      await ui.press(ENTER, '30', ENTER);
+    it('um erro da API aparece no formulário, que fica aberto', async () => {
+      const ui = await open();
+      ui.control.failNext = `A org ${ORG_A} já tem 50 memórias. Apague uma antes de criar outra.`;
+      await ui.press('n', ORG_A, ENTER, 'Mais uma.', ENTER, ENTER);
+      expect(ui.frame()).toContain('já tem 50 memórias');
+      expect(ui.frame()).toContain('Nova memória da org');
+    });
 
-      expect(ui.calls).toEqual([`createApiKey {"sfOrgRef":"${ORG_A}","expiresInDays":30}`]);
-      expect(ui.frame()).toContain(FAKE_KEY);
-      expect(ui.frame()).toContain('Guarde-a agora');
-
-      await ui.press(ENTER);
-      expect(ui.frame()).not.toContain(FAKE_KEY);
-      expect(ui.frame()).toContain('Chave deadbeef criada.');
-
-      await ui.press('5');
-      expect(ui.frame()).not.toContain(FAKE_KEY);
-      expect(ui.frame()).toContain('deadbeef');
+    it('Esc cancela sem gravar', async () => {
+      const ui = await open();
+      await ui.press('n', ORG_A, ESC);
+      expect(ui.calls).toEqual([]);
+      expect(ui.frame()).not.toContain('Nova memória da org');
     });
   });
 
-  describe('alterar e apagar', () => {
-    it('revoga uma chave depois de confirmar', async () => {
+  describe('apagar', () => {
+    it('pede confirmação e apaga a memória de um utilizador', async () => {
       const ui = await open(seeded);
-      await ui.press('5', 'r');
-      expect(ui.frame()).toContain('Revogar a chave 11111111?');
-      await ui.press('s');
-      expect(ui.calls).toEqual(['revokeApiKey 11111111']);
-      expect(ui.frame()).toContain('Chave 11111111 revogada.');
-    });
-
-    it('cancelar a revogação não faz nada', async () => {
-      const ui = await open(seeded);
-      await ui.press('5', 'r', 'n');
-      expect(ui.calls).toEqual([]);
-      expect(ui.frame()).not.toContain('Revogar a chave');
-    });
-
-    it('não deixa revogar uma chave que já está revogada', async () => {
-      const ui = await open(seeded);
-      await ui.press('5', DOWN, 'r');
-      expect(ui.frame()).toContain('já está revogada');
-      expect(ui.calls).toEqual([]);
-    });
-
-    it('desativa um cliente a pedir confirmação, e reativa-o sem perguntar', async () => {
-      const ui = await open({ tenants: [tenantRow('a', { orgCount: 2 })] });
-      await ui.press('2', 'a');
-      expect(ui.frame()).toContain('Desativar o cliente "a"?');
-      expect(ui.frame()).toContain('2 orgs');
-      await ui.press('s');
-      expect(ui.calls).toEqual(['setTenantActive a false']);
-      expect(ui.frame()).toContain('inativo');
-
-      await ui.press('a');
-      expect(ui.calls).toEqual(['setTenantActive a false', 'setTenantActive a true']);
-      expect(ui.frame()).toContain('ativo');
-    });
-
-    it('desativa uma org', async () => {
-      const ui = await open(seeded);
-      await ui.press('3', 'a', 's');
-      expect(ui.calls).toEqual([`setOrgActive ${ORG_A} false`]);
-    });
-
-    it('antes de apagar um utilizador, mostra tudo o que desaparece com ele', async () => {
-      const ui = await open(seeded);
-      await ui.press('4', 'd');
-      expect(ui.frame()).toContain(`Apagar o utilizador ${USER_A}?`);
-      expect(ui.frame()).toContain('1 memória');
+      await ui.press('2', 'd');
+      expect(ui.frame()).toContain('Apagar esta memória?');
+      expect(ui.frame()).toContain(`Utilizador ${USER_A}`);
       expect(ui.calls).toEqual([]);
 
       await ui.press('s');
-      expect(ui.calls).toEqual([`deleteOrgUser user-${USER_A}`]);
-      expect(ui.frame()).toContain(`Utilizador ${USER_A} apagado.`);
-      expect(ui.frame()).toContain('Sem utilizadores');
+      expect(ui.calls).toEqual(['deleteMemory m-3']);
+      expect(ui.frame()).toContain('Memória apagada.');
+      expect(ui.frame()).toContain('Memórias de utilizadores (0)');
     });
 
-    it('um erro ao agir aparece como aviso e a interface continua utilizável', async () => {
+    it('n cancela', async () => {
       const ui = await open(seeded);
-      ui.control.failNext = 'A base de dados recusou.';
-      await ui.press('5', 'r', 's');
-      expect(ui.frame()).toContain('A base de dados recusou.');
-      await ui.press('2');
-      expect(ui.frame()).toContain('banco-x');
+      await ui.press('d', 'n');
+      expect(ui.calls).toEqual([]);
+      expect(ui.frame()).toContain('Memórias da org (2)');
     });
   });
 
   it('R recarrega os dados vindos de fora', async () => {
     const ui = await open();
-    ui.state.tenants.push(tenantRow('apareceu-depois'));
-    await ui.press('2');
-    expect(ui.frame()).not.toContain('apareceu-depois');
+    ui.state.memories.push(orgMemory('m-9', ORG_A, 'Criada noutro terminal.'));
     await ui.press('R');
-    await tick(60);
-    expect(ui.frame()).toContain('apareceu-depois');
+    expect(ui.frame()).toContain('Criada noutro terminal.');
   });
 });

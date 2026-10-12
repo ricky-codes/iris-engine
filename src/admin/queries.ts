@@ -1,141 +1,78 @@
 import type { Pool } from 'pg';
-import type { KeySummary } from './commands.js';
 
-export interface TenantRow {
-  tenantId: string;
-  slug: string;
-  name: string;
-  isActive: boolean;
-  orgCount: number;
-  createdAt: Date;
-}
+export type MemoryScope = 'org' | 'user';
+export type MemorySource = 'user' | 'admin';
 
-export interface OrgRow {
-  sfOrgId: string;
+export interface MemoryRow {
+  memoryId: string;
+  scope: MemoryScope;
+  source: MemorySource;
   sfOrgRef: string;
-  tenantSlug: string;
-  instanceUrl: string;
-  isSandbox: boolean;
-  isActive: boolean;
-  userCount: number;
+  /** Só nas memórias de utilizador. */
+  sfUserRef: string | null;
+  content: string;
+  /** Códigos das ferramentas a que se aplica. Vazio: todas. */
+  tools: string[];
   createdAt: Date;
+  updatedAt: Date;
 }
 
-export interface UserRow {
-  orgUserId: string;
-  sfUserRef: string;
-  sfOrgRef: string;
-  tenantSlug: string;
-  createdAt: Date;
-  memoryCount: number;
+export interface ToolRow {
+  code: string;
 }
 
-export async function listTenants(pool: Pool): Promise<TenantRow[]> {
+/** Todas as memórias, da org primeiro e depois por utilizador, mais recentes primeiro. */
+export async function listMemories(
+  pool: Pool,
+  filter: { sfOrgRef?: string; sfUserRef?: string } = {},
+): Promise<MemoryRow[]> {
   const { rows } = await pool.query<{
-    tenant_id: string;
-    slug: string;
-    name: string;
-    is_active: boolean;
-    org_count: number;
-    created_at: Date;
-  }>(
-    `SELECT t.tenant_id, t.slug, t.name, t.is_active, t.created_at,
-            (SELECT count(*) FROM sf_org o WHERE o.tenant_id = t.tenant_id)::int AS org_count
-     FROM tenant t ORDER BY t.slug`,
-  );
-  return rows.map((r) => ({
-    tenantId: r.tenant_id,
-    slug: r.slug,
-    name: r.name,
-    isActive: r.is_active,
-    orgCount: r.org_count,
-    createdAt: r.created_at,
-  }));
-}
-
-export async function listOrgs(pool: Pool): Promise<OrgRow[]> {
-  const { rows } = await pool.query<{
-    sf_org_id: string;
+    memory_id: string;
+    scope: MemoryScope;
+    source: MemorySource;
     sf_org_ref: string;
-    slug: string;
-    instance_url: string;
-    is_sandbox: boolean;
-    is_active: boolean;
-    user_count: number;
+    sf_user_ref: string | null;
+    content: string;
+    tools: string[];
     created_at: Date;
+    updated_at: Date;
   }>(
-    `SELECT o.sf_org_id, o.sf_org_ref, t.slug, o.instance_url, o.is_sandbox, o.is_active, o.created_at,
-            (SELECT count(*) FROM org_user u WHERE u.sf_org_id = o.sf_org_id)::int AS user_count
-     FROM sf_org o JOIN tenant t ON t.tenant_id = o.tenant_id
-     ORDER BY t.slug, o.sf_org_ref`,
+    `SELECT m.memory_id, sc.code AS scope, so.code AS source,
+            COALESCE(om.sf_org_ref, um.sf_org_ref) AS sf_org_ref, um.sf_user_ref,
+            m.content, m.created_at, m.updated_at,
+            ARRAY(SELECT t.code FROM memory_tool mt JOIN tool t ON t.tool_id = mt.tool_id
+                  WHERE mt.memory_id = m.memory_id ORDER BY t.code) AS tools
+     FROM memory m
+     JOIN memory_scope sc  ON sc.memory_scope_id = m.memory_scope_id
+     JOIN memory_source so ON so.memory_source_id = m.memory_source_id
+     LEFT JOIN org_memory om  ON om.memory_id = m.memory_id
+     LEFT JOIN user_memory um ON um.memory_id = m.memory_id
+     WHERE ($1::text IS NULL OR COALESCE(om.sf_org_ref, um.sf_org_ref) = $1)
+       AND ($2::text IS NULL OR um.sf_user_ref = $2)
+     ORDER BY sc.code, COALESCE(om.sf_org_ref, um.sf_org_ref), um.sf_user_ref NULLS FIRST,
+              m.created_at DESC`,
+    [filter.sfOrgRef ?? null, filter.sfUserRef ?? null],
   );
   return rows.map((r) => ({
-    sfOrgId: r.sf_org_id,
+    memoryId: r.memory_id,
+    scope: r.scope,
+    source: r.source,
     sfOrgRef: r.sf_org_ref,
-    tenantSlug: r.slug,
-    instanceUrl: r.instance_url,
-    isSandbox: r.is_sandbox,
-    isActive: r.is_active,
-    userCount: r.user_count,
-    createdAt: r.created_at,
-  }));
-}
-
-export async function listUsers(pool: Pool): Promise<UserRow[]> {
-  const { rows } = await pool.query<{
-    org_user_id: string;
-    sf_user_ref: string;
-    sf_org_ref: string;
-    slug: string;
-    created_at: Date;
-    memory_count: number;
-  }>(
-    `SELECT u.org_user_id, u.sf_user_ref, o.sf_org_ref, t.slug, u.created_at,
-            (SELECT count(*) FROM org_user_memory m WHERE m.org_user_id = u.org_user_id)::int AS memory_count
-     FROM org_user u
-     JOIN sf_org o ON o.sf_org_id = u.sf_org_id
-     JOIN tenant t ON t.tenant_id = o.tenant_id
-     ORDER BY t.slug, o.sf_org_ref, u.created_at, u.sf_user_ref`,
-  );
-  return rows.map((r) => ({
-    orgUserId: r.org_user_id,
     sfUserRef: r.sf_user_ref,
-    sfOrgRef: r.sf_org_ref,
-    tenantSlug: r.slug,
+    content: r.content,
+    tools: r.tools,
     createdAt: r.created_at,
-    memoryCount: r.memory_count,
+    updatedAt: r.updated_at,
   }));
 }
 
-/** Tudo o que a interface mostra, carregado de uma vez (são listas pequenas). */
+export async function listTools(pool: Pool): Promise<ToolRow[]> {
+  const { rows } = await pool.query<ToolRow>('SELECT code FROM tool ORDER BY code');
+  return rows;
+}
+
+/** Tudo o que a interface mostra, carregado de uma vez. */
 export interface AdminData {
-  tenants: TenantRow[];
-  orgs: OrgRow[];
-  users: UserRow[];
-  keys: KeySummary[];
-}
-
-export interface OrgNode {
-  org: OrgRow;
-  users: UserRow[];
-  keys: KeySummary[];
-}
-
-export interface TenantNode {
-  tenant: TenantRow;
-  orgs: OrgNode[];
-}
-
-/** Liga clientes → orgs → (utilizadores, chaves), sem consultas extra. */
-export function buildTree(data: AdminData): TenantNode[] {
-  return data.tenants.map((tenant) => ({
-    tenant,
-    orgs: data.orgs
-      .filter((o) => o.tenantSlug === tenant.slug)
-      .map((org) => ({
-        org,
-        users: data.users.filter((u) => u.sfOrgRef === org.sfOrgRef),
-        keys: data.keys.filter((k) => k.org === org.sfOrgRef),
-      })),
-  }));
+  memories: MemoryRow[];
+  tools: ToolRow[];
 }

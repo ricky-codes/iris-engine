@@ -1,6 +1,8 @@
 # IRIS Engine
 
-Motor do IRIS Hub: sugestões de IA (sentimento, tipificação, resposta) para Cases do Salesforce Service Cloud.
+Motor de IA da IRIS: recebe um pedido do Salesforce, confirma no StepAccess que o utilizador tem acesso, junta as memórias da org e do utilizador e devolve a resposta da IA.
+
+Orgs, utilizadores, licenças e contagem de utilização vivem só no **StepAccess**. A IRIS guarda apenas memórias, prompts, modelos e a configuração das ferramentas, e nunca guarda pedidos nem respostas.
 
 Stack: TypeScript, Node.js 22, Fastify 5, TypeBox (validação por JSON Schema), Vitest. Corre em Docker.
 
@@ -26,7 +28,7 @@ npm run dev
 | `npm run build`   | Compila para `dist/`                                           |
 | `npm start`       | Corre a versão compilada                                       |
 | `npm run migrate` | Aplica as migrações SQL (precisa de `DATABASE_URL`)            |
-| `npm run tui`     | Interface interativa de administração                          |
+| `npm run tui`     | Interface interativa das memórias                              |
 | `npm test`        | Testes (os de base de dados só correm com `TEST_DATABASE_URL`) |
 | `npm run check`   | Typecheck, lint, formatação e testes (usar no CI)              |
 
@@ -47,11 +49,10 @@ Variáveis de ambiente, validadas no arranque (`src/config.ts`). Com configuraç
 
 ## Endpoints
 
-| Método e caminho | Função                                                                          |
-| ---------------- | ------------------------------------------------------------------------------- |
-| `GET /healthz`   | Processo vivo                                                                   |
-| `GET /readyz`    | Dependências acessíveis (200 ou 503, com estado por check)                      |
-| `GET /v1/whoami` | Com chave válida, diz a que cliente e org pertence. Serve para testar a ligação |
+| Método e caminho | Função                                                     |
+| ---------------- | ---------------------------------------------------------- |
+| `GET /healthz`   | Processo vivo                                              |
+| `GET /readyz`    | Dependências acessíveis (200 ou 503, com estado por check) |
 
 Todas as respostas levam `X-Request-Id`. Os erros têm sempre este formato:
 
@@ -66,79 +67,50 @@ Todas as respostas levam `X-Request-Id`. Os erros têm sempre este formato:
 }
 ```
 
-## Autenticação
+## Administração das memórias
 
-Cada org Salesforce tem chaves de API. O Salesforce envia a chave em cada pedido:
+Orgs e utilizadores **não** se criam aqui: gerem-se no StepAccess. Na IRIS só se gerem memórias.
 
-```text
-Authorization: Bearer iris_<8 hexadecimais>_<43 caracteres>
-```
+- **Memórias da org:** regras da empresa, válidas para todos os utilizadores da org. Só um admin da Step as cria. Em conflito com uma memória de utilizador, ganha a da org.
+- **Memórias de utilizador:** nascem quando o utilizador pede à IRIS para se lembrar de algo. O admin só as vê e apaga.
+- Limites: 50 memórias por org, 20 por utilizador, 500 caracteres cada (garantidos pela base de dados).
+- Uma memória pode valer para todas as ferramentas ou só para algumas.
 
-O serviço procura a chave pelo prefixo, compara o hash do segredo em tempo constante e fica a saber a org e o cliente. O `orgId` que vem no corpo do pedido tem de coincidir com o da chave (`assertOrgMatches`, 403 se não); o `userId` identifica quem, dentro dessa org, fez o pedido, e o utilizador tem de ter sido criado por um administrador (`requireOrgUser`): se não existir, 403 `user_not_registered`.
-
-- Sem chave, chave errada, revogada, expirada, ou org/cliente desativados: **401**, sempre com a mesma resposta (o motivo só vai para os logs).
-- Base de dados indisponível durante a verificação: **503**, nunca 401.
-- A chave é mostrada uma única vez, ao criá-la. A base de dados só guarda o hash.
-- Até **2 chaves ativas por org**, para rodar sem paragem: criar a nova, atualizar o Salesforce, revogar a antiga.
-- Em `NODE_ENV=production` o `DATABASE_URL` é obrigatório.
-
-### Administração
-
-Não há API de administração; faz-se pelo terminal, com uma **interface interativa** ou com comandos soltos.
-
-#### Interface interativa
+### Interface interativa
 
 ```bash
 docker compose run --rm admin tui      # com Docker
 npm run tui                            # sem Docker (precisa de DATABASE_URL)
 ```
 
-Cinco separadores (`1`–`5`, ou `←` `→`): **Relações** (a árvore cliente → org → utilizadores e chaves), **Clientes**, **Orgs**, **Utilizadores** e **Chaves**. `?` mostra todos os atalhos.
+Dois separadores (`1`–`2`, ou `←` `→`): **Memórias da org** e **Memórias de utilizadores**. `n` cria uma memória da org, `d` apaga a selecionada (pede confirmação), `R` recarrega, `?` mostra os atalhos, `q` sai. Funciona a partir de 80×24.
 
-| Tecla           | O que faz                                                                             |
-| --------------- | ------------------------------------------------------------------------------------- |
-| `n`             | Novo (cliente, org, utilizador ou chave, conforme o separador)                        |
-| `o` · `u` · `k` | Clientes: nova org neste cliente · Orgs: novo utilizador · nova chave nesta org       |
-| `a`             | Ativar / desativar um cliente ou uma org (desativar recusa as chaves)                 |
-| `r`             | Revogar uma chave (pede confirmação)                                                  |
-| `d`             | Apagar um utilizador e tudo o que é dele (mostra o que desaparece antes de confirmar) |
-| `R` · `q`       | Recarregar · sair                                                                     |
-
-A chave de API é mostrada **uma única vez**, ao criá-la. Funciona a partir de 80×24. Um utilizador pertence sempre a uma só org: "associar um utilizador a uma org" é criá-lo nessa org.
-
-#### Comandos soltos
-
-Para scripts e automação. Com Docker:
+### Comandos soltos
 
 ```bash
 A="docker compose run --rm admin"
 
-$A create-tenant --slug iris-dev --name "IRIS Dev"
-$A create-org --tenant iris-dev --org-id 00DgL00000O7vLVUAZ \
-  --instance-url https://orgfarm-9637ae9ebe-dev-ed.develop.my.salesforce.com --sandbox
-$A create-key --org-id 00DgL00000O7vLVUAZ          # mostra a chave uma única vez
-$A list-keys                                        # sem segredos
-$A revoke-key --prefix <8 hexadecimais>
-
-curl -H "Authorization: Bearer <chave>" localhost:8080/v1/whoami
+$A list-memories [--org-id 00D…] [--user-id 005…]
+$A add-org-memory --org-id 00DgL00000O7vLVUAZ --text "Tratar sempre o cliente por você." [--tool reply]
+$A delete-memory --id <uuid>
+$A delete-memories --org-id 00D… [--user-id 005…]   # quando a org ou o utilizador sai do StepAccess
 ```
 
-Sem Docker, `npm run admin -- <comando> …` (precisa de `DATABASE_URL`). Opção: `--expires-in-days <n>` em `create-key`.
+Sem Docker, `npm run admin -- <comando> …` (precisa de `DATABASE_URL`). Em `NODE_ENV=production` o `DATABASE_URL` é obrigatório.
 
 ## Base de dados
 
 PostgreSQL 16, 3.ª forma normal. As migrações são ficheiros SQL em `migrations/`, aplicados por ordem e uma só vez (`npm run migrate`). Um ficheiro já aplicado não pode ser alterado: cria-se outro.
 
-| Ficheiro                        | Conteúdo                                                              |
-| ------------------------------- | --------------------------------------------------------------------- |
-| `0001_catalogs.sql`             | Listas fechadas (ferramentas, fornecedores de IA, âmbitos de memória) |
-| `0002_identity.sql`             | `tenant` → `sf_org` → `org_user`, e `api_credential`                  |
-| `0003_memory.sql`               | Memórias do cliente, da org ou do utilizador (exatamente um dono)     |
-| `0004_configuration.sql`        | Modelos, configuração por ferramenta, prompts versionados, níveis     |
-| `0005`–`0007`                   | Pedidos e resultados; removidos pela `0008`                           |
-| `0008_motor_de_ferramentas.sql` | Sem pedidos nem resultados; "ação" passa a "ferramenta"; sem retenção |
+| Ficheiro                            | Conteúdo                                                                |
+| ----------------------------------- | ----------------------------------------------------------------------- |
+| `0001`–`0007`                       | Modelo inicial (catálogos, identidade, memórias, pedidos, resultados)   |
+| `0008_motor_de_ferramentas.sql`     | Sem pedidos nem resultados; "ação" passa a "ferramenta"                 |
+| `0009_identidade_no_stepaccess.sql` | Sem clientes, orgs, utilizadores nem chaves; memórias por id Salesforce |
 
-Regras garantidas pela própria base de dados (e não só pela aplicação): uma memória tem exatamente um dono; uma versão de prompt publicada não muda. O motor não guarda pedidos nem resultados. Só um administrador cria utilizadores; apagar um utilizador apaga as memórias dele.
+Ficam 12 tabelas: catálogos (`tool`, `ai_provider`, `memory_scope`, `memory_source`), memórias (`memory`, `org_memory`, `user_memory`, `memory_tool`) e configuração (`llm_model`, `tool_config`, `prompt`, `prompt_version`).
+
+Regras garantidas pela própria base de dados: uma memória tem exatamente um dono (uma org ou um utilizador); as memórias da org têm sempre origem admin; os limites por dono não se furam nem com inserções simultâneas; uma versão de prompt publicada não muda.
 
 Testes de base de dados, com um Postgres local:
 
@@ -160,15 +132,11 @@ src/
     errors.ts             AppError: código estável + estado HTTP
     error-handler.ts      conversão de todos os erros para o formato comum
     routes/health.ts      /healthz e /readyz
-    routes/whoami.ts      /v1/whoami
-  auth/
-    api-key.ts            gerar, ler e comparar chaves
-    credential-store.ts   procura da chave na base de dados
-    authenticate.ts       hook de autenticação e verificação do orgId
-    org-user.ts           procura o utilizador; um desconhecido é recusado (403)
+  memory/
+    limits.ts             limites das memórias (os mesmos da base de dados)
   admin/
-    commands.ts           criar cliente, org, utilizador e chaves; revogar; ativar; apagar
-    queries.ts            listas e árvore de relações
+    commands.ts           criar memórias da org; apagar memórias
+    queries.ts            listar memórias e ferramentas
     validation.ts         validações dos dados que o administrador escreve
     api.ts                o que a interface pode fazer (e a versão sobre a base de dados)
     cli.ts                `npm run admin`
@@ -186,4 +154,4 @@ test/                     testes Vitest (app.inject; test/db/ contra Postgres re
 - TypeScript estrito. Sem `any`.
 - `process.env` só em `src/config.ts` (garantido por lint).
 - Erros de domínio são `AppError` com `code` e `httpStatus`; nunca strings.
-- Nunca registar o corpo dos pedidos nem credenciais.
+- Nunca registar o corpo dos pedidos, o texto das memórias nem credenciais.

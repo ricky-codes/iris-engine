@@ -1,51 +1,13 @@
-import type pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   SQLSTATE,
   TEST_DATABASE_URL,
+  addMemory,
   createTestDb,
-  seedTenant,
+  sfId,
   sqlState,
   type TestDb,
 } from './helpers.js';
-
-const SCOPE = { tenant: 1, org: 2, user: 3 } as const;
-const KIND = { preference: 1, fact: 2 } as const;
-
-/** Insere uma memória e a ligação ao dono na mesma transação. */
-async function addMemory(
-  pool: pg.Pool,
-  scope: keyof typeof SCOPE,
-  ownerId: string,
-  content = 'Responder sempre de forma curta.',
-): Promise<string> {
-  const table = { tenant: 'tenant_memory', org: 'sf_org_memory', user: 'org_user_memory' }[scope];
-  const column = { tenant: 'tenant_id', org: 'sf_org_id', user: 'org_user_id' }[scope];
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const m = await client.query<{ memory_id: string }>(
-      `INSERT INTO memory (memory_scope_id, memory_kind_id, content)
-       VALUES ($1, $2, $3) RETURNING memory_id`,
-      [SCOPE[scope], KIND.preference, content],
-    );
-    const id = m.rows[0]!.memory_id;
-    await client.query(`INSERT INTO ${table} (memory_id, ${column}) VALUES ($1, $2)`, [
-      id,
-      ownerId,
-    ]);
-    await client.query('COMMIT');
-    return id;
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
-}
-
-const exists = async (pool: pg.Pool, id: string): Promise<boolean> =>
-  (await pool.query('SELECT 1 FROM memory WHERE memory_id = $1', [id])).rowCount === 1;
 
 describe.skipIf(TEST_DATABASE_URL === undefined)('memórias', () => {
   let db: TestDb;
@@ -56,172 +18,114 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('memórias', () => {
     await db.close();
   });
 
-  it('cada âmbito existe sem os outros', async () => {
-    const t = await seedTenant(db.pool);
-    await addMemory(db.pool, 'user', t.userId);
-    const { rows } = await db.pool.query(
-      `SELECT (SELECT count(*) FROM tenant_memory WHERE tenant_id = $1)::int AS tenant,
-              (SELECT count(*) FROM sf_org_memory WHERE sf_org_id = $2)::int AS org,
-              (SELECT count(*) FROM org_user_memory WHERE org_user_id = $3)::int AS usr`,
-      [t.tenantId, t.orgId, t.userId],
+  const count = async (table: string, id: string): Promise<number> => {
+    const { rows } = await db.pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM ${table} WHERE memory_id = $1`,
+      [id],
     );
-    expect(rows[0]).toEqual({ tenant: 0, org: 0, usr: 1 });
+    return rows[0]!.n;
+  };
+
+  it('uma memória pode ser de uma org ou de um utilizador, sem tabelas de identidade', async () => {
+    const org = sfId('00D');
+    const a = await addMemory(db.pool, { org });
+    const b = await addMemory(db.pool, { org, user: sfId('005') });
+    expect(await count('org_memory', a)).toBe(1);
+    expect(await count('user_memory', b)).toBe(1);
   });
 
-  it('as memórias dos três âmbitos juntam-se por utilizador', async () => {
-    const t = await seedTenant(db.pool);
-    await addMemory(db.pool, 'tenant', t.tenantId, 'O cliente é uma cadeia de supermercados.');
-    await addMemory(db.pool, 'org', t.orgId, 'Tratar sempre por você.');
-    await addMemory(db.pool, 'user', t.userId, 'Respostas curtas.');
-
-    const { rows } = await db.pool.query<{ scope: string; content: string }>(
-      `SELECT s.code AS scope, m.content
-       FROM org_user u
-       JOIN sf_org o ON o.sf_org_id = u.sf_org_id
-       JOIN memory m ON m.archived_at IS NULL AND m.memory_id IN (
-              SELECT memory_id FROM tenant_memory   WHERE tenant_id   = o.tenant_id
-        UNION SELECT memory_id FROM sf_org_memory   WHERE sf_org_id   = o.sf_org_id
-        UNION SELECT memory_id FROM org_user_memory WHERE org_user_id = u.org_user_id)
-       JOIN memory_scope s ON s.memory_scope_id = m.memory_scope_id
-       WHERE u.org_user_id = $1
-       ORDER BY s.memory_scope_id`,
-      [t.userId],
-    );
-    expect(rows.map((r) => r.scope)).toEqual(['tenant', 'org', 'user']);
-  });
-
-  it('não aceita a ligação de uma memória a um dono de outro âmbito', async () => {
-    const t = await seedTenant(db.pool);
-    const client = await db.pool.connect();
-    try {
-      await client.query('BEGIN');
-      const m = await client.query<{ memory_id: string }>(
-        `INSERT INTO memory (memory_scope_id, memory_kind_id, content)
-         VALUES ($1, $2, 'x') RETURNING memory_id`,
-        [SCOPE.tenant, KIND.fact],
-      );
-      // Memória do âmbito "cliente" ligada como se fosse de um utilizador.
-      const code = await sqlState(
-        client.query('INSERT INTO org_user_memory (memory_id, org_user_id) VALUES ($1, $2)', [
-          m.rows[0]!.memory_id,
-          t.userId,
-        ]),
-      );
-      expect(code).toBe(SQLSTATE.foreignKeyViolation);
-    } finally {
-      await client.query('ROLLBACK');
-      client.release();
-    }
-  });
-
-  it('não aceita o âmbito escrito à mão na tabela de dono', async () => {
-    const t = await seedTenant(db.pool);
-    const client = await db.pool.connect();
-    try {
-      await client.query('BEGIN');
-      const m = await client.query<{ memory_id: string }>(
-        `INSERT INTO memory (memory_scope_id, memory_kind_id, content)
-         VALUES ($1, $2, 'x') RETURNING memory_id`,
-        [SCOPE.org, KIND.fact],
-      );
-      const code = await sqlState(
-        client.query(
-          'INSERT INTO org_user_memory (memory_id, memory_scope_id, org_user_id) VALUES ($1, 2, $2)',
-          [m.rows[0]!.memory_id, t.userId],
-        ),
-      );
-      expect(code).toBe(SQLSTATE.checkViolation);
-    } finally {
-      await client.query('ROLLBACK');
-      client.release();
-    }
-  });
-
-  it('uma memória não pode ter dois donos', async () => {
-    const a = await seedTenant(db.pool);
-    const b = await seedTenant(db.pool);
-    const id = await addMemory(db.pool, 'user', a.userId);
-    const code = await sqlState(
-      db.pool.query('INSERT INTO org_user_memory (memory_id, org_user_id) VALUES ($1, $2)', [
-        id,
-        b.userId,
-      ]),
-    );
-    expect(code).toBe(SQLSTATE.uniqueViolation);
-  });
-
-  it('uma memória sem dono é recusada no commit', async () => {
+  it('não aceita uma memória sem dono', async () => {
     const client = await db.pool.connect();
     try {
       await client.query('BEGIN');
       await client.query(
-        `INSERT INTO memory (memory_scope_id, memory_kind_id, content) VALUES (1, 2, 'sem dono')`,
+        `INSERT INTO memory (memory_scope_id, memory_source_id, content) VALUES (3, 1, 'sem dono')`,
       );
       const code = await sqlState(client.query('COMMIT'));
       expect(code).toBe(SQLSTATE.integrityConstraintViolation);
     } finally {
-      await client.query('ROLLBACK').catch(() => undefined);
       client.release();
     }
   });
 
-  it('apagar o utilizador apaga as memórias dele e só essas', async () => {
-    const t = await seedTenant(db.pool);
-    const mine = await addMemory(db.pool, 'user', t.userId);
-    const org = await addMemory(db.pool, 'org', t.orgId);
-
-    await db.pool.query('DELETE FROM org_user WHERE org_user_id = $1', [t.userId]);
-
-    expect(await exists(db.pool, mine)).toBe(false);
-    expect(await exists(db.pool, org)).toBe(true);
+  it('não liga uma memória de utilizador a uma org (âmbitos não se misturam)', async () => {
+    const id = await addMemory(db.pool, { org: sfId('00D'), user: sfId('005') });
+    const code = await sqlState(
+      db.pool.query('INSERT INTO org_memory (memory_id, sf_org_ref) VALUES ($1, $2)', [
+        id,
+        sfId('00D'),
+      ]),
+    );
+    expect(code).toBe(SQLSTATE.foreignKeyViolation);
   });
 
-  it('apagar a memória apaga a ligação ao dono', async () => {
-    const t = await seedTenant(db.pool);
-    const id = await addMemory(db.pool, 'user', t.userId);
-    await db.pool.query('DELETE FROM memory WHERE memory_id = $1', [id]);
-    const { rowCount } = await db.pool.query('SELECT 1 FROM org_user_memory WHERE memory_id = $1', [
-      id,
-    ]);
-    expect(rowCount).toBe(0);
+  it('uma memória da org só pode ter origem admin', async () => {
+    const code = await sqlState(
+      db.pool.query(
+        `INSERT INTO memory (memory_scope_id, memory_source_id, content) VALUES (2, 1, 'x')`,
+      ),
+    );
+    expect(code).toBe(SQLSTATE.checkViolation);
   });
 
-  it('o autor passa a nulo quando o autor é apagado, sem perder a memória', async () => {
-    const t = await seedTenant(db.pool);
-    const author = await db.pool.query<{ org_user_id: string }>(
-      `INSERT INTO org_user (sf_org_id, sf_user_ref) VALUES ($1, '005AAAAAAAAAAAAAAA') RETURNING org_user_id`,
-      [t.orgId],
-    );
-    const authorId = author.rows[0]!.org_user_id;
-    const id = await addMemory(db.pool, 'org', t.orgId, 'Escrita por um administrador.');
-    await db.pool.query('UPDATE memory SET created_by = $2 WHERE memory_id = $1', [id, authorId]);
+  it('recusa ids Salesforce com formato errado', async () => {
+    const bad = await sqlState(addMemory(db.pool, { org: '00Dcurto' }));
+    const badUser = await sqlState(addMemory(db.pool, { org: sfId('00D'), user: sfId('500') }));
+    expect(bad).toBe(SQLSTATE.checkViolation);
+    expect(badUser).toBe(SQLSTATE.checkViolation);
+  });
 
-    await db.pool.query('DELETE FROM org_user WHERE org_user_id = $1', [authorId]);
-
-    const { rows } = await db.pool.query<{ created_by: string | null }>(
-      'SELECT created_by FROM memory WHERE memory_id = $1',
-      [id],
+  it('recusa texto vazio ou com mais de 500 caracteres', async () => {
+    const org = sfId('00D');
+    expect(await sqlState(addMemory(db.pool, { org }, '   '))).toBe(SQLSTATE.checkViolation);
+    expect(await sqlState(addMemory(db.pool, { org }, 'x'.repeat(501)))).toBe(
+      SQLSTATE.checkViolation,
     );
-    expect(rows[0]?.created_by).toBeNull();
+    await addMemory(db.pool, { org }, 'x'.repeat(500));
+  });
+
+  it('no máximo 20 memórias por utilizador', async () => {
+    const owner = { org: sfId('00D'), user: sfId('005') };
+    for (let i = 0; i < 20; i++) await addMemory(db.pool, owner, `m${String(i)}`);
+    await expect(addMemory(db.pool, owner, 'a mais')).rejects.toThrow(/memory_limit/);
+    // Outro utilizador da mesma org não é afetado.
+    await addMemory(db.pool, { org: owner.org, user: sfId('005') });
+  });
+
+  it('no máximo 50 memórias por org, mesmo em inserções simultâneas', async () => {
+    const org = sfId('00D');
+    for (let i = 0; i < 45; i++) await addMemory(db.pool, { org }, `m${String(i)}`);
+    const results = await Promise.allSettled(
+      Array.from({ length: 10 }, (_, i) => addMemory(db.pool, { org }, `p${String(i)}`)),
+    );
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(5);
+    const { rows } = await db.pool.query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM org_memory WHERE sf_org_ref = $1',
+      [org],
+    );
+    expect(rows[0]!.n).toBe(50);
+  });
+
+  it('apagar a ligação ao dono apaga a memória, e vice-versa', async () => {
+    const org = sfId('00D');
+    const a = await addMemory(db.pool, { org });
+    await db.pool.query('DELETE FROM org_memory WHERE memory_id = $1', [a]);
+    expect(await count('memory', a)).toBe(0);
+
+    const b = await addMemory(db.pool, { org, user: sfId('005') });
+    await db.pool.query('DELETE FROM memory WHERE memory_id = $1', [b]);
+    expect(await count('user_memory', b)).toBe(0);
   });
 
   it('a restrição por ferramenta é opcional e aceita várias ferramentas', async () => {
-    const t = await seedTenant(db.pool);
-    const id = await addMemory(db.pool, 'user', t.userId);
-    await db.pool.query(`INSERT INTO memory_tool (memory_id, tool_id) VALUES ($1, 3), ($1, 1)`, [
-      id,
-    ]);
-    const { rows } = await db.pool.query('SELECT 1 FROM memory_tool WHERE memory_id = $1', [id]);
-    expect(rows).toHaveLength(2);
-  });
-
-  it('recusa texto vazio ou demasiado longo', async () => {
-    const t = await seedTenant(db.pool);
-    expect(await sqlState(addMemory(db.pool, 'user', t.userId, '   '))).toBe(
-      SQLSTATE.checkViolation,
+    const id = await addMemory(db.pool, { org: sfId('00D') });
+    await db.pool.query(
+      `INSERT INTO memory_tool (memory_id, tool_id)
+       SELECT $1, tool_id FROM tool WHERE code IN ('reply', 'sentiment')`,
+      [id],
     );
-    expect(await sqlState(addMemory(db.pool, 'user', t.userId, 'x'.repeat(2001)))).toBe(
-      SQLSTATE.checkViolation,
-    );
+    expect(await count('memory_tool', id)).toBe(2);
+    await db.pool.query('DELETE FROM memory WHERE memory_id = $1', [id]);
+    expect(await count('memory_tool', id)).toBe(0);
   });
 });

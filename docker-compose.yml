@@ -48,8 +48,9 @@ services:
     init: true
     restart: unless-stopped
 
-  # Comandos de administração (clientes, orgs, chaves):
-  #   docker compose run --rm admin create-tenant --slug iris-dev --name "IRIS Dev"
+  # Administração das memórias (orgs e utilizadores gerem-se no StepAccess):
+  #   docker compose run --rm admin tui
+  #   docker compose run --rm admin list-memories
   admin:
     build: .
     image: iris-engine:local

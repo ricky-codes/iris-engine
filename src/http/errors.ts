@@ -6,6 +6,8 @@ export const ERROR_CODES = [
   'invalid_request',
   'unauthorized',
   'forbidden',
+  'access_denied',
+  'quota_exceeded',
   'not_found',
   'unknown_tool',
   'payload_too_large',

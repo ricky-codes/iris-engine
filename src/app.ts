@@ -4,12 +4,15 @@ import type { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
 import type { AppConfig } from './config.js';
 import { registerErrorHandling } from './http/error-handler.js';
 import { healthRoutes, type ReadinessCheck } from './http/routes/health.js';
+import { toolRoutes, type ToolRoutesOptions } from './http/routes/tools.js';
 
 const PROBE_PATHS = new Set(['/healthz', '/readyz']);
 
 export interface BuildAppOptions {
   config: AppConfig;
   readinessChecks?: ReadinessCheck[];
+  /** Sem motor não há rotas de ferramentas (`/v1/*`). */
+  engine?: ToolRoutesOptions;
   /** Destino dos logs; só os testes o definem. */
   logStream?: NodeJS.WritableStream;
 }
@@ -17,6 +20,7 @@ export interface BuildAppOptions {
 export async function buildApp({
   config,
   readinessChecks = [],
+  engine,
   logStream,
 }: BuildAppOptions): Promise<FastifyInstance> {
   const app = Fastify({
@@ -50,6 +54,7 @@ export async function buildApp({
   registerErrorHandling(app);
 
   await app.register(healthRoutes, { checks: readinessChecks });
+  if (engine !== undefined) await app.register(toolRoutes, engine);
 
   return app;
 }

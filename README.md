@@ -36,23 +36,33 @@ npm run dev
 
 Variáveis de ambiente, validadas no arranque (`src/config.ts`). Com configuração inválida, o processo termina com código 1 e a lista de problemas. Ver `.env.example`.
 
-| Variável              | Omissão       |
-| --------------------- | ------------- |
-| `NODE_ENV`            | `development` |
-| `HOST`                | `0.0.0.0`     |
-| `PORT`                | `8080`        |
-| `LOG_LEVEL`           | `info`        |
-| `MAX_BODY_BYTES`      | `1048576`     |
-| `SHUTDOWN_TIMEOUT_MS` | `10000`       |
-| `DATABASE_URL`        | _(vazio)_     |
-| `MIGRATIONS_DIR`      | `migrations`  |
+| Variável                                                  | Omissão                                                          |
+| --------------------------------------------------------- | ---------------------------------------------------------------- |
+| `NODE_ENV`                                                | `development`                                                    |
+| `HOST`                                                    | `0.0.0.0`                                                        |
+| `PORT`                                                    | `8080`                                                           |
+| `LOG_LEVEL`                                               | `info`                                                           |
+| `MAX_BODY_BYTES`                                          | `1048576`                                                        |
+| `SHUTDOWN_TIMEOUT_MS`                                     | `10000`                                                          |
+| `DATABASE_URL`                                            | _(vazio)_                                                        |
+| `MIGRATIONS_DIR`                                          | `migrations`                                                     |
+| `API_SECRET`                                              | _(vazio)_ — segredo partilhado com o Salesforce, ≥ 32 caracteres |
+| `STEPACCESS_URL`, `_USER`, `_PASSWORD`, `_COMPONENT_UUID` | _(vazio)_ — todos ou nenhum                                      |
+| `STEPACCESS_TIMEOUT_MS`                                   | `3000`                                                           |
+| `STEPACCESS_BYPASS`                                       | `false` — proibido em produção                                   |
+| `OPENROUTER_API_KEY`                                      | _(vazio)_                                                        |
+| `OPENROUTER_BASE_URL`                                     | `https://openrouter.ai/api/v1`                                   |
+| `LLM_DEFAULT_MODEL`                                       | `google/gemini-2.5-flash`                                        |
+| `ENABLE_DIAGNOSTIC_TOOL`                                  | `false`                                                          |
 
 ## Endpoints
 
-| Método e caminho | Função                                                     |
-| ---------------- | ---------------------------------------------------------- |
-| `GET /healthz`   | Processo vivo                                              |
-| `GET /readyz`    | Dependências acessíveis (200 ou 503, com estado por check) |
+| Método e caminho        | Função                                                     |
+| ----------------------- | ---------------------------------------------------------- |
+| `GET /healthz`          | Processo vivo                                              |
+| `GET /readyz`           | Dependências acessíveis (200 ou 503, com estado por check) |
+| `GET /v1/tools`         | Lista as ferramentas disponíveis (precisa de credencial)   |
+| `POST /v1/tools/<nome>` | Corre uma ferramenta (precisa de credencial)               |
 
 Todas as respostas levam `X-Request-Id`. Os erros têm sempre este formato:
 
@@ -66,6 +76,46 @@ Todas as respostas levam `X-Request-Id`. Os erros têm sempre este formato:
   }
 }
 ```
+
+## Motor
+
+Um pedido `POST /v1/tools/<nome>` passa sempre por estes passos, por esta ordem:
+
+1. **Credencial:** `Authorization: Bearer <API_SECRET>`, comparada em tempo constante. Falha: **401**, antes de olhar para o corpo.
+2. **Validação:** `orgId` (`00D…`, 18 caracteres), `userId` (`005…`, 18 caracteres), `version` opcional e os campos da ferramenta. Campos a mais são recusados. Falha: **422**, sem gastar utilização.
+3. **Configuração da ferramenta:** modelo, temperatura, limites e prompt. A base de dados (`tool_config`, versão ativa em `prompt_version`) substitui os valores do código. Ferramenta desativada: **503**.
+4. **StepAccess:** `GET /v1/access` com org, utilizador e o componente IRIS. Conta utilização. Sem acesso: **403** `access_denied`; limite atingido: **429** `quota_exceeded`; StepAccess indisponível ou resposta inesperada: **503** (falha fechada).
+5. **Memórias:** as da org (regras da empresa, prevalecem) e as do utilizador, que valham para esta ferramenta. Entram no prompt numa secção própria, uma por linha.
+6. **Modelo (OpenRouter):** resposta em JSON com o esquema da ferramenta, só em fornecedores que não guardam nem treinam com os dados (`data_collection: deny`). Indisponível: **502** `provider_unavailable`; tempo esgotado: **504** `timeout`.
+7. **Validação da resposta:** se não cumprir o esquema, tenta uma segunda vez; à segunda falha: **502** `invalid_model_output`.
+
+Resposta: `{ "tool": "<nome>", "version": <n>, "result": { … } }`. Nada é guardado: dos pedidos ficam só linhas de log com id, ferramenta, modelo, tokens, número de memórias e duração.
+
+Uma ferramenta é um módulo em `src/tools/` (ver `src/tools/diagnostic.ts`): nome, versão, entrada, saída, prompt de origem e valores por omissão. O motor regista-a no catálogo `tool` ao arrancar.
+
+### Experimentar com o OpenRouter
+
+No `.env` (nunca no Git):
+
+```bash
+API_SECRET=<openssl rand -base64 48>
+STEPACCESS_BYPASS=true          # enquanto o StepAccess não estiver ligado (proibido em produção)
+OPENROUTER_API_KEY=sk-or-...
+ENABLE_DIAGNOSTIC_TOOL=true
+```
+
+Depois de `docker compose up --build`:
+
+```bash
+curl -s -X POST localhost:8080/v1/tools/diagnostic \
+  -H "Authorization: Bearer <API_SECRET>" -H 'Content-Type: application/json' \
+  -d '{"orgId":"00DgL00000O7vLVUAZ","userId":"005gL00000GpOQTQA3","message":"Olá IRIS, estás a funcionar?"}'
+```
+
+Para ver as memórias a funcionar, crie uma regra da org e repita o pedido:
+`docker compose run --rm admin add-org-memory --org-id 00DgL00000O7vLVUAZ --text "Responder sempre a rimar."`
+
+Sem a configuração completa, o serviço arranca só com `/healthz` e `/readyz` e diz no log o que falta.
 
 ## Administração das memórias
 
@@ -132,6 +182,18 @@ src/
     errors.ts             AppError: código estável + estado HTTP
     error-handler.ts      conversão de todos os erros para o formato comum
     routes/health.ts      /healthz e /readyz
+    routes/tools.ts       /v1/tools e /v1/tools/<nome>, com a credencial
+  engine/
+    tool.ts               o contrato de uma ferramenta
+    run.ts                o caminho de um pedido (configuração, acesso, memórias, modelo, validação)
+    access.ts             cliente do StepAccess (e o atalho para desenvolvimento)
+    openrouter.ts         cliente do OpenRouter
+    llm.ts                interface do fornecedor de modelos
+    prompt.ts             junta o prompt da ferramenta com as memórias
+    store.ts              o que o motor lê da base de dados; registo do catálogo de ferramentas
+  tools/
+    index.ts              as ferramentas ativas
+    diagnostic.ts         ferramenta de teste de ligação
   memory/
     limits.ts             limites das memórias (os mesmos da base de dados)
   admin/

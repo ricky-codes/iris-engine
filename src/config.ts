@@ -31,6 +31,8 @@ const EnvSchema = Type.Object({
 
   // Segredo partilhado que o Salesforce envia em `Authorization: Bearer …`.
   API_SECRET: Type.Optional(Type.String({ minLength: 32 })),
+  // Segredo da API de administração (usado pelo backend do StepAccess). Diferente do API_SECRET.
+  ADMIN_API_SECRET: Type.Optional(Type.String({ minLength: 32 })),
 
   // StepAccess: decide se o utilizador tem acesso e conta a utilização.
   STEPACCESS_URL: Type.Optional(Type.String({ pattern: '^https?://[^\\s]+$' })),
@@ -71,6 +73,8 @@ export interface AppConfig {
   databaseUrl: string | undefined;
   migrationsDir: string;
   engine: EngineConfig;
+  /** Sem segredo não há API de administração. */
+  adminApiSecret: string | undefined;
 }
 
 export interface StepAccessConfig {
@@ -175,6 +179,13 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     enableDiagnosticTool: converted.ENABLE_DIAGNOSTIC_TOOL,
   };
 
+  if (
+    converted.ADMIN_API_SECRET !== undefined &&
+    converted.ADMIN_API_SECRET === converted.API_SECRET
+  ) {
+    throw new ConfigError(['ADMIN_API_SECRET: tem de ser diferente do API_SECRET']);
+  }
+
   if (converted.NODE_ENV === 'production') {
     const missing = missingEngineConfig(engine, true);
     if (missing.length > 0)
@@ -191,5 +202,6 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     databaseUrl: converted.DATABASE_URL,
     migrationsDir: converted.MIGRATIONS_DIR,
     engine,
+    adminApiSecret: converted.ADMIN_API_SECRET,
   };
 }

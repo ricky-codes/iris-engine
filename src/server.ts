@@ -1,13 +1,19 @@
+import { readFileSync } from 'node:fs';
 import type { FastifyBaseLogger } from 'fastify';
+import type pg from 'pg';
 import { buildApp } from './app.js';
 import { ConfigError, loadConfig, missingEngineConfig, type AppConfig } from './config.js';
 import { createPool } from './db/pool.js';
-import { BypassAccessChecker, StepAccessClient } from './engine/access.js';
+import { BypassAccessChecker, StepAccessClient, type AccessChecker } from './engine/access.js';
+import { checkOpenRouter, checkStepAccess, timed, type CheckResult } from './engine/health.js';
+import { Metrics } from './engine/metrics.js';
+import { ModelCatalog } from './engine/models.js';
 import { OpenRouterProvider } from './engine/openrouter.js';
 import { PgEngineStore, syncToolCatalog } from './engine/store.js';
+import type { ToolDefinition } from './engine/tool.js';
+import type { AdminRoutesOptions, StatusReport } from './http/routes/admin.js';
 import type { ToolRoutesOptions } from './http/routes/tools.js';
 import { enabledTools } from './tools/index.js';
-import type pg from 'pg';
 
 // Os clientes externos registam avisos no logger da app, que só existe depois de criada.
 let logger: FastifyBaseLogger | undefined;
@@ -15,43 +21,121 @@ const warn = (msg: string, data: Record<string, unknown>): void => {
   logger?.warn(data, msg);
 };
 
+function readVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as { version?: unknown };
+    return typeof pkg.version === 'string' ? pkg.version : 'desconhecida';
+  } catch {
+    return 'desconhecida';
+  }
+}
+
+function accessChecker(config: AppConfig): AccessChecker | undefined {
+  const sa = config.engine.stepAccess;
+  if (sa === undefined) return undefined;
+  return sa === 'bypass' ? new BypassAccessChecker() : new StepAccessClient(sa, fetch, warn);
+}
+
 /** Monta o motor se a configuração estiver completa. Devolve também o que falta, se faltar. */
-async function buildEngine(
+function buildEngine(
   config: AppConfig,
   pool: pg.Pool | undefined,
-): Promise<{ engine: ToolRoutesOptions | undefined; missing: string[] }> {
+  tools: ToolDefinition[],
+  metrics: Metrics,
+): { engine: ToolRoutesOptions | undefined; missing: string[] } {
   const { engine: cfg } = config;
   const missing = missingEngineConfig(cfg, pool !== undefined);
+  const access = accessChecker(config);
   if (
     missing.length > 0 ||
     pool === undefined ||
     cfg.apiSecret === undefined ||
-    cfg.stepAccess === undefined ||
+    access === undefined ||
     cfg.openRouter === undefined
   ) {
     return { engine: undefined, missing };
   }
-
-  const tools = enabledTools({ diagnostic: cfg.enableDiagnosticTool });
-  await syncToolCatalog(
-    pool,
-    tools.map((t) => t.name),
-  );
   return {
     missing: [],
     engine: {
       tools,
       apiSecret: cfg.apiSecret,
+      metrics,
       deps: {
-        access:
-          cfg.stepAccess === 'bypass'
-            ? new BypassAccessChecker()
-            : new StepAccessClient(cfg.stepAccess, fetch, warn),
+        access,
         store: new PgEngineStore(pool),
         llm: new OpenRouterProvider(cfg.openRouter, fetch, warn),
         defaultModel: cfg.defaultModel,
       },
     },
+  };
+}
+
+function buildAdmin(
+  config: AppConfig,
+  pool: pg.Pool | undefined,
+  tools: ToolDefinition[],
+  metrics: Metrics,
+  engine: { ready: boolean; missing: string[] },
+): AdminRoutesOptions | undefined {
+  if (config.adminApiSecret === undefined || pool === undefined) return undefined;
+  const { engine: cfg } = config;
+  const startedAt = new Date();
+  const version = readVersion();
+
+  const status = async (): Promise<StatusReport> => {
+    const sa = cfg.stepAccess;
+    const notConfigured = (detail: string): Promise<CheckResult> =>
+      Promise.resolve({ status: 'not_configured', latencyMs: null, detail });
+    const [database, stepAccess, openRouter] = await Promise.all([
+      timed(async () => {
+        await pool.query('SELECT 1');
+        return undefined;
+      }),
+      sa === undefined
+        ? notConfigured('STEPACCESS_* em falta')
+        : sa === 'bypass'
+          ? notConfigured('STEPACCESS_BYPASS ativo: pedidos não verificados')
+          : checkStepAccess(sa.url),
+      cfg.openRouter === undefined
+        ? notConfigured('OPENROUTER_API_KEY em falta')
+        : checkOpenRouter(cfg.openRouter),
+    ]);
+    return {
+      service: {
+        name: 'iris-engine',
+        version,
+        environment: config.env,
+        startedAt: startedAt.toISOString(),
+        uptimeSeconds: Math.round((Date.now() - startedAt.getTime()) / 1000),
+      },
+      engine: { ready: engine.ready, missing: engine.missing, tools: tools.map((t) => t.name) },
+      config: {
+        stepAccess: sa === undefined ? 'missing' : sa === 'bypass' ? 'bypass' : 'live',
+        openRouter: cfg.openRouter === undefined ? 'missing' : 'configured',
+        defaultModel: cfg.defaultModel,
+        diagnosticTool: cfg.enableDiagnosticTool,
+      },
+      checks: { database, stepAccess, openRouter },
+    };
+  };
+
+  return {
+    secret: config.adminApiSecret,
+    pool,
+    tools,
+    defaultModel: cfg.defaultModel,
+    metrics,
+    status,
+    models: new ModelCatalog(cfg.openRouter?.baseUrl ?? 'https://openrouter.ai/api/v1'),
+    playground:
+      cfg.openRouter === undefined
+        ? undefined
+        : {
+            store: new PgEngineStore(pool),
+            llm: new OpenRouterProvider(cfg.openRouter, fetch, warn),
+            access: accessChecker(config),
+          },
   };
 }
 
@@ -68,12 +152,23 @@ async function main(): Promise<void> {
   }
 
   const pool = config.databaseUrl === undefined ? undefined : createPool(config.databaseUrl);
+  const tools = enabledTools({ diagnostic: config.engine.enableDiagnosticTool });
+  // O catálogo é atualizado sempre que há base de dados, para a API de admin ver as ferramentas.
+  if (pool !== undefined) {
+    await syncToolCatalog(
+      pool,
+      tools.map((t) => t.name),
+    );
+  }
 
-  const { engine, missing } = await buildEngine(config, pool);
+  const metrics = new Metrics();
+  const { engine, missing } = buildEngine(config, pool, tools, metrics);
+  const admin = buildAdmin(config, pool, tools, metrics, { ready: engine !== undefined, missing });
 
   const app = await buildApp({
     config,
     ...(engine && { engine }),
+    ...(admin && { admin }),
     readinessChecks:
       pool === undefined
         ? []
@@ -96,6 +191,11 @@ async function main(): Promise<void> {
     }
     app.log.info({ tools: engine.tools.map((t) => t.name) }, 'motor pronto');
   }
+  app.log.info(
+    admin === undefined
+      ? 'API de administração desligada (falta ADMIN_API_SECRET ou DATABASE_URL)'
+      : 'API de administração ligada em /v1/admin',
+  );
 
   // Encerramento ordenado: deixa de aceitar pedidos e termina os que estão em curso.
   let shuttingDown = false;

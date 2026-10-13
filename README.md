@@ -36,33 +36,35 @@ npm run dev
 
 Variáveis de ambiente, validadas no arranque (`src/config.ts`). Com configuração inválida, o processo termina com código 1 e a lista de problemas. Ver `.env.example`.
 
-| Variável                                                  | Omissão                                                          |
-| --------------------------------------------------------- | ---------------------------------------------------------------- |
-| `NODE_ENV`                                                | `development`                                                    |
-| `HOST`                                                    | `0.0.0.0`                                                        |
-| `PORT`                                                    | `8080`                                                           |
-| `LOG_LEVEL`                                               | `info`                                                           |
-| `MAX_BODY_BYTES`                                          | `1048576`                                                        |
-| `SHUTDOWN_TIMEOUT_MS`                                     | `10000`                                                          |
-| `DATABASE_URL`                                            | _(vazio)_                                                        |
-| `MIGRATIONS_DIR`                                          | `migrations`                                                     |
-| `API_SECRET`                                              | _(vazio)_ — segredo partilhado com o Salesforce, ≥ 32 caracteres |
-| `STEPACCESS_URL`, `_USER`, `_PASSWORD`, `_COMPONENT_UUID` | _(vazio)_ — todos ou nenhum                                      |
-| `STEPACCESS_TIMEOUT_MS`                                   | `3000`                                                           |
-| `STEPACCESS_BYPASS`                                       | `false` — proibido em produção                                   |
-| `OPENROUTER_API_KEY`                                      | _(vazio)_                                                        |
-| `OPENROUTER_BASE_URL`                                     | `https://openrouter.ai/api/v1`                                   |
-| `LLM_DEFAULT_MODEL`                                       | `google/gemini-2.5-flash`                                        |
-| `ENABLE_DIAGNOSTIC_TOOL`                                  | `false`                                                          |
+| Variável                                                  | Omissão                                                                             |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `NODE_ENV`                                                | `development`                                                                       |
+| `HOST`                                                    | `0.0.0.0`                                                                           |
+| `PORT`                                                    | `8080`                                                                              |
+| `LOG_LEVEL`                                               | `info`                                                                              |
+| `MAX_BODY_BYTES`                                          | `1048576`                                                                           |
+| `SHUTDOWN_TIMEOUT_MS`                                     | `10000`                                                                             |
+| `DATABASE_URL`                                            | _(vazio)_                                                                           |
+| `MIGRATIONS_DIR`                                          | `migrations`                                                                        |
+| `API_SECRET`                                              | _(vazio)_ — segredo partilhado com o Salesforce, ≥ 32 caracteres                    |
+| `STEPACCESS_URL`, `_USER`, `_PASSWORD`, `_COMPONENT_UUID` | _(vazio)_ — todos ou nenhum                                                         |
+| `STEPACCESS_TIMEOUT_MS`                                   | `3000`                                                                              |
+| `STEPACCESS_BYPASS`                                       | `false` — proibido em produção                                                      |
+| `OPENROUTER_API_KEY`                                      | _(vazio)_                                                                           |
+| `OPENROUTER_BASE_URL`                                     | `https://openrouter.ai/api/v1`                                                      |
+| `LLM_DEFAULT_MODEL`                                       | `google/gemini-2.5-flash`                                                           |
+| `ENABLE_DIAGNOSTIC_TOOL`                                  | `false`                                                                             |
+| `ADMIN_API_SECRET`                                        | _(vazio)_ — liga a API de administração; ≥ 32 caracteres, diferente do `API_SECRET` |
 
 ## Endpoints
 
-| Método e caminho        | Função                                                     |
-| ----------------------- | ---------------------------------------------------------- |
-| `GET /healthz`          | Processo vivo                                              |
-| `GET /readyz`           | Dependências acessíveis (200 ou 503, com estado por check) |
-| `GET /v1/tools`         | Lista as ferramentas disponíveis (precisa de credencial)   |
-| `POST /v1/tools/<nome>` | Corre uma ferramenta (precisa de credencial)               |
+| Método e caminho        | Função                                                                                                                                             |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /healthz`          | Processo vivo                                                                                                                                      |
+| `GET /readyz`           | Dependências acessíveis (200 ou 503, com estado por check)                                                                                         |
+| `GET /v1/tools`         | Lista as ferramentas disponíveis (precisa de credencial)                                                                                           |
+| `POST /v1/tools/<nome>` | Corre uma ferramenta (precisa de credencial)                                                                                                       |
+| `/v1/admin/*`           | API de administração para o StepAccess: estado, métricas, ferramentas, prompts, memórias, playground. Ver [`docs/ADMIN_API.md`](docs/ADMIN_API.md) |
 
 Todas as respostas levam `X-Request-Id`. Os erros têm sempre este formato:
 
@@ -183,6 +185,7 @@ src/
     error-handler.ts      conversão de todos os erros para o formato comum
     routes/health.ts      /healthz e /readyz
     routes/tools.ts       /v1/tools e /v1/tools/<nome>, com a credencial
+    routes/admin.ts       /v1/admin/* (docs/ADMIN_API.md)
   engine/
     tool.ts               o contrato de uma ferramenta
     run.ts                o caminho de um pedido (configuração, acesso, memórias, modelo, validação)
@@ -191,13 +194,17 @@ src/
     llm.ts                interface do fornecedor de modelos
     prompt.ts             junta o prompt da ferramenta com as memórias
     store.ts              o que o motor lê da base de dados; registo do catálogo de ferramentas
+    metrics.ts            contadores agregados em memória (sem conteúdo)
+    health.ts             verificações do StepAccess e do OpenRouter
+    models.ts             catálogo de modelos do OpenRouter
   tools/
     index.ts              as ferramentas ativas
     diagnostic.ts         ferramenta de teste de ligação
   memory/
     limits.ts             limites das memórias (os mesmos da base de dados)
   admin/
-    commands.ts           criar memórias da org; apagar memórias
+    commands.ts           criar, alterar e apagar memórias
+    tools.ts              configuração das ferramentas e versões dos prompts
     queries.ts            listar memórias e ferramentas
     validation.ts         validações dos dados que o administrador escreve
     api.ts                o que a interface pode fazer (e a versão sobre a base de dados)

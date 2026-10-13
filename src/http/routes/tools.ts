@@ -2,14 +2,18 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { Type, type TObject } from '@sinclair/typebox';
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import type { FastifyRequest } from 'fastify';
+import type { Metrics } from '../../engine/metrics.js';
 import { runTool, type EngineDeps } from '../../engine/run.js';
 import type { ToolDefinition } from '../../engine/tool.js';
+import { errorCodeOf } from '../error-handler.js';
 import { AppError } from '../errors.js';
 
 export interface ToolRoutesOptions {
   tools: ToolDefinition[];
   deps: EngineDeps;
   apiSecret: string;
+  /** Contadores agregados (sem conteúdo) para a API de administração. */
+  metrics?: Metrics;
 }
 
 const sha256 = (value: string): Buffer => createHash('sha256').update(value).digest();
@@ -52,6 +56,24 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
     if (match?.[1] === undefined || !secretMatches(match[1], opts.apiSecret)) throw unauthorized();
   });
 
+  // Tokens de cada pedido, para as métricas. Somem com o pedido.
+  const usage = new WeakMap<FastifyRequest, { inputTokens?: number; outputTokens?: number }>();
+  const toolNames = new Set(opts.tools.map((t) => t.name));
+
+  app.addHook('onResponse', async (request, reply) => {
+    if (opts.metrics === undefined || request.method !== 'POST') return;
+    const name = request.routeOptions.url?.replace(/^\/v1\/tools\//, '');
+    if (name === undefined || !toolNames.has(name)) return;
+    const tokens = usage.get(request);
+    opts.metrics.record({
+      tool: name,
+      errorCode: reply.statusCode < 400 ? undefined : (errorCodeOf(request) ?? 'internal_error'),
+      durationMs: reply.elapsedTime,
+      inputTokens: tokens?.inputTokens,
+      outputTokens: tokens?.outputTokens,
+    });
+  });
+
   app.get('/v1/tools', async () => ({
     tools: opts.tools.map((t) => ({
       name: t.name,
@@ -71,6 +93,10 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
 
       const started = performance.now();
       const { result, meta } = await runTool(opts.deps, tool, { orgId, userId, input });
+      usage.set(request, {
+        ...(meta.inputTokens !== undefined && { inputTokens: meta.inputTokens }),
+        ...(meta.outputTokens !== undefined && { outputTokens: meta.outputTokens }),
+      });
       request.log.info(
         { tool: tool.name, ...meta, durationMs: Math.round(performance.now() - started) },
         'tool completed',

@@ -8,6 +8,7 @@ export const ERROR_CODES = [
   'forbidden',
   'access_denied',
   'quota_exceeded',
+  'memory_limit_reached',
   'not_found',
   'unknown_tool',
   'payload_too_large',

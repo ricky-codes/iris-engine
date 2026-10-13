@@ -84,6 +84,14 @@ describe('loadConfig', () => {
     expect(config.engine.enableDiagnosticTool).toBe(true);
   });
 
+  it('o segredo de admin é opcional, mas tem de ser diferente do API_SECRET', () => {
+    expect(loadConfig({}).adminApiSecret).toBeUndefined();
+    expect(loadConfig({ ADMIN_API_SECRET: 'b'.repeat(32) }).adminApiSecret).toBe('b'.repeat(32));
+    expect(() =>
+      loadConfig({ API_SECRET: 'c'.repeat(32), ADMIN_API_SECRET: 'c'.repeat(32) }),
+    ).toThrow(/diferente/);
+  });
+
   it('o segredo da API tem pelo menos 32 caracteres', () => {
     expect(() => loadConfig({ API_SECRET: 'curto' })).toThrow(/API_SECRET/);
   });

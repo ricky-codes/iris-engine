@@ -4,6 +4,7 @@ import type { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
 import type { AppConfig } from './config.js';
 import { registerErrorHandling } from './http/error-handler.js';
 import { healthRoutes, type ReadinessCheck } from './http/routes/health.js';
+import { adminRoutes, type AdminRoutesOptions } from './http/routes/admin.js';
 import { toolRoutes, type ToolRoutesOptions } from './http/routes/tools.js';
 
 const PROBE_PATHS = new Set(['/healthz', '/readyz']);
@@ -13,6 +14,8 @@ export interface BuildAppOptions {
   readinessChecks?: ReadinessCheck[];
   /** Sem motor não há rotas de ferramentas (`/v1/*`). */
   engine?: ToolRoutesOptions;
+  /** Sem opções não há API de administração (`/v1/admin/*`). */
+  admin?: AdminRoutesOptions;
   /** Destino dos logs; só os testes o definem. */
   logStream?: NodeJS.WritableStream;
 }
@@ -21,6 +24,7 @@ export async function buildApp({
   config,
   readinessChecks = [],
   engine,
+  admin,
   logStream,
 }: BuildAppOptions): Promise<FastifyInstance> {
   const app = Fastify({
@@ -55,6 +59,7 @@ export async function buildApp({
 
   await app.register(healthRoutes, { checks: readinessChecks });
   if (engine !== undefined) await app.register(toolRoutes, engine);
+  if (admin !== undefined) await app.register(adminRoutes, admin);
 
   return app;
 }

@@ -1,7 +1,14 @@
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { AppError, type ErrorBody, type ErrorDetail } from './errors.js';
 
-function toAppError(err: FastifyError): AppError {
+/** O código de erro com que cada pedido terminou (para as métricas). Some com o pedido. */
+const errorCodes = new WeakMap<FastifyRequest, string>();
+
+export function errorCodeOf(request: FastifyRequest): string | undefined {
+  return errorCodes.get(request);
+}
+
+export function toAppError(err: FastifyError): AppError {
   if (err instanceof AppError) return err;
 
   if (err.validation) {
@@ -39,6 +46,7 @@ function toAppError(err: FastifyError): AppError {
 export function registerErrorHandling(app: FastifyInstance): void {
   app.setErrorHandler((err: FastifyError, request: FastifyRequest, reply: FastifyReply) => {
     const appError = toAppError(err);
+    errorCodes.set(request, appError.code);
 
     if (appError.httpStatus >= 500) {
       request.log.error({ err }, 'request failed');

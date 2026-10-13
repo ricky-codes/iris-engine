@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import { Metrics } from '../src/engine/metrics.js';
 import type { ToolDefinition } from '../src/engine/tool.js';
 import { AppError } from '../src/http/errors.js';
 import { diagnosticTool } from '../src/tools/diagnostic.js';
@@ -134,6 +135,52 @@ describe('POST /v1/tools/:nome', () => {
       payload: BODY,
     });
     expect(res.statusCode).toBe(502);
+  });
+});
+
+describe('métricas', () => {
+  it('conta sucessos e erros por código, com tokens, sem conteúdo', async () => {
+    const metrics = new Metrics();
+    const denied = fakeAccess(new AppError('quota_exceeded', 429, 'Limite.'));
+    const llm = fakeLlm('{"reply":"ok"}');
+    app = await buildTestApp({
+      engine: {
+        tools: [diagnosticTool as unknown as ToolDefinition],
+        apiSecret: SECRET,
+        metrics,
+        deps: { access: fakeAccess().access, store: fakeStore(), llm: llm.llm, defaultModel: 'm' },
+      },
+    });
+    const post = (headers: Record<string, string>, payload: object) =>
+      app?.inject({ method: 'POST', url: '/v1/tools/diagnostic', headers, payload });
+    await post(AUTH, BODY);
+    await post({}, BODY);
+    await post(AUTH, { ...BODY, message: '' });
+    await app.close();
+
+    app = await buildTestApp({
+      engine: {
+        tools: [diagnosticTool as unknown as ToolDefinition],
+        apiSecret: SECRET,
+        metrics,
+        deps: { access: denied.access, store: fakeStore(), llm: llm.llm, defaultModel: 'm' },
+      },
+    });
+    await post(AUTH, BODY);
+
+    const s = metrics.snapshot();
+    expect(s.byTool).toEqual([
+      expect.objectContaining({
+        tool: 'diagnostic',
+        requests: 4,
+        succeeded: 1,
+        failed: 3,
+        errorsByCode: { invalid_request: 1, quota_exceeded: 1, unauthorized: 1 },
+        inputTokens: 10,
+        outputTokens: 5,
+      }),
+    ]);
+    expect(JSON.stringify(s)).not.toContain('005AAAAAAAAAAAAAAA');
   });
 });
 

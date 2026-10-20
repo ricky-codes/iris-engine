@@ -25,6 +25,7 @@ services:
     image: iris-engine:local
     command: ['node', 'dist/db/migrate-cli.js']
     environment:
+      NODE_ENV: development
       DATABASE_URL: postgres://iris:iris@postgres:5432/iris
     depends_on:
       postgres:
@@ -38,7 +39,7 @@ services:
       - path: .env
         required: false
     ports:
-      - '${PORT:-8080}:8080'
+      - '127.0.0.1:${PORT:-8080}:8080'
     environment:
       PORT: 8080
       DATABASE_URL: postgres://iris:iris@postgres:5432/iris
@@ -56,6 +57,7 @@ services:
     image: iris-engine:local
     entrypoint: ['node', 'dist/admin/cli.js']
     environment:
+      NODE_ENV: development
       DATABASE_URL: postgres://iris:iris@postgres:5432/iris
     depends_on:
       migrate:

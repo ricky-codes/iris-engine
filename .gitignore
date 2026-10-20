@@ -6,3 +6,6 @@ coverage/
 .env.*
 !.env.example
 .DS_Store
+
+# cópias de segurança da base de dados (deploy.sh)
+backups/

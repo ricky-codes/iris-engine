@@ -20,6 +20,17 @@ cp .env.example .env   # opcional
 npm run dev
 ```
 
+## Deploy no servidor
+
+```bash
+cd ~/iris-engine
+./deploy.sh              # git pull, backup da BD, rebuild, espera pelo serviço saudável
+./deploy.sh --no-pull    # sem git pull (usa o código que lá está)
+./deploy.sh --no-backup  # sem backup da base de dados
+```
+
+O script confirma primeiro que o `.env` tem tudo o que a produção exige (sem mostrar valores), guarda um backup em `backups/` (os últimos 14) e no fim diz se o motor e a API de administração ficaram ligados. Use-o em vez de `docker compose restart`, que não relê o `.env`.
+
 ## Scripts
 
 | Comando           | O que faz                                                      |

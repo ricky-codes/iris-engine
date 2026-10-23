@@ -23,10 +23,18 @@ function secretMatches(given: string, expected: string): boolean {
   return timingSafeEqual(sha256(given), sha256(expected));
 }
 
-const unauthorized = (): AppError =>
+export const unauthorized = (): AppError =>
   new AppError('unauthorized', 401, 'Credenciais inválidas.', [], {
     'WWW-Authenticate': 'Bearer',
   });
+
+/** Exige `Authorization: Bearer <segredo>`. Corre antes de se ler o corpo. */
+export function bearerAuth(secret: string) {
+  return async (request: FastifyRequest): Promise<void> => {
+    const match = /^Bearer (.+)$/.exec(request.headers.authorization ?? '');
+    if (match?.[1] === undefined || !secretMatches(match[1], secret)) throw unauthorized();
+  };
+}
 
 /** Campos comuns a todos os pedidos. Os ids vêm do Salesforce, sempre com 18 caracteres. */
 const Envelope = {
@@ -50,11 +58,7 @@ function bodySchema(tool: ToolDefinition): TObject {
  * A autenticação corre antes da validação do corpo: sem credencial não se revela nada.
  */
 export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (app, opts) => {
-  app.addHook('onRequest', async (request: FastifyRequest) => {
-    const header = request.headers.authorization ?? '';
-    const match = /^Bearer (.+)$/.exec(header);
-    if (match?.[1] === undefined || !secretMatches(match[1], opts.apiSecret)) throw unauthorized();
-  });
+  app.addHook('onRequest', bearerAuth(opts.apiSecret));
 
   // Tokens de cada pedido, para as métricas. Somem com o pedido.
   const usage = new WeakMap<FastifyRequest, { inputTokens?: number; outputTokens?: number }>();

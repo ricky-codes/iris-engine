@@ -39,20 +39,25 @@ export function toAppError(err: FastifyError): AppError {
   return new AppError('internal_error', 500, 'Erro interno.');
 }
 
+/** Converte o erro, regista-o no log e guarda o código para as métricas. */
+export function resolveError(err: FastifyError, request: FastifyRequest): AppError {
+  const appError = toAppError(err);
+  errorCodes.set(request, appError.code);
+  if (appError.httpStatus >= 500) {
+    request.log.error({ err }, 'request failed');
+  } else {
+    request.log.info({ code: appError.code, status: appError.httpStatus }, 'request rejected');
+  }
+  return appError;
+}
+
 /**
  * Todas as respostas de erro saem neste formato. As mensagens nunca incluem
  * conteúdo do pedido, e os erros internos não expõem detalhes.
  */
 export function registerErrorHandling(app: FastifyInstance): void {
   app.setErrorHandler((err: FastifyError, request: FastifyRequest, reply: FastifyReply) => {
-    const appError = toAppError(err);
-    errorCodes.set(request, appError.code);
-
-    if (appError.httpStatus >= 500) {
-      request.log.error({ err }, 'request failed');
-    } else {
-      request.log.info({ code: appError.code, status: appError.httpStatus }, 'request rejected');
-    }
+    const appError = resolveError(err, request);
 
     const body: ErrorBody = {
       error: {

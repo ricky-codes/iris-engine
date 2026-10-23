@@ -5,6 +5,7 @@ import type { AppConfig } from './config.js';
 import { registerErrorHandling } from './http/error-handler.js';
 import { healthRoutes, type ReadinessCheck } from './http/routes/health.js';
 import { adminRoutes, type AdminRoutesOptions } from './http/routes/admin.js';
+import { compatRoutes } from './http/routes/compat.js';
 import { toolRoutes, type ToolRoutesOptions } from './http/routes/tools.js';
 
 const PROBE_PATHS = new Set(['/healthz', '/readyz']);
@@ -58,7 +59,10 @@ export async function buildApp({
   registerErrorHandling(app);
 
   await app.register(healthRoutes, { checks: readinessChecks });
-  if (engine !== undefined) await app.register(toolRoutes, engine);
+  if (engine !== undefined) {
+    await app.register(toolRoutes, engine);
+    await app.register(compatRoutes, engine);
+  }
   if (admin !== undefined) await app.register(adminRoutes, admin);
 
   return app;

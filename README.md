@@ -75,6 +75,7 @@ Variáveis de ambiente, validadas no arranque (`src/config.ts`). Com configuraç
 | `GET /readyz`           | Dependências acessíveis (200 ou 503, com estado por check)                                                                                         |
 | `GET /v1/tools`         | Lista as ferramentas disponíveis (precisa de credencial)                                                                                           |
 | `POST /v1/tools/<nome>` | Corre uma ferramenta (precisa de credencial)                                                                                                       |
+| `POST /v1/compat/n8n`   | Aceita o pedido do IRIS Hub (n8n) com `action` e responde `{success, data}`. Hoje só `sentiment`; as outras ações dão 501 `not_implemented`        |
 | `/v1/admin/*`           | API de administração para o StepAccess: estado, métricas, ferramentas, prompts, memórias, playground. Ver [`docs/ADMIN_API.md`](docs/ADMIN_API.md) |
 
 Todas as respostas levam `X-Request-Id`. Os erros têm sempre este formato:

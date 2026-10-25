@@ -21,7 +21,7 @@ const completion = (content: string) =>
   json(200, {
     model: 'google/gemini-2.5-flash',
     choices: [{ message: { content } }],
-    usage: { prompt_tokens: 42, completion_tokens: 7 },
+    usage: { prompt_tokens: 42, completion_tokens: 7, cost: 0.00042 },
   });
 
 describe('OpenRouterProvider', () => {
@@ -34,6 +34,7 @@ describe('OpenRouterProvider', () => {
       model: 'google/gemini-2.5-flash',
       inputTokens: 42,
       outputTokens: 7,
+      costUsd: 0.00042,
     });
     expect(f.calls[0]?.url).toBe('https://openrouter.ai/api/v1/chat/completions');
     const headers = f.calls[0]?.init?.headers as Record<string, string>;
@@ -47,6 +48,7 @@ describe('OpenRouterProvider', () => {
       ],
       temperature: 0.2,
       max_tokens: 300,
+      usage: { include: true },
       response_format: {
         type: 'json_schema',
         json_schema: { name: 'diagnostic_result', strict: true, schema: REQ.output.schema },

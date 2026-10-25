@@ -122,6 +122,7 @@ describe('runTool', () => {
     );
     expect(res.result).toEqual({ reply: 'segunda' });
     expect(res.meta.attempts).toBe(2);
+    expect(res.meta.costUsd).toBeCloseTo(0.002);
   });
 
   it('duas respostas inválidas dão 502 invalid_model_output', async () => {
@@ -132,7 +133,11 @@ describe('runTool', () => {
         tool,
         REQ,
       ),
-    ).rejects.toMatchObject({ code: 'invalid_model_output', httpStatus: 502 });
+    ).rejects.toMatchObject({
+      code: 'invalid_model_output',
+      httpStatus: 502,
+      costUsd: expect.closeTo(0.002) as number,
+    });
     expect(l.requests).toHaveLength(2);
   });
 });

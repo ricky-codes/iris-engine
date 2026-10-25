@@ -17,6 +17,8 @@ export interface LlmResponse {
   model: string;
   inputTokens: number | undefined;
   outputTokens: number | undefined;
+  /** Custo da chamada em dólares (créditos do OpenRouter), quando o fornecedor o indica. */
+  costUsd: number | undefined;
 }
 
 /** Fornecedor de modelos. Lança `AppError` (`provider_unavailable`, `timeout`) se falhar. */

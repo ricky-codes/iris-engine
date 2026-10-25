@@ -56,7 +56,13 @@ export function fakeLlm(...texts: (string | AppError)[]) {
       requests.push(req);
       const next = texts[Math.min(requests.length - 1, texts.length - 1)];
       if (next instanceof AppError) throw next;
-      return { text: next ?? '', model: req.model, inputTokens: 10, outputTokens: 5 };
+      return {
+        text: next ?? '',
+        model: req.model,
+        inputTokens: 10,
+        outputTokens: 5,
+        costUsd: 0.001,
+      };
     },
   };
   return { llm, requests };

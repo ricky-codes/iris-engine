@@ -35,6 +35,7 @@ export interface ModelAttempt {
   model: string;
   inputTokens: number | undefined;
   outputTokens: number | undefined;
+  costUsd: number | undefined;
 }
 
 export interface RunResult {
@@ -45,6 +46,8 @@ export interface RunResult {
     attempts: number;
     inputTokens: number | undefined;
     outputTokens: number | undefined;
+    /** Custo do pedido em dólares: soma de todas as tentativas ao modelo. */
+    costUsd: number | undefined;
     orgMemories: number;
     userMemories: number;
   };
@@ -129,12 +132,14 @@ export async function callModel(
       model: response.model,
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
+      costUsd: response.costUsd,
     });
     if (valid) return { result: parsed, attempts };
   }
   return { result: undefined, attempts };
 }
 
+/** Soma valores opcionais (tokens, custo); `undefined` se nenhum vier preenchido. */
 const sumTokens = (values: (number | undefined)[]): number | undefined =>
   values.every((v) => v === undefined)
     ? undefined
@@ -156,11 +161,16 @@ export async function runTool(
   });
   const { result, attempts } = await callModel(deps.llm, tool, prepared);
   const last = attempts[attempts.length - 1];
+  const costUsd = sumTokens(attempts.map((a) => a.costUsd));
   if (result === undefined || last === undefined) {
-    throw new AppError(
-      'invalid_model_output',
-      502,
-      'O modelo de IA devolveu uma resposta inválida. Tente de novo.',
+    // As tentativas falhadas também custam: o custo vai no log do erro.
+    throw Object.assign(
+      new AppError(
+        'invalid_model_output',
+        502,
+        'O modelo de IA devolveu uma resposta inválida. Tente de novo.',
+      ),
+      { costUsd },
     );
   }
   return {
@@ -170,6 +180,7 @@ export async function runTool(
       attempts: attempts.length,
       inputTokens: sumTokens(attempts.map((a) => a.inputTokens)),
       outputTokens: sumTokens(attempts.map((a) => a.outputTokens)),
+      costUsd,
       orgMemories: prepared.memories.org.length,
       userMemories: prepared.memories.user.length,
     },

@@ -651,17 +651,19 @@ Resposta `200` (mesmo quando o modelo responde mal — ver `ok`):
       "valid": true,
       "model": "google/gemini-2.5-flash",
       "inputTokens": 180,
-      "outputTokens": 14
+      "outputTokens": 14,
+      "costUsd": 0.0000963
     }
   ]
 }
 ```
 
-| Campo              | Significado                                                                                                                         |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `ok`               | `true` = resposta válida em `result`. `false` = as duas tentativas não cumpriram o esquema (`result: null`; ver `attempts[].text`). |
-| `attempts`         | 1 ou 2 tentativas, com o texto bruto devolvido pelo modelo.                                                                         |
-| `attempts[].model` | Modelo que de facto respondeu (o OpenRouter pode indicar uma variante).                                                             |
+| Campo                | Significado                                                                                                                         |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `ok`                 | `true` = resposta válida em `result`. `false` = as duas tentativas não cumpriram o esquema (`result: null`; ver `attempts[].text`). |
+| `attempts`           | 1 ou 2 tentativas, com o texto bruto devolvido pelo modelo.                                                                         |
+| `attempts[].model`   | Modelo que de facto respondeu (o OpenRouter pode indicar uma variante).                                                             |
+| `attempts[].costUsd` | Custo da tentativa em dólares, indicado pelo OpenRouter (ausente se não vier).                                                      |
 
 Erros do modelo (rede, chave, créditos, modelo sem suporte) dão `502 provider_unavailable`; tempo esgotado `504 timeout`.
 

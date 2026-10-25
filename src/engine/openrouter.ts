@@ -5,7 +5,7 @@ import type { LlmProvider, LlmRequest, LlmResponse } from './llm.js';
 interface ChatCompletion {
   model?: string;
   choices?: { message?: { content?: string | null } }[];
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
   error?: { code?: number; message?: string };
 }
 
@@ -32,6 +32,8 @@ export class OpenRouterProvider implements LlmProvider {
       ],
       temperature: request.temperature,
       max_tokens: request.maxOutputTokens,
+      // Pede o custo da chamada na resposta (usage.cost).
+      usage: { include: true },
       response_format: {
         type: 'json_schema',
         json_schema: { name: request.output.name, strict: true, schema: request.output.schema },
@@ -89,6 +91,7 @@ export class OpenRouterProvider implements LlmProvider {
       model: json.model ?? request.model,
       inputTokens: json.usage?.prompt_tokens,
       outputTokens: json.usage?.completion_tokens,
+      costUsd: typeof json.usage?.cost === 'number' ? json.usage.cost : undefined,
     };
   }
 }

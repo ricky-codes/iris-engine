@@ -5,18 +5,23 @@ import type { LlmProvider } from './llm.js';
 import { buildSystemPrompt } from './prompt.js';
 import type { EngineStore, RequestMemories, ToolSettings } from './store.js';
 import type { ToolDefinition } from './tool.js';
+import type { UsageReporter } from './usage.js';
 
 export interface EngineDeps {
   access: AccessChecker;
   store: EngineStore;
   llm: LlmProvider;
   defaultModel: string;
+  /** Para onde vai o custo de cada pedido. Sem ele, o custo só fica no log. */
+  usage?: UsageReporter;
 }
 
 export interface RunRequest {
   orgId: string;
   userId: string;
   input: Record<string, unknown>;
+  /** Id do pedido HTTP, enviado com o custo. */
+  requestId?: string;
 }
 
 /** Tudo o que vai para o modelo, já montado. */
@@ -162,6 +167,23 @@ export async function runTool(
   const { result, attempts } = await callModel(deps.llm, tool, prepared);
   const last = attempts[attempts.length - 1];
   const costUsd = sumTokens(attempts.map((a) => a.costUsd));
+  const inputTokens = sumTokens(attempts.map((a) => a.inputTokens));
+  const outputTokens = sumTokens(attempts.map((a) => a.outputTokens));
+  if (last !== undefined && request.requestId !== undefined) {
+    deps.usage?.report({
+      requestId: request.requestId,
+      orgId: request.orgId,
+      userId: request.userId,
+      tool: tool.name,
+      outcome: result === undefined ? 'invalid_model_output' : 'success',
+      model: last.model,
+      attempts: attempts.length,
+      inputTokens,
+      outputTokens,
+      costUsd,
+      occurredAt: new Date().toISOString(),
+    });
+  }
   if (result === undefined || last === undefined) {
     // As tentativas falhadas também custam: o custo vai no log do erro.
     throw Object.assign(
@@ -178,8 +200,8 @@ export async function runTool(
     meta: {
       model: last.model,
       attempts: attempts.length,
-      inputTokens: sumTokens(attempts.map((a) => a.inputTokens)),
-      outputTokens: sumTokens(attempts.map((a) => a.outputTokens)),
+      inputTokens,
+      outputTokens,
       costUsd,
       orgMemories: prepared.memories.org.length,
       userMemories: prepared.memories.user.length,

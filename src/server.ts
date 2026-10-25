@@ -10,6 +10,7 @@ import { Metrics } from './engine/metrics.js';
 import { ModelCatalog } from './engine/models.js';
 import { OpenRouterProvider } from './engine/openrouter.js';
 import { PgEngineStore, syncToolCatalog } from './engine/store.js';
+import { StepAccessUsageReporter } from './engine/usage.js';
 import type { ToolDefinition } from './engine/tool.js';
 import type { AdminRoutesOptions, StatusReport } from './http/routes/admin.js';
 import type { ToolRoutesOptions } from './http/routes/tools.js';
@@ -66,6 +67,10 @@ function buildEngine(
         store: new PgEngineStore(pool),
         llm: new OpenRouterProvider(cfg.openRouter, fetch, warn),
         defaultModel: cfg.defaultModel,
+        ...(cfg.stepAccess !== undefined &&
+          cfg.stepAccess !== 'bypass' && {
+            usage: new StepAccessUsageReporter(cfg.stepAccess, fetch, warn),
+          }),
       },
     },
   };

@@ -3,6 +3,7 @@ import { buildSystemPrompt } from '../../src/engine/prompt.js';
 import { parseModelJson, runTool } from '../../src/engine/run.js';
 import type { ToolDefinition } from '../../src/engine/tool.js';
 import { AppError } from '../../src/http/errors.js';
+import type { CostEvent } from '../../src/engine/usage.js';
 import { diagnosticTool } from '../../src/tools/diagnostic.js';
 import { fakeAccess, fakeLlm, fakeStore } from './fakes.js';
 
@@ -139,5 +140,76 @@ describe('runTool', () => {
       costUsd: expect.closeTo(0.002) as number,
     });
     expect(l.requests).toHaveLength(2);
+  });
+});
+
+describe('runTool: custo do pedido', () => {
+  function usage() {
+    const events: CostEvent[] = [];
+    return { usage: { report: (e: CostEvent) => events.push(e) }, events };
+  }
+
+  it('envia o custo com o id do pedido quando a resposta é válida', async () => {
+    const u = usage();
+    await runTool(
+      {
+        access: fakeAccess().access,
+        store: fakeStore(),
+        llm: fakeLlm('{"reply":"ok"}').llm,
+        defaultModel: 'm',
+        usage: u.usage,
+      },
+      tool,
+      { ...REQ, requestId: 'req-1' },
+    );
+    expect(u.events).toEqual([
+      expect.objectContaining({
+        requestId: 'req-1',
+        orgId: REQ.orgId,
+        userId: REQ.userId,
+        tool: 'diagnostic',
+        outcome: 'success',
+        attempts: 1,
+        inputTokens: 10,
+        outputTokens: 5,
+        costUsd: 0.001,
+      }),
+    ]);
+  });
+
+  it('as tentativas falhadas também são enviadas', async () => {
+    const u = usage();
+    await expect(
+      runTool(
+        {
+          access: fakeAccess().access,
+          store: fakeStore(),
+          llm: fakeLlm('x', 'y').llm,
+          defaultModel: 'm',
+          usage: u.usage,
+        },
+        tool,
+        { ...REQ, requestId: 'req-2' },
+      ),
+    ).rejects.toMatchObject({ code: 'invalid_model_output' });
+    expect(u.events[0]).toMatchObject({ outcome: 'invalid_model_output', attempts: 2 });
+  });
+
+  it('sem chegar ao modelo (sem acesso) não há custo', async () => {
+    const u = usage();
+    await expect(
+      runTool(
+        {
+          access: fakeAccess(new AppError('access_denied', 403, 'Sem acesso.')).access,
+          store: fakeStore(),
+          llm: fakeLlm('{"reply":"ok"}').llm,
+          defaultModel: 'm',
+          usage: u.usage,
+        },
+        tool,
+        { ...REQ, requestId: 'req-3' },
+      ),
+    ).rejects.toMatchObject({ code: 'access_denied' });
+    expect(u.events).toHaveLength(0);
   });
 });

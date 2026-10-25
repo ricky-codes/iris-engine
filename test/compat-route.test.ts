@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { Metrics } from '../src/engine/metrics.js';
+import type { CostEvent } from '../src/engine/usage.js';
 import type { ToolDefinition } from '../src/engine/tool.js';
 import { AppError } from '../src/http/errors.js';
 import { sentimentTool } from '../src/tools/sentiment.js';
@@ -46,15 +47,22 @@ afterEach(async () => {
 
 async function start(access = fakeAccess(), metrics?: Metrics) {
   const llm = fakeLlm(JSON.stringify(RESULT));
+  const costs: CostEvent[] = [];
   app = await buildTestApp({
     engine: {
       tools: [sentimentTool as unknown as ToolDefinition],
       apiSecret: SECRET,
-      deps: { access: access.access, store: fakeStore(), llm: llm.llm, defaultModel: 'm' },
+      deps: {
+        access: access.access,
+        store: fakeStore(),
+        llm: llm.llm,
+        defaultModel: 'm',
+        usage: { report: (e) => costs.push(e) },
+      },
       ...(metrics && { metrics }),
     },
   });
-  return { app, access, llm };
+  return { app, access, llm, costs };
 }
 
 const post = (a: FastifyInstance, payload: unknown, headers: Record<string, string> = AUTH) =>
@@ -66,6 +74,13 @@ describe('POST /v1/compat/n8n', () => {
     const res = await post(app, BODY);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ success: true, data: RESULT });
+  });
+
+  it('envia o custo com o mesmo id do X-Request-Id', async () => {
+    const { app, costs } = await start();
+    const res = await post(app, BODY);
+    expect(costs).toHaveLength(1);
+    expect(costs[0]).toMatchObject({ requestId: res.headers['x-request-id'], tool: 'sentiment' });
   });
 
   it('não envia ao modelo emails nem moradas de email', async () => {

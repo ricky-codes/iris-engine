@@ -96,7 +96,12 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
       );
 
       const started = performance.now();
-      const { result, meta } = await runTool(opts.deps, tool, { orgId, userId, input });
+      const { result, meta } = await runTool(opts.deps, tool, {
+        orgId,
+        userId,
+        input,
+        requestId: request.id,
+      });
       usage.set(request, {
         ...(meta.inputTokens !== undefined && { inputTokens: meta.inputTokens }),
         ...(meta.outputTokens !== undefined && { outputTokens: meta.outputTokens }),

@@ -102,6 +102,7 @@ export const compatRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async 
       orgId: body.orgId,
       userId: body.userId,
       input,
+      requestId: request.id,
     });
     usage.set(request, {
       tool: tool.name,

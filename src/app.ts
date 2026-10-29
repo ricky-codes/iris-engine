@@ -6,6 +6,7 @@ import { registerErrorHandling } from './http/error-handler.js';
 import { healthRoutes, type ReadinessCheck } from './http/routes/health.js';
 import { adminRoutes, type AdminRoutesOptions } from './http/routes/admin.js';
 import { compatRoutes } from './http/routes/compat.js';
+import { memoryRoutes, type MemoryRoutesOptions } from './http/routes/memories.js';
 import { toolRoutes, type ToolRoutesOptions } from './http/routes/tools.js';
 
 const PROBE_PATHS = new Set(['/healthz', '/readyz']);
@@ -15,6 +16,8 @@ export interface BuildAppOptions {
   readinessChecks?: ReadinessCheck[];
   /** Sem motor não há rotas de ferramentas (`/v1/*`). */
   engine?: ToolRoutesOptions;
+  /** Sem opções não há rotas de memórias (`/v1/memories`). */
+  memories?: MemoryRoutesOptions;
   /** Sem opções não há API de administração (`/v1/admin/*`). */
   admin?: AdminRoutesOptions;
   /** Destino dos logs; só os testes o definem. */
@@ -25,6 +28,7 @@ export async function buildApp({
   config,
   readinessChecks = [],
   engine,
+  memories,
   admin,
   logStream,
 }: BuildAppOptions): Promise<FastifyInstance> {
@@ -63,6 +67,7 @@ export async function buildApp({
     await app.register(toolRoutes, engine);
     await app.register(compatRoutes, engine);
   }
+  if (memories !== undefined) await app.register(memoryRoutes, memories);
   if (admin !== undefined) await app.register(adminRoutes, admin);
 
   return app;

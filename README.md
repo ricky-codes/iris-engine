@@ -69,14 +69,17 @@ Variáveis de ambiente, validadas no arranque (`src/config.ts`). Com configuraç
 
 ## Endpoints
 
-| Método e caminho        | Função                                                                                                                                             |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /healthz`          | Processo vivo                                                                                                                                      |
-| `GET /readyz`           | Dependências acessíveis (200 ou 503, com estado por check)                                                                                         |
-| `GET /v1/tools`         | Lista as ferramentas disponíveis (precisa de credencial)                                                                                           |
-| `POST /v1/tools/<nome>` | Corre uma ferramenta (precisa de credencial)                                                                                                       |
-| `POST /v1/compat/n8n`   | Aceita o pedido do IRIS Hub (n8n) com `action` e responde `{success, data}`. Hoje só `sentiment`; as outras ações dão 501 `not_implemented`        |
-| `/v1/admin/*`           | API de administração para o StepAccess: estado, métricas, ferramentas, prompts, memórias, playground. Ver [`docs/ADMIN_API.md`](docs/ADMIN_API.md) |
+| Método e caminho           | Função                                                                                                                                             |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /healthz`             | Processo vivo                                                                                                                                      |
+| `GET /readyz`              | Dependências acessíveis (200 ou 503, com estado por check)                                                                                         |
+| `GET /v1/tools`            | Lista as ferramentas disponíveis (precisa de credencial)                                                                                           |
+| `POST /v1/tools/<nome>`    | Corre uma ferramenta (precisa de credencial)                                                                                                       |
+| `GET /v1/memories`         | Regras da org e memórias do utilizador (`?orgId=…&userId=…`, opcional `&tool=…`). Precisa de credencial; não conta utilização no StepAccess        |
+| `POST /v1/memories`        | Guarda uma memória do utilizador (`{orgId, userId, content, tools?}`). Precisa de credencial; não conta utilização                                 |
+| `DELETE /v1/memories/<id>` | Apaga uma memória do próprio utilizador (`?orgId=…&userId=…`); as da org e as de colegas dão 404                                                   |
+| `POST /v1/compat/n8n`      | Aceita o pedido do IRIS Hub (n8n) com `action` e responde `{success, data}`. Hoje só `sentiment`; as outras ações dão 501 `not_implemented`        |
+| `/v1/admin/*`              | API de administração para o StepAccess: estado, métricas, ferramentas, prompts, memórias, playground. Ver [`docs/ADMIN_API.md`](docs/ADMIN_API.md) |
 
 Todas as respostas levam `X-Request-Id`. Os erros têm sempre este formato:
 
@@ -197,6 +200,7 @@ src/
     error-handler.ts      conversão de todos os erros para o formato comum
     routes/health.ts      /healthz e /readyz
     routes/tools.ts       /v1/tools e /v1/tools/<nome>, com a credencial
+    routes/memories.ts    /v1/memories: o utilizador vê, cria e apaga as suas memórias
     routes/admin.ts       /v1/admin/* (docs/ADMIN_API.md)
   engine/                 o motor: não importa do servidor, dos adaptadores nem da configuração (regra de lint)
     tool.ts               o contrato de uma ferramenta

@@ -1,6 +1,6 @@
 import type { AccessChecker } from '../../src/engine/access.js';
 import type { LlmProvider, LlmRequest, LlmResponse } from '../../src/engine/llm.js';
-import type { MemoryStore, RequestMemories } from '../../src/engine/memory.js';
+import type { Memory, MemoryStore, RequestMemories } from '../../src/engine/memory.js';
 import type { EngineStore, ToolSettings } from '../../src/engine/store.js';
 import type { ToolDefaults } from '../../src/engine/tool.js';
 import { EngineError } from '../../src/engine/errors.js';
@@ -68,4 +68,46 @@ export function fakeLlm(...texts: (string | EngineError)[]) {
     },
   };
   return { llm, requests };
+}
+
+/** Um `MemoryStore` em memória, com os filtros por dono, âmbito e ferramenta. */
+export function fakeMemoryStore() {
+  const rows = new Map<string, Memory>();
+  let next = 0;
+  const matches = (m: Memory, f: Parameters<MemoryStore['list']>[0]): boolean =>
+    (f.orgId === undefined || m.orgId === f.orgId) &&
+    (f.userId === undefined || m.userId === f.userId) &&
+    (f.scope === undefined || m.scope === f.scope) &&
+    (f.tool === undefined || m.tools.length === 0 || m.tools.includes(f.tool));
+  const store: MemoryStore = {
+    forRequest: async () => ({ org: [], user: [] }),
+    list: async (filter) => [...rows.values()].filter((m) => matches(m, filter)),
+    count: async (filter) => [...rows.values()].filter((m) => matches(m, filter)).length,
+    get: async (id) => rows.get(id),
+    create: async ({ owner, source, content, tools }) => {
+      next += 1;
+      const id = `00000000-0000-4000-8000-${String(next).padStart(12, '0')}`;
+      const now = new Date();
+      rows.set(id, {
+        id,
+        scope: owner.userId === undefined ? 'org' : 'user',
+        source,
+        orgId: owner.orgId,
+        userId: owner.userId ?? null,
+        content,
+        tools,
+        createdAt: now,
+        updatedAt: now,
+      });
+      return id;
+    },
+    update: async (id, change) => {
+      const m = rows.get(id);
+      if (m !== undefined) rows.set(id, { ...m, ...change });
+    },
+    delete: async (id) => rows.delete(id),
+    deleteAllOf: async () => 0,
+    summary: async (orgId) => ({ orgId, org: { count: 0, limit: 50 }, users: [] }),
+  };
+  return { store, rows };
 }

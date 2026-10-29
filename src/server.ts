@@ -176,9 +176,16 @@ async function main(): Promise<void> {
   const { engine, missing } = buildEngine(config, pool, tools, metrics);
   const admin = buildAdmin(config, pool, tools, metrics, { ready: engine !== undefined, missing });
 
+  // As memórias só precisam da base de dados e do segredo do Salesforce, não do StepAccess.
+  const memories =
+    pool === undefined || config.engine.apiSecret === undefined
+      ? undefined
+      : { memories: new Memories(new PgMemoryStore(pool)), apiSecret: config.engine.apiSecret };
+
   const app = await buildApp({
     config,
     ...(engine && { engine }),
+    ...(memories && { memories }),
     ...(admin && { admin }),
     readinessChecks:
       pool === undefined
@@ -202,6 +209,7 @@ async function main(): Promise<void> {
     }
     app.log.info({ tools: engine.tools.map((t) => t.name) }, 'motor pronto');
   }
+  if (memories !== undefined) app.log.info('memórias ligadas em /v1/memories');
   app.log.info(
     admin === undefined
       ? 'API de administração desligada (falta ADMIN_API_SECRET ou DATABASE_URL)'

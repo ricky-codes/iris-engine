@@ -122,6 +122,11 @@ export class Memories {
     return { items, total };
   }
 
+  /** Quantas memórias cumprem o filtro. */
+  count(filter: MemoryFilter = {}): Promise<number> {
+    return this.store.count(filter);
+  }
+
   /** Uma memória pelo id, ou `undefined` se não existir. */
   get(id: string): Promise<Memory | undefined> {
     return this.store.get(id);

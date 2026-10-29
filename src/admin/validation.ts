@@ -1,4 +1,4 @@
-import { MAX_MEMORY_CHARS } from '../memory/limits.js';
+import { MAX_MEMORY_CHARS } from '../engine/memory.js';
 
 /**
  * Validações dos dados que um administrador escreve. Cada função devolve a mensagem

@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { PgMemoryStore } from '../../src/adapters/postgres-memory-store.js';
+import { Memories } from '../../src/engine/memory.js';
 import { PgEngineStore, syncToolCatalog } from '../../src/adapters/postgres-store.js';
 import { TEST_DATABASE_URL, addMemory, createTestDb, sfId, type TestDb } from './helpers.js';
 
@@ -7,9 +9,11 @@ const DEFAULTS = { temperature: 0.2, maxOutputTokens: 300, timeoutMs: 20_000 };
 describe.skipIf(TEST_DATABASE_URL === undefined)('o que o motor lê da base de dados', () => {
   let db: TestDb;
   let store: PgEngineStore;
+  let memories: PgMemoryStore;
   beforeAll(async () => {
     db = await createTestDb();
     store = new PgEngineStore(db.pool);
+    memories = new PgMemoryStore(db.pool);
   });
   afterAll(async () => {
     await db.close();
@@ -23,7 +27,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('o que o motor lê da base de d
     await addMemory(db.pool, { org, user: sfId('005') }, 'de um colega');
     await addMemory(db.pool, { org: sfId('00D') }, 'de outra org');
 
-    expect(await store.memoriesFor({ orgId: org, userId: me, tool: 'reply' })).toEqual({
+    expect(await memories.forRequest({ orgId: org, userId: me, tool: 'reply' })).toEqual({
       org: ['regra da org'],
       user: ['minha preferência'],
     });
@@ -37,12 +41,12 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('o que o motor lê da base de d
       [id],
     );
     const user = sfId('005');
-    expect((await store.memoriesFor({ orgId: org, userId: user, tool: 'reply' })).org).toEqual([
+    expect((await memories.forRequest({ orgId: org, userId: user, tool: 'reply' })).org).toEqual([
       'só nas respostas',
     ]);
-    expect((await store.memoriesFor({ orgId: org, userId: user, tool: 'sentiment' })).org).toEqual(
-      [],
-    );
+    expect(
+      (await memories.forRequest({ orgId: org, userId: user, tool: 'sentiment' })).org,
+    ).toEqual([]);
   });
 
   it('sem configuração na base de dados, usa os valores da ferramenta e o modelo por omissão', async () => {
@@ -85,5 +89,29 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('o que o motor lê da base de d
     });
     const { rows } = await db.pool.query("SELECT 1 FROM tool WHERE code = 'diagnostic'");
     expect(rows).toHaveLength(1);
+  });
+
+  it('guarda memórias de utilizador pelo núcleo, com o limite de 20 explicado', async () => {
+    const org = sfId('00D');
+    const me = sfId('005');
+    const core = new Memories(memories);
+    const m = await core.remember({
+      owner: { orgId: org, userId: me },
+      source: 'user',
+      content: 'Respostas curtas.',
+    });
+    expect(m).toMatchObject({ scope: 'user', source: 'user', orgId: org, userId: me, tools: [] });
+    expect(await memories.forRequest({ orgId: org, userId: me, tool: 'reply' })).toEqual({
+      org: [],
+      user: ['Respostas curtas.'],
+    });
+
+    for (let i = 0; i < 19; i++) await addMemory(db.pool, { org, user: me }, `m${String(i)}`);
+    await expect(
+      core.remember({ owner: { orgId: org, userId: me }, source: 'user', content: 'a mais' }),
+    ).rejects.toMatchObject({
+      code: 'memory_limit_reached',
+      message: expect.stringMatching(/já tem 20 memórias/) as string,
+    });
   });
 });

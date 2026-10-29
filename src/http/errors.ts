@@ -53,6 +53,10 @@ const ENGINE_HTTP_STATUS: Record<EngineErrorCode, number> = {
   provider_unavailable: 502,
   timeout: 504,
   invalid_model_output: 502,
+  invalid_request: 422,
+  not_found: 404,
+  forbidden: 403,
+  memory_limit_reached: 409,
 };
 
 /** Um erro do motor no formato da API. O código e a mensagem passam tal como estão. */

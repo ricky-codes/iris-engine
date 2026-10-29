@@ -1,6 +1,7 @@
 import type { AccessChecker } from '../../src/engine/access.js';
 import type { LlmProvider, LlmRequest, LlmResponse } from '../../src/engine/llm.js';
-import type { EngineStore, RequestMemories, ToolSettings } from '../../src/engine/store.js';
+import type { MemoryStore, RequestMemories } from '../../src/engine/memory.js';
+import type { EngineStore, ToolSettings } from '../../src/engine/store.js';
 import type { ToolDefaults } from '../../src/engine/tool.js';
 import { EngineError } from '../../src/engine/errors.js';
 
@@ -31,12 +32,12 @@ export function fakeAccess(outcome: 'allow' | EngineError = 'allow') {
   return { access, calls };
 }
 
+/** A configuração e as memórias que o motor lê, para espalhar nas dependências (`...fakeStore()`). */
 export function fakeStore(
   memories: RequestMemories = { org: [], user: [] },
   overrides: Partial<ToolSettings> = {},
 ) {
   const store: EngineStore = {
-    memoriesFor: async () => memories,
     settingsFor: async (_tool: string, defaults: ToolDefaults, defaultModel: string) => ({
       ...defaults,
       model: defaultModel,
@@ -45,7 +46,8 @@ export function fakeStore(
       ...overrides,
     }),
   };
-  return store;
+  const memoryReader: Pick<MemoryStore, 'forRequest'> = { forRequest: async () => memories };
+  return { store, memories: memoryReader };
 }
 
 /** Devolve as respostas por ordem; a última repete-se. */

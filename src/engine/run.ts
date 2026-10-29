@@ -3,13 +3,16 @@ import type { AccessChecker } from './access.js';
 import { EngineError } from './errors.js';
 import type { LlmProvider } from './llm.js';
 import { buildSystemPrompt } from './prompt.js';
-import type { EngineStore, RequestMemories, ToolSettings } from './store.js';
+import type { MemoryStore, RequestMemories } from './memory.js';
+import type { EngineStore, ToolSettings } from './store.js';
 import type { ToolDefinition } from './tool.js';
 import type { UsageReporter } from './usage.js';
 
 export interface EngineDeps {
   access: AccessChecker;
   store: EngineStore;
+  /** De onde vêm as memórias da org e do utilizador (`Memories` ou um `MemoryStore`). */
+  memories: Pick<MemoryStore, 'forRequest'>;
   llm: LlmProvider;
   defaultModel: string;
   /** Para onde vai o custo de cada pedido. Sem ele, o custo só fica no log. */
@@ -75,7 +78,7 @@ export function parseModelJson(text: string): unknown {
  * O playground de admin usa isto sem verificar acesso nem se a ferramenta está ligada.
  */
 export async function prepareRun(
-  deps: Pick<EngineDeps, 'access' | 'store' | 'defaultModel'>,
+  deps: Pick<EngineDeps, 'access' | 'store' | 'memories' | 'defaultModel'>,
   tool: ToolDefinition,
   request: RunRequest,
   opts: {
@@ -94,7 +97,7 @@ export async function prepareRun(
 
   if (opts.checkAccess) await deps.access.check({ orgId: request.orgId, userId: request.userId });
 
-  const memories = await deps.store.memoriesFor({
+  const memories = await deps.memories.forRequest({
     orgId: request.orgId,
     userId: request.userId,
     tool: tool.name,

@@ -1,4 +1,4 @@
-import type { RequestMemories } from './store.js';
+import type { RequestMemories } from './memory.js';
 
 /** Uma memória fica numa só linha: não pode criar secções nem imitar instruções do sistema. */
 const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim();

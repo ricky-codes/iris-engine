@@ -8,10 +8,12 @@ import { BypassAccessChecker } from './adapters/bypass-access.js';
 import { checkOpenRouter, checkStepAccess, timed, type CheckResult } from './adapters/health.js';
 import { ModelCatalog } from './adapters/openrouter-models.js';
 import { OpenRouterProvider } from './adapters/openrouter.js';
+import { PgMemoryStore } from './adapters/postgres-memory-store.js';
 import { PgEngineStore, syncToolCatalog } from './adapters/postgres-store.js';
 import { StepAccessClient } from './adapters/stepaccess-access.js';
 import { StepAccessUsageReporter } from './adapters/stepaccess-usage.js';
 import type { AccessChecker } from './engine/access.js';
+import { Memories } from './engine/memory.js';
 import { Metrics } from './engine/metrics.js';
 import type { ToolDefinition } from './engine/tool.js';
 import type { AdminRoutesOptions, StatusReport } from './http/routes/admin.js';
@@ -67,6 +69,7 @@ function buildEngine(
       deps: {
         access,
         store: new PgEngineStore(pool),
+        memories: new Memories(new PgMemoryStore(pool)),
         llm: new OpenRouterProvider(cfg.openRouter, fetch, warn),
         defaultModel: cfg.defaultModel,
         ...(cfg.stepAccess !== undefined &&
@@ -140,6 +143,7 @@ function buildAdmin(
         ? undefined
         : {
             store: new PgEngineStore(pool),
+            memories: new Memories(new PgMemoryStore(pool)),
             llm: new OpenRouterProvider(cfg.openRouter, fetch, warn),
             access: accessChecker(config),
           },

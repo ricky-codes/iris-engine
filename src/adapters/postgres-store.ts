@@ -1,38 +1,9 @@
 import type { Pool } from 'pg';
-import type { EngineStore, RequestMemories, ToolSettings } from '../engine/store.js';
+import type { EngineStore, ToolSettings } from '../engine/store.js';
 import type { ToolDefaults } from '../engine/tool.js';
 
 export class PgEngineStore implements EngineStore {
   constructor(private readonly pool: Pool) {}
-
-  async memoriesFor({
-    orgId,
-    userId,
-    tool,
-  }: {
-    orgId: string;
-    userId: string;
-    tool: string;
-  }): Promise<RequestMemories> {
-    // Memórias da org e do utilizador que valem para esta ferramenta (ou para todas).
-    const { rows } = await this.pool.query<{ scope: 'org' | 'user'; content: string }>(
-      `SELECT sc.code AS scope, m.content
-       FROM memory m
-       JOIN memory_scope sc ON sc.memory_scope_id = m.memory_scope_id
-       LEFT JOIN org_memory om  ON om.memory_id = m.memory_id
-       LEFT JOIN user_memory um ON um.memory_id = m.memory_id
-       WHERE (om.sf_org_ref = $1 OR (um.sf_org_ref = $1 AND um.sf_user_ref = $2))
-         AND (NOT EXISTS (SELECT 1 FROM memory_tool mt WHERE mt.memory_id = m.memory_id)
-              OR EXISTS (SELECT 1 FROM memory_tool mt JOIN tool t ON t.tool_id = mt.tool_id
-                         WHERE mt.memory_id = m.memory_id AND t.code = $3))
-       ORDER BY m.created_at, m.memory_id`,
-      [orgId, userId, tool],
-    );
-    return {
-      org: rows.filter((r) => r.scope === 'org').map((r) => r.content),
-      user: rows.filter((r) => r.scope === 'user').map((r) => r.content),
-    };
-  }
 
   async settingsFor(
     tool: string,

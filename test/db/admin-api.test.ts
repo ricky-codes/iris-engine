@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { Metrics } from '../../src/engine/metrics.js';
+import { PgMemoryStore } from '../../src/adapters/postgres-memory-store.js';
 import { PgEngineStore, syncToolCatalog } from '../../src/adapters/postgres-store.js';
 import type { ToolDefinition } from '../../src/engine/tool.js';
 import { diagnosticTool } from '../../src/tools/diagnostic.js';
@@ -63,7 +64,12 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
             ],
           }),
         },
-        playground: { store: new PgEngineStore(db.pool), llm: llm.llm, access: access.access },
+        playground: {
+          store: new PgEngineStore(db.pool),
+          memories: new PgMemoryStore(db.pool),
+          llm: llm.llm,
+          access: access.access,
+        },
       },
     });
   });
@@ -367,7 +373,12 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
           metrics,
           status: async () => ({}),
           models: { list: async () => ({ fetchedAt: '', models: [] }) },
-          playground: { store: new PgEngineStore(db.pool), llm: llm.llm, access: undefined },
+          playground: {
+            store: new PgEngineStore(db.pool),
+            memories: new PgMemoryStore(db.pool),
+            llm: llm.llm,
+            access: undefined,
+          },
         },
       });
       const res = await send(

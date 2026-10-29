@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import { ConfigError, loadConfig } from '../config.js';
 import { createPool } from '../db/pool.js';
+import { EngineError } from '../engine/errors.js';
 import { AdminError, createOrgMemory, deleteMemoriesOf, deleteMemory } from './commands.js';
 import { listMemories } from './queries.js';
 import { validateMemoryId } from './validation.js';
@@ -112,7 +113,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  if (err instanceof AdminError || err instanceof ConfigError) {
+  if (err instanceof AdminError || err instanceof EngineError || err instanceof ConfigError) {
     console.error(err.message);
   } else if (
     err instanceof Error &&

@@ -11,13 +11,7 @@ import {
   deleteMemory,
   updateOrgMemory,
 } from '../../admin/commands.js';
-import {
-  countMemories,
-  getMemory,
-  listMemories,
-  memorySummary,
-  type MemoryRow,
-} from '../../admin/queries.js';
+import { getMemory, pageOfMemories, memorySummary, type MemoryRow } from '../../admin/queries.js';
 import {
   createPromptVersion,
   listPromptVersions,
@@ -31,7 +25,7 @@ import type { AccessChecker } from '../../engine/access.js';
 import type { LlmProvider } from '../../engine/llm.js';
 import type { Metrics } from '../../engine/metrics.js';
 import type { ModelInfo } from '../../adapters/openrouter-models.js';
-import { callModel, prepareRun } from '../../engine/run.js';
+import { callModel, prepareRun, type EngineDeps } from '../../engine/run.js';
 import type { EngineStore } from '../../engine/store.js';
 import type { ToolDefinition } from '../../engine/tool.js';
 import { AppError, type ErrorDetail } from '../errors.js';
@@ -52,6 +46,7 @@ export interface AdminRoutesOptions {
   playground:
     | {
         store: EngineStore;
+        memories: EngineDeps['memories'];
         llm: LlmProvider;
         /** Para contar utilização a pedido. Sem StepAccess configurado, `undefined`. */
         access: AccessChecker | undefined;
@@ -71,10 +66,6 @@ function toApiError(err: unknown): unknown {
   switch (err.kind) {
     case 'not_found':
       return new AppError('not_found', 404, err.message);
-    case 'limit':
-      return new AppError('memory_limit_reached', 409, err.message);
-    case 'forbidden':
-      return new AppError('forbidden', 403, err.message);
     case 'invalid':
       return new AppError('invalid_request', 422, err.message);
   }
@@ -408,10 +399,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
       };
       const limit = q.limit === undefined ? 50 : Number(q.limit);
       const offset = q.offset === undefined ? 0 : Number(q.offset);
-      const [items, total] = await Promise.all([
-        listMemories(opts.pool, filter, { limit, offset }),
-        countMemories(opts.pool, filter),
-      ]);
+      const { items, total } = await pageOfMemories(opts.pool, filter, { limit, offset });
       return { items: items.map(memoryJson), total, limit, offset };
     },
   );
@@ -564,6 +552,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
         {
           access: deps.access ?? { check: async () => undefined },
           store: deps.store,
+          memories: deps.memories,
           defaultModel: opts.defaultModel,
         },
         tool,
@@ -617,6 +606,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
         {
           access: deps.access ?? { check: async () => undefined },
           store: deps.store,
+          memories: deps.memories,
           defaultModel: opts.defaultModel,
         },
         tool,

@@ -204,7 +204,8 @@ src/
     errors.ts             EngineError: código estável, sem estado HTTP
     access.ts             interface de quem decide o acesso
     llm.ts                interface do fornecedor de modelos
-    store.ts              interface do que o motor lê da base de dados
+    store.ts              interface da configuração das ferramentas que o motor lê
+    memory.ts             memórias de orgs e utilizadores: guardar, ver, alterar, apagar, juntar ao prompt; limites
     usage.ts              interface de quem recebe o custo de cada pedido
     prompt.ts             junta o prompt da ferramenta com as memórias
     metrics.ts            contadores agregados em memória (sem conteúdo)
@@ -214,16 +215,15 @@ src/
     bypass-access.ts      acesso sem StepAccess (só fora de produção)
     openrouter.ts         cliente do OpenRouter
     openrouter-models.ts  catálogo de modelos do OpenRouter
-    postgres-store.ts     leitura da base de dados; registo do catálogo de ferramentas
+    postgres-store.ts     configuração das ferramentas; registo do catálogo de ferramentas
+    postgres-memory-store.ts  as memórias no Postgres
     health.ts             verificações do StepAccess e do OpenRouter
     fetch.ts              o tipo do fetch que os adaptadores recebem
   tools/
     index.ts              as ferramentas ativas
     diagnostic.ts         ferramenta de teste de ligação
-  memory/
-    limits.ts             limites das memórias (os mesmos da base de dados)
   admin/
-    commands.ts           criar, alterar e apagar memórias
+    commands.ts           criar, alterar e apagar memórias (valida os ids do Salesforce e passa ao motor)
     tools.ts              configuração das ferramentas e versões dos prompts
     queries.ts            listar memórias e ferramentas
     validation.ts         validações dos dados que o administrador escreve

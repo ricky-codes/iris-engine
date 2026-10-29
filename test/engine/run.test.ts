@@ -53,7 +53,7 @@ describe('runTool', () => {
     const res = await runTool(
       {
         access: a.access,
-        store: fakeStore({ org: ['Tratar por você.'], user: [] }),
+        ...fakeStore({ org: ['Tratar por você.'], user: [] }),
         llm: l.llm,
         defaultModel: 'm',
       },
@@ -73,7 +73,7 @@ describe('runTool', () => {
     await runTool(
       {
         access: fakeAccess().access,
-        store: fakeStore(undefined, { model: 'outro/modelo', systemPrompt: 'Prompt da BD.' }),
+        ...fakeStore(undefined, { model: 'outro/modelo', systemPrompt: 'Prompt da BD.' }),
         llm: l.llm,
         defaultModel: 'm',
       },
@@ -89,7 +89,7 @@ describe('runTool', () => {
     const denied = new EngineError('access_denied', 'Sem acesso.');
     await expect(
       runTool(
-        { access: fakeAccess(denied).access, store: fakeStore(), llm: l.llm, defaultModel: 'm' },
+        { access: fakeAccess(denied).access, ...fakeStore(), llm: l.llm, defaultModel: 'm' },
         tool,
         REQ,
       ),
@@ -103,7 +103,7 @@ describe('runTool', () => {
       runTool(
         {
           access: a.access,
-          store: fakeStore(undefined, { enabled: false }),
+          ...fakeStore(undefined, { enabled: false }),
           llm: fakeLlm().llm,
           defaultModel: 'm',
         },
@@ -117,7 +117,7 @@ describe('runTool', () => {
   it('resposta inválida: tenta outra vez e aceita a segunda', async () => {
     const l = fakeLlm('não é json', '{"reply":"segunda"}');
     const res = await runTool(
-      { access: fakeAccess().access, store: fakeStore(), llm: l.llm, defaultModel: 'm' },
+      { access: fakeAccess().access, ...fakeStore(), llm: l.llm, defaultModel: 'm' },
       tool,
       REQ,
     );
@@ -130,7 +130,7 @@ describe('runTool', () => {
     const l = fakeLlm('{"reply":""}', '{"reply":"ok","extra":1}');
     await expect(
       runTool(
-        { access: fakeAccess().access, store: fakeStore(), llm: l.llm, defaultModel: 'm' },
+        { access: fakeAccess().access, ...fakeStore(), llm: l.llm, defaultModel: 'm' },
         tool,
         REQ,
       ),
@@ -153,7 +153,7 @@ describe('runTool: custo do pedido', () => {
     await runTool(
       {
         access: fakeAccess().access,
-        store: fakeStore(),
+        ...fakeStore(),
         llm: fakeLlm('{"reply":"ok"}').llm,
         defaultModel: 'm',
         usage: u.usage,
@@ -182,7 +182,7 @@ describe('runTool: custo do pedido', () => {
       runTool(
         {
           access: fakeAccess().access,
-          store: fakeStore(),
+          ...fakeStore(),
           llm: fakeLlm('x', 'y').llm,
           defaultModel: 'm',
           usage: u.usage,
@@ -200,7 +200,7 @@ describe('runTool: custo do pedido', () => {
       runTool(
         {
           access: fakeAccess(new EngineError('access_denied', 'Sem acesso.')).access,
-          store: fakeStore(),
+          ...fakeStore(),
           llm: fakeLlm('{"reply":"ok"}').llm,
           defaultModel: 'm',
           usage: u.usage,

@@ -54,7 +54,7 @@ async function start(access = fakeAccess(), metrics?: Metrics) {
       apiSecret: SECRET,
       deps: {
         access: access.access,
-        store: fakeStore(),
+        ...fakeStore(),
         llm: llm.llm,
         defaultModel: 'm',
         usage: { report: (e) => costs.push(e) },

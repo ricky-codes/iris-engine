@@ -107,6 +107,10 @@ describe('erros do motor', () => {
     ['provider_unavailable', 502],
     ['timeout', 504],
     ['invalid_model_output', 502],
+    ['invalid_request', 422],
+    ['not_found', 404],
+    ['forbidden', 403],
+    ['memory_limit_reached', 409],
   ] as const)('%s dá %i, com a mesma mensagem e detalhes', (code, status) => {
     const details = [{ path: 'access', issue: 'X' }];
     expect(fromEngineError(new EngineError(code, 'Mensagem.', details))).toMatchObject({

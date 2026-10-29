@@ -22,7 +22,7 @@ async function start(access = fakeAccess(), llm = fakeLlm('{"reply":"Olá!"}')) 
     engine: {
       tools: [diagnosticTool as unknown as ToolDefinition],
       apiSecret: SECRET,
-      deps: { access: access.access, store: fakeStore(), llm: llm.llm, defaultModel: 'm' },
+      deps: { access: access.access, ...fakeStore(), llm: llm.llm, defaultModel: 'm' },
     },
   });
   return { app, access, llm };
@@ -148,7 +148,7 @@ describe('métricas', () => {
         tools: [diagnosticTool as unknown as ToolDefinition],
         apiSecret: SECRET,
         metrics,
-        deps: { access: fakeAccess().access, store: fakeStore(), llm: llm.llm, defaultModel: 'm' },
+        deps: { access: fakeAccess().access, ...fakeStore(), llm: llm.llm, defaultModel: 'm' },
       },
     });
     const post = (headers: Record<string, string>, payload: object) =>
@@ -163,7 +163,7 @@ describe('métricas', () => {
         tools: [diagnosticTool as unknown as ToolDefinition],
         apiSecret: SECRET,
         metrics,
-        deps: { access: denied.access, store: fakeStore(), llm: llm.llm, defaultModel: 'm' },
+        deps: { access: denied.access, ...fakeStore(), llm: llm.llm, defaultModel: 'm' },
       },
     });
     await post(AUTH, BODY);

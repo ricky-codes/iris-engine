@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { PgEngineStore, syncToolCatalog } from '../../src/engine/store.js';
+import { PgEngineStore, syncToolCatalog } from '../../src/adapters/postgres-store.js';
 import { TEST_DATABASE_URL, addMemory, createTestDb, sfId, type TestDb } from './helpers.js';
 
 const DEFAULTS = { temperature: 0.2, maxOutputTokens: 300, timeoutMs: 20_000 };

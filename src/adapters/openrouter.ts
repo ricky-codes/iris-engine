@@ -1,6 +1,6 @@
-import { AppError } from '../http/errors.js';
-import type { FetchLike } from './access.js';
-import type { LlmProvider, LlmRequest, LlmResponse } from './llm.js';
+import { EngineError } from '../engine/errors.js';
+import type { LlmProvider, LlmRequest, LlmResponse } from '../engine/llm.js';
+import type { FetchLike } from './fetch.js';
 
 interface ChatCompletion {
   model?: string;
@@ -9,8 +9,8 @@ interface ChatCompletion {
   error?: { code?: number; message?: string };
 }
 
-const unavailable = (): AppError =>
-  new AppError('provider_unavailable', 502, 'O fornecedor de IA não está disponível.');
+const unavailable = (): EngineError =>
+  new EngineError('provider_unavailable', 'O fornecedor de IA não está disponível.');
 
 /**
  * Cliente do OpenRouter (API compatível com OpenAI). Pede a resposta em JSON com o
@@ -60,7 +60,7 @@ export class OpenRouterProvider implements LlmProvider {
       });
     } catch (err) {
       if (err instanceof Error && err.name === 'TimeoutError') {
-        throw new AppError('timeout', 504, 'O modelo de IA demorou demasiado a responder.');
+        throw new EngineError('timeout', 'O modelo de IA demorou demasiado a responder.');
       }
       this.log('openrouter unreachable', { err: err instanceof Error ? err.name : String(err) });
       throw unavailable();

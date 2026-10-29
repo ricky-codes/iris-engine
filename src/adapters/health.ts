@@ -1,4 +1,4 @@
-import type { FetchLike } from './access.js';
+import type { FetchLike } from './fetch.js';
 
 export interface CheckResult {
   status: 'ok' | 'failed' | 'not_configured';

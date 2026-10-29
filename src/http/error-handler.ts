@@ -1,5 +1,6 @@
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { AppError, type ErrorBody, type ErrorDetail } from './errors.js';
+import { EngineError } from '../engine/errors.js';
+import { AppError, fromEngineError, type ErrorBody, type ErrorDetail } from './errors.js';
 
 /** O código de erro com que cada pedido terminou (para as métricas). Some com o pedido. */
 const errorCodes = new WeakMap<FastifyRequest, string>();
@@ -10,6 +11,7 @@ export function errorCodeOf(request: FastifyRequest): string | undefined {
 
 export function toAppError(err: FastifyError): AppError {
   if (err instanceof AppError) return err;
+  if (err instanceof EngineError) return fromEngineError(err);
 
   if (err.validation) {
     const details: ErrorDetail[] = err.validation.map((v) => ({

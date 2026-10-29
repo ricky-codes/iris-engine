@@ -24,6 +24,29 @@ export default tseslint.config(
     },
   },
   {
+    // O motor não conhece o servidor, os adaptadores, as ferramentas nem a configuração:
+    // tudo isso lhe chega por interfaces, montado em src/server.ts.
+    files: ['src/engine/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              regex:
+                '^\\.\\./(http|adapters|tools|admin|db|memory)/|^\\.\\./(config|app|server)\\.js$',
+              message: 'O motor só importa de src/engine/. Passe a dependência por uma interface.',
+            },
+            {
+              regex: '^(fastify|@fastify/|pg$)',
+              message: 'O motor não depende do servidor HTTP nem do Postgres.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ['src/config.ts'],
     rules: { 'no-restricted-properties': 'off' },
   },

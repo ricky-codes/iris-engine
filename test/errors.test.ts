@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
 import type { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
-import { AppError, type ErrorBody } from '../src/http/errors.js';
+import { EngineError } from '../src/engine/errors.js';
+import { AppError, fromEngineError, type ErrorBody } from '../src/http/errors.js';
 import { buildTestApp } from './helpers.js';
 
 let app: FastifyInstance | undefined;
@@ -95,5 +96,24 @@ describe('formato de erro', () => {
     expect(res.statusCode).toBe(500);
     expect(res.json<ErrorBody>().error.code).toBe('internal_error');
     expect(res.body).not.toContain('segredo interno');
+  });
+});
+
+describe('erros do motor', () => {
+  it.each([
+    ['access_denied', 403],
+    ['quota_exceeded', 429],
+    ['service_unavailable', 503],
+    ['provider_unavailable', 502],
+    ['timeout', 504],
+    ['invalid_model_output', 502],
+  ] as const)('%s dá %i, com a mesma mensagem e detalhes', (code, status) => {
+    const details = [{ path: 'access', issue: 'X' }];
+    expect(fromEngineError(new EngineError(code, 'Mensagem.', details))).toMatchObject({
+      code,
+      httpStatus: status,
+      message: 'Mensagem.',
+      details,
+    });
   });
 });

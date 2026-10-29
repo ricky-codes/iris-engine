@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { Metrics } from '../src/engine/metrics.js';
 import type { CostEvent } from '../src/engine/usage.js';
 import type { ToolDefinition } from '../src/engine/tool.js';
-import { AppError } from '../src/http/errors.js';
+import { EngineError } from '../src/engine/errors.js';
 import { sentimentTool } from '../src/tools/sentiment.js';
 import { fakeAccess, fakeLlm, fakeStore } from './engine/fakes.js';
 import { buildTestApp } from './helpers.js';
@@ -102,7 +102,7 @@ describe('POST /v1/compat/n8n', () => {
   });
 
   it('erros saem no envelope {success:false, error}', async () => {
-    const { app } = await start(fakeAccess(new AppError('access_denied', 403, 'Sem acesso.')));
+    const { app } = await start(fakeAccess(new EngineError('access_denied', 'Sem acesso.')));
     const res = await post(app, BODY);
     expect(res.statusCode).toBe(403);
     expect(res.json()).toMatchObject({
@@ -146,10 +146,7 @@ describe('POST /v1/compat/n8n', () => {
 
   it('conta o pedido nas métricas, também quando falha', async () => {
     const metrics = new Metrics();
-    const { app } = await start(
-      fakeAccess(new AppError('quota_exceeded', 429, 'Limite.')),
-      metrics,
-    );
+    const { app } = await start(fakeAccess(new EngineError('quota_exceeded', 'Limite.')), metrics);
     await post(app, BODY);
     await new Promise((r) => setTimeout(r, 20));
     expect(JSON.stringify(metrics.snapshot())).toContain('quota_exceeded');

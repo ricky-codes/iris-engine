@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { OpenRouterProvider } from '../../src/engine/openrouter.js';
+import { OpenRouterProvider } from '../../src/adapters/openrouter.js';
 import type { LlmRequest } from '../../src/engine/llm.js';
-import { fakeFetch, json } from './fakes.js';
+import { fakeFetch, json } from '../engine/fakes.js';
 
 const CONFIG = { apiKey: 'sk-or-teste', baseUrl: 'https://openrouter.ai/api/v1' };
 const REQ: LlmRequest = {
@@ -68,7 +68,6 @@ describe('OpenRouterProvider', () => {
     const f = fakeFetch(respond);
     await expect(new OpenRouterProvider(CONFIG, f.fn).complete(REQ)).rejects.toMatchObject({
       code: 'provider_unavailable',
-      httpStatus: 502,
     });
   });
 
@@ -78,7 +77,6 @@ describe('OpenRouterProvider', () => {
     });
     await expect(new OpenRouterProvider(CONFIG, f.fn).complete(REQ)).rejects.toMatchObject({
       code: 'timeout',
-      httpStatus: 504,
     });
   });
 });

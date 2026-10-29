@@ -1,5 +1,5 @@
-import { AppError } from '../http/errors.js';
-import type { FetchLike } from './access.js';
+import { EngineError } from '../engine/errors.js';
+import type { FetchLike } from './fetch.js';
 
 export interface ModelInfo {
   id: string;
@@ -53,9 +53,8 @@ export class ModelCatalog {
       if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
       body = (await res.json()) as { data?: RawModel[] };
     } catch {
-      throw new AppError(
+      throw new EngineError(
         'provider_unavailable',
-        502,
         'Não foi possível obter a lista de modelos do OpenRouter.',
       );
     }

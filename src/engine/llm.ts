@@ -21,7 +21,7 @@ export interface LlmResponse {
   costUsd: number | undefined;
 }
 
-/** Fornecedor de modelos. Lança `AppError` (`provider_unavailable`, `timeout`) se falhar. */
+/** Fornecedor de modelos. Lança `EngineError` (`provider_unavailable`, `timeout`) se falhar. */
 export interface LlmProvider {
   complete(request: LlmRequest): Promise<LlmResponse>;
 }

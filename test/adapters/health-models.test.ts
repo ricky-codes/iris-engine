@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { checkOpenRouter, checkStepAccess } from '../../src/engine/health.js';
-import { ModelCatalog } from '../../src/engine/models.js';
-import { fakeFetch, json } from './fakes.js';
+import { checkOpenRouter, checkStepAccess } from '../../src/adapters/health.js';
+import { ModelCatalog } from '../../src/adapters/openrouter-models.js';
+import { fakeFetch, json } from '../engine/fakes.js';
 
 describe('verificações de dependências', () => {
   it('StepAccess: usa /v1/health, sem credenciais e sem contar utilização', async () => {

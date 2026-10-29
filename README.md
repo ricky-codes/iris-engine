@@ -193,22 +193,30 @@ src/
   app.ts                  construção da app Fastify (usada também nos testes)
   config.ts               leitura e validação do ambiente (único sítio com process.env)
   http/
-    errors.ts             AppError: código estável + estado HTTP
+    errors.ts             AppError: código estável + estado HTTP; tradução dos erros do motor
     error-handler.ts      conversão de todos os erros para o formato comum
     routes/health.ts      /healthz e /readyz
     routes/tools.ts       /v1/tools e /v1/tools/<nome>, com a credencial
     routes/admin.ts       /v1/admin/* (docs/ADMIN_API.md)
-  engine/
+  engine/                 o motor: não importa do servidor, dos adaptadores nem da configuração (regra de lint)
     tool.ts               o contrato de uma ferramenta
     run.ts                o caminho de um pedido (configuração, acesso, memórias, modelo, validação)
-    access.ts             cliente do StepAccess (e o atalho para desenvolvimento)
-    openrouter.ts         cliente do OpenRouter
+    errors.ts             EngineError: código estável, sem estado HTTP
+    access.ts             interface de quem decide o acesso
     llm.ts                interface do fornecedor de modelos
+    store.ts              interface do que o motor lê da base de dados
+    usage.ts              interface de quem recebe o custo de cada pedido
     prompt.ts             junta o prompt da ferramenta com as memórias
-    store.ts              o que o motor lê da base de dados; registo do catálogo de ferramentas
     metrics.ts            contadores agregados em memória (sem conteúdo)
+  adapters/               as implementações das interfaces do motor, montadas em server.ts
+    stepaccess-access.ts  cliente do GET /v1/access do StepAccess
+    stepaccess-usage.ts   envio do custo ao StepAccess
+    bypass-access.ts      acesso sem StepAccess (só fora de produção)
+    openrouter.ts         cliente do OpenRouter
+    openrouter-models.ts  catálogo de modelos do OpenRouter
+    postgres-store.ts     leitura da base de dados; registo do catálogo de ferramentas
     health.ts             verificações do StepAccess e do OpenRouter
-    models.ts             catálogo de modelos do OpenRouter
+    fetch.ts              o tipo do fetch que os adaptadores recebem
   tools/
     index.ts              as ferramentas ativas
     diagnostic.ts         ferramenta de teste de ligação

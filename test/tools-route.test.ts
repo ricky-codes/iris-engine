@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { Metrics } from '../src/engine/metrics.js';
 import type { ToolDefinition } from '../src/engine/tool.js';
-import { AppError } from '../src/http/errors.js';
+import { EngineError } from '../src/engine/errors.js';
 import { diagnosticTool } from '../src/tools/diagnostic.js';
 import { fakeAccess, fakeLlm, fakeStore } from './engine/fakes.js';
 import { buildTestApp } from './helpers.js';
@@ -106,7 +106,7 @@ describe('POST /v1/tools/:nome', () => {
   });
 
   it('a recusa do StepAccess passa ao Salesforce com o mesmo código', async () => {
-    const denied = new AppError('quota_exceeded', 429, 'Limite atingido.', [
+    const denied = new EngineError('quota_exceeded', 'Limite atingido.', [
       { path: 'access', issue: 'LIMIT_REACHED' },
     ]);
     const { app, llm } = await start(fakeAccess(denied));
@@ -126,7 +126,7 @@ describe('POST /v1/tools/:nome', () => {
   it('o modelo indisponível dá 502 provider_unavailable', async () => {
     const { app } = await start(
       fakeAccess(),
-      fakeLlm(new AppError('provider_unavailable', 502, 'Indisponível.')),
+      fakeLlm(new EngineError('provider_unavailable', 'Indisponível.')),
     );
     const res = await app.inject({
       method: 'POST',
@@ -141,7 +141,7 @@ describe('POST /v1/tools/:nome', () => {
 describe('métricas', () => {
   it('conta sucessos e erros por código, com tokens, sem conteúdo', async () => {
     const metrics = new Metrics();
-    const denied = fakeAccess(new AppError('quota_exceeded', 429, 'Limite.'));
+    const denied = fakeAccess(new EngineError('quota_exceeded', 'Limite.'));
     const llm = fakeLlm('{"reply":"ok"}');
     app = await buildTestApp({
       engine: {

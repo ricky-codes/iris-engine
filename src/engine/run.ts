@@ -1,6 +1,6 @@
 import { Value } from '@sinclair/typebox/value';
-import { AppError } from '../http/errors.js';
 import type { AccessChecker } from './access.js';
+import { EngineError } from './errors.js';
 import type { LlmProvider } from './llm.js';
 import { buildSystemPrompt } from './prompt.js';
 import type { EngineStore, RequestMemories, ToolSettings } from './store.js';
@@ -89,7 +89,7 @@ export async function prepareRun(
   const settings: ToolSettings =
     opts.modelOverride === undefined ? stored : { ...stored, model: opts.modelOverride };
   if (opts.requireEnabled && !settings.enabled) {
-    throw new AppError('service_unavailable', 503, 'Esta ferramenta está desativada.');
+    throw new EngineError('service_unavailable', 'Esta ferramenta está desativada.');
   }
 
   if (opts.checkAccess) await deps.access.check({ orgId: request.orgId, userId: request.userId });
@@ -186,13 +186,11 @@ export async function runTool(
   }
   if (result === undefined || last === undefined) {
     // As tentativas falhadas também custam: o custo vai no log do erro.
-    throw Object.assign(
-      new AppError(
-        'invalid_model_output',
-        502,
-        'O modelo de IA devolveu uma resposta inválida. Tente de novo.',
-      ),
-      { costUsd },
+    throw new EngineError(
+      'invalid_model_output',
+      'O modelo de IA devolveu uma resposta inválida. Tente de novo.',
+      [],
+      costUsd,
     );
   }
   return {

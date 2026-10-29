@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { StepAccessUsageReporter, type CostEvent } from '../../src/engine/usage.js';
-import { fakeFetch, json } from './fakes.js';
+import { StepAccessUsageReporter } from '../../src/adapters/stepaccess-usage.js';
+import type { CostEvent } from '../../src/engine/usage.js';
+import { fakeFetch, json } from '../engine/fakes.js';
 
 const CONFIG = {
   url: 'https://access.example.com',

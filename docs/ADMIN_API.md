@@ -1,7 +1,7 @@
 # IRIS Engine — API de administração
 
 > **Para quem:** quem vai construir a secção "IRIS" na UI de administração do **StepAccess** (React + Vite + Tailwind, backend Express).
-> **Fonte de verdade:** `src/http/routes/admin.ts`, `src/admin/*.ts`, `src/engine/*.ts` no repositório `ricky-codes/iris-engine`. Se este documento e o código discordarem, ganha o código.
+> **Fonte de verdade:** `src/http/routes/admin.ts`, `src/admin/*.ts`, `src/engine/*.ts`, `src/adapters/*.ts` no repositório `ricky-codes/iris-engine`. Se este documento e o código discordarem, ganha o código.
 > **Versão da API:** v1. Todas as rotas estão em `/v1/admin`.
 
 ---

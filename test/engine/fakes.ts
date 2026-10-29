@@ -2,7 +2,7 @@ import type { AccessChecker } from '../../src/engine/access.js';
 import type { LlmProvider, LlmRequest, LlmResponse } from '../../src/engine/llm.js';
 import type { EngineStore, RequestMemories, ToolSettings } from '../../src/engine/store.js';
 import type { ToolDefaults } from '../../src/engine/tool.js';
-import { AppError } from '../../src/http/errors.js';
+import { EngineError } from '../../src/engine/errors.js';
 
 /** Respostas HTTP gravadas para substituir o `fetch` nos testes dos clientes. */
 export function fakeFetch(
@@ -20,7 +20,7 @@ export function fakeFetch(
 export const json = (status: number, body: unknown): Response =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
-export function fakeAccess(outcome: 'allow' | AppError = 'allow') {
+export function fakeAccess(outcome: 'allow' | EngineError = 'allow') {
   const calls: { orgId: string; userId: string }[] = [];
   const access: AccessChecker = {
     check: async (req) => {
@@ -49,13 +49,13 @@ export function fakeStore(
 }
 
 /** Devolve as respostas por ordem; a última repete-se. */
-export function fakeLlm(...texts: (string | AppError)[]) {
+export function fakeLlm(...texts: (string | EngineError)[]) {
   const requests: LlmRequest[] = [];
   const llm: LlmProvider = {
     complete: async (req): Promise<LlmResponse> => {
       requests.push(req);
       const next = texts[Math.min(requests.length - 1, texts.length - 1)];
-      if (next instanceof AppError) throw next;
+      if (next instanceof EngineError) throw next;
       return {
         text: next ?? '',
         model: req.model,

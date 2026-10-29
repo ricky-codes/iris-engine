@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { StepAccessClient } from '../../src/engine/access.js';
-import { fakeFetch, json } from './fakes.js';
+import { StepAccessClient } from '../../src/adapters/stepaccess-access.js';
+import { fakeFetch, json } from '../engine/fakes.js';
 
 const CONFIG = {
   url: 'https://access.example.com',
@@ -32,7 +32,6 @@ describe('StepAccessClient', () => {
     const f = fakeFetch(() => json(200, { hasAccess: false, reason: 'LIMIT_REACHED' }));
     await expect(new StepAccessClient(CONFIG, f.fn).check(REQ)).rejects.toMatchObject({
       code: 'quota_exceeded',
-      httpStatus: 429,
     });
   });
 
@@ -42,7 +41,6 @@ describe('StepAccessClient', () => {
       const f = fakeFetch(() => json(200, { hasAccess: false, reason }));
       await expect(new StepAccessClient(CONFIG, f.fn).check(REQ)).rejects.toMatchObject({
         code: 'access_denied',
-        httpStatus: 403,
         details: [{ path: 'access', issue: reason }],
       });
     },
@@ -58,7 +56,6 @@ describe('StepAccessClient', () => {
     const f = fakeFetch(respond);
     await expect(new StepAccessClient(CONFIG, f.fn).check(REQ)).rejects.toMatchObject({
       code: 'service_unavailable',
-      httpStatus: 503,
     });
   });
 
@@ -67,7 +64,7 @@ describe('StepAccessClient', () => {
       throw new DOMException('timeout', 'TimeoutError');
     });
     await expect(new StepAccessClient(CONFIG, f.fn).check(REQ)).rejects.toMatchObject({
-      httpStatus: 503,
+      code: 'service_unavailable',
     });
   });
 });

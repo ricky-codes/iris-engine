@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildSystemPrompt } from '../../src/engine/prompt.js';
 import { parseModelJson, runTool } from '../../src/engine/run.js';
 import type { ToolDefinition } from '../../src/engine/tool.js';
-import { AppError } from '../../src/http/errors.js';
+import { EngineError } from '../../src/engine/errors.js';
 import type { CostEvent } from '../../src/engine/usage.js';
 import { diagnosticTool } from '../../src/tools/diagnostic.js';
 import { fakeAccess, fakeLlm, fakeStore } from './fakes.js';
@@ -86,7 +86,7 @@ describe('runTool', () => {
 
   it('sem acesso, não chama o modelo', async () => {
     const l = fakeLlm('{"reply":"ok"}');
-    const denied = new AppError('access_denied', 403, 'Sem acesso.');
+    const denied = new EngineError('access_denied', 'Sem acesso.');
     await expect(
       runTool(
         { access: fakeAccess(denied).access, store: fakeStore(), llm: l.llm, defaultModel: 'm' },
@@ -110,7 +110,7 @@ describe('runTool', () => {
         tool,
         REQ,
       ),
-    ).rejects.toMatchObject({ httpStatus: 503 });
+    ).rejects.toMatchObject({ code: 'service_unavailable' });
     expect(a.calls).toHaveLength(0);
   });
 
@@ -136,7 +136,6 @@ describe('runTool', () => {
       ),
     ).rejects.toMatchObject({
       code: 'invalid_model_output',
-      httpStatus: 502,
       costUsd: expect.closeTo(0.002) as number,
     });
     expect(l.requests).toHaveLength(2);
@@ -200,7 +199,7 @@ describe('runTool: custo do pedido', () => {
     await expect(
       runTool(
         {
-          access: fakeAccess(new AppError('access_denied', 403, 'Sem acesso.')).access,
+          access: fakeAccess(new EngineError('access_denied', 'Sem acesso.')).access,
           store: fakeStore(),
           llm: fakeLlm('{"reply":"ok"}').llm,
           defaultModel: 'm',

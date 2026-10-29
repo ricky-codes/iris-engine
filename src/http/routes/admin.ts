@@ -30,7 +30,7 @@ import {
 import type { AccessChecker } from '../../engine/access.js';
 import type { LlmProvider } from '../../engine/llm.js';
 import type { Metrics } from '../../engine/metrics.js';
-import type { ModelInfo } from '../../engine/models.js';
+import type { ModelInfo } from '../../adapters/openrouter-models.js';
 import { callModel, prepareRun } from '../../engine/run.js';
 import type { EngineStore } from '../../engine/store.js';
 import type { ToolDefinition } from '../../engine/tool.js';

@@ -1,3 +1,5 @@
+import type { EngineError, EngineErrorCode } from '../engine/errors.js';
+
 /**
  * Erros de domínio. Cada um tem um código estável (consumido pelo Salesforce)
  * e o estado HTTP correspondente. Nunca se lança uma string.
@@ -41,6 +43,21 @@ export class AppError extends Error {
     super(message);
     this.name = 'AppError';
   }
+}
+
+/** Estado HTTP de cada erro do motor. */
+const ENGINE_HTTP_STATUS: Record<EngineErrorCode, number> = {
+  access_denied: 403,
+  quota_exceeded: 429,
+  service_unavailable: 503,
+  provider_unavailable: 502,
+  timeout: 504,
+  invalid_model_output: 502,
+};
+
+/** Um erro do motor no formato da API. O código e a mensagem passam tal como estão. */
+export function fromEngineError(err: EngineError): AppError {
+  return new AppError(err.code, ENGINE_HTTP_STATUS[err.code], err.message, err.details);
 }
 
 export interface ErrorBody {

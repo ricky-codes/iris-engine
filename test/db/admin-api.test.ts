@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { Metrics } from '../../src/engine/metrics.js';
-import { PgEngineStore, syncToolCatalog } from '../../src/engine/store.js';
+import { PgEngineStore, syncToolCatalog } from '../../src/adapters/postgres-store.js';
 import type { ToolDefinition } from '../../src/engine/tool.js';
 import { diagnosticTool } from '../../src/tools/diagnostic.js';
 import { fakeAccess, fakeLlm } from '../engine/fakes.js';

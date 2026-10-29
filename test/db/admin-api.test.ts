@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { Metrics } from '../../src/engine/metrics.js';
 import { PgMemoryStore } from '../../src/adapters/postgres-memory-store.js';
+import { createEngine } from '../../src/engine/engine.js';
 import { PgEngineStore, syncToolCatalog } from '../../src/adapters/postgres-store.js';
 import type { ToolDefinition } from '../../src/engine/tool.js';
 import { diagnosticTool } from '../../src/tools/diagnostic.js';
@@ -65,10 +66,15 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
           }),
         },
         playground: {
-          store: new PgEngineStore(db.pool),
-          memories: new PgMemoryStore(db.pool),
-          llm: llm.llm,
-          access: access.access,
+          engine: createEngine({
+            settings: { defaultModel: 'google/gemini-2.5-flash' },
+            tools: [tool],
+            store: new PgEngineStore(db.pool),
+            memories: new PgMemoryStore(db.pool),
+            llm: llm.llm,
+            access: access.access,
+          }),
+          countsUsage: true,
         },
       },
     });
@@ -374,10 +380,15 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
           status: async () => ({}),
           models: { list: async () => ({ fetchedAt: '', models: [] }) },
           playground: {
-            store: new PgEngineStore(db.pool),
-            memories: new PgMemoryStore(db.pool),
-            llm: llm.llm,
-            access: undefined,
+            engine: createEngine({
+              settings: { defaultModel: 'm' },
+              tools: [tool],
+              store: new PgEngineStore(db.pool),
+              memories: new PgMemoryStore(db.pool),
+              llm: llm.llm,
+              access: { check: async () => undefined },
+            }),
+            countsUsage: false,
           },
         },
       });

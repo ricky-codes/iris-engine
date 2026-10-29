@@ -15,6 +15,8 @@ export interface EngineDeps {
   memories: Pick<MemoryStore, 'forRequest'>;
   llm: LlmProvider;
   defaultModel: string;
+  /** Quantas vezes se pede ao modelo uma resposta válida. Por omissão, 2. */
+  maxAttempts?: number;
   /** Para onde vai o custo de cada pedido. Sem ele, o custo só fica no log. */
   usage?: UsageReporter;
 }
@@ -61,7 +63,7 @@ export interface RunResult {
   };
 }
 
-const MAX_ATTEMPTS = 2;
+export const DEFAULT_MAX_ATTEMPTS = 2;
 
 /** Lê o JSON devolvido pelo modelo. Aceita-o dentro de um bloco ```json, que alguns modelos usam. */
 export function parseModelJson(text: string): unknown {
@@ -74,7 +76,7 @@ export function parseModelJson(text: string): unknown {
 }
 
 /**
- * Lê a configuração, (opcionalmente) pergunta ao StepAccess e monta o prompt com as memórias.
+ * Lê a configuração, (opcionalmente) verifica o acesso e monta o prompt com as memórias.
  * O playground de admin usa isto sem verificar acesso nem se a ferramenta está ligada.
  */
 export async function prepareRun(
@@ -120,9 +122,10 @@ export async function callModel(
   llm: LlmProvider,
   tool: ToolDefinition,
   prepared: PreparedRun,
+  maxAttempts = DEFAULT_MAX_ATTEMPTS,
 ): Promise<{ result: unknown; attempts: ModelAttempt[] }> {
   const attempts: ModelAttempt[] = [];
-  for (let i = 1; i <= MAX_ATTEMPTS; i++) {
+  for (let i = 1; i <= maxAttempts; i++) {
     const response = await llm.complete({
       model: prepared.settings.model,
       system: prepared.system,
@@ -154,8 +157,8 @@ const sumTokens = (values: (number | undefined)[]): number | undefined =>
     : values.reduce<number>((s, v) => s + (v ?? 0), 0);
 
 /**
- * O caminho de um pedido já autenticado e validado:
- * configuração → acesso no StepAccess (conta utilização) → memórias → modelo → validação.
+ * O caminho de um pedido com a entrada já validada (ver `Engine.run`):
+ * configuração → acesso (no StepAccess, conta utilização) → memórias → modelo → validação.
  * Nada é guardado.
  */
 export async function runTool(
@@ -167,7 +170,7 @@ export async function runTool(
     checkAccess: true,
     requireEnabled: true,
   });
-  const { result, attempts } = await callModel(deps.llm, tool, prepared);
+  const { result, attempts } = await callModel(deps.llm, tool, prepared, deps.maxAttempts);
   const last = attempts[attempts.length - 1];
   const costUsd = sumTokens(attempts.map((a) => a.costUsd));
   const inputTokens = sumTokens(attempts.map((a) => a.inputTokens));

@@ -13,11 +13,12 @@ import { PgEngineStore, syncToolCatalog } from './adapters/postgres-store.js';
 import { StepAccessClient } from './adapters/stepaccess-access.js';
 import { StepAccessUsageReporter } from './adapters/stepaccess-usage.js';
 import type { AccessChecker } from './engine/access.js';
+import { createEngine, type Engine } from './engine/engine.js';
+import { EngineError } from './engine/errors.js';
 import { Memories } from './engine/memory.js';
 import { Metrics } from './engine/metrics.js';
 import type { ToolDefinition } from './engine/tool.js';
 import type { AdminRoutesOptions, StatusReport } from './http/routes/admin.js';
-import type { ToolRoutesOptions } from './http/routes/tools.js';
 import { enabledTools } from './tools/index.js';
 
 // Os clientes externos registam avisos no logger da app, que só existe depois de criada.
@@ -41,44 +42,37 @@ function accessChecker(config: AppConfig): AccessChecker | undefined {
   return sa === 'bypass' ? new BypassAccessChecker() : new StepAccessClient(sa, fetch, warn);
 }
 
-/** Monta o motor se a configuração estiver completa. Devolve também o que falta, se faltar. */
+/** Sem StepAccess configurado: recusa tudo o que precise de verificar acesso. */
+const noAccess: AccessChecker = {
+  check: async () => {
+    throw new EngineError('service_unavailable', 'O serviço de licenças não está configurado.');
+  },
+};
+
+/**
+ * Monta o motor, se houver base de dados e OpenRouter. Sem StepAccess o motor existe
+ * (para o playground), mas recusa verificar acesso e as rotas públicas ficam desligadas.
+ */
 function buildEngine(
   config: AppConfig,
   pool: pg.Pool | undefined,
   tools: ToolDefinition[],
-  metrics: Metrics,
-): { engine: ToolRoutesOptions | undefined; missing: string[] } {
+  access: AccessChecker | undefined,
+): Engine | undefined {
   const { engine: cfg } = config;
-  const missing = missingEngineConfig(cfg, pool !== undefined);
-  const access = accessChecker(config);
-  if (
-    missing.length > 0 ||
-    pool === undefined ||
-    cfg.apiSecret === undefined ||
-    access === undefined ||
-    cfg.openRouter === undefined
-  ) {
-    return { engine: undefined, missing };
-  }
-  return {
-    missing: [],
-    engine: {
-      tools,
-      apiSecret: cfg.apiSecret,
-      metrics,
-      deps: {
-        access,
-        store: new PgEngineStore(pool),
-        memories: new Memories(new PgMemoryStore(pool)),
-        llm: new OpenRouterProvider(cfg.openRouter, fetch, warn),
-        defaultModel: cfg.defaultModel,
-        ...(cfg.stepAccess !== undefined &&
-          cfg.stepAccess !== 'bypass' && {
-            usage: new StepAccessUsageReporter(cfg.stepAccess, fetch, warn),
-          }),
-      },
-    },
-  };
+  if (pool === undefined || cfg.openRouter === undefined) return undefined;
+  return createEngine({
+    settings: { defaultModel: cfg.defaultModel },
+    tools,
+    access: access ?? noAccess,
+    store: new PgEngineStore(pool),
+    memories: new PgMemoryStore(pool),
+    llm: new OpenRouterProvider(cfg.openRouter, fetch, warn),
+    ...(cfg.stepAccess !== undefined &&
+      cfg.stepAccess !== 'bypass' && {
+        usage: new StepAccessUsageReporter(cfg.stepAccess, fetch, warn),
+      }),
+  });
 }
 
 function buildAdmin(
@@ -87,6 +81,8 @@ function buildAdmin(
   tools: ToolDefinition[],
   metrics: Metrics,
   engine: { ready: boolean; missing: string[] },
+  playground: Engine | undefined,
+  countsUsage: boolean,
 ): AdminRoutesOptions | undefined {
   if (config.adminApiSecret === undefined || pool === undefined) return undefined;
   const { engine: cfg } = config;
@@ -138,15 +134,7 @@ function buildAdmin(
     metrics,
     status,
     models: new ModelCatalog(cfg.openRouter?.baseUrl ?? 'https://openrouter.ai/api/v1'),
-    playground:
-      cfg.openRouter === undefined
-        ? undefined
-        : {
-            store: new PgEngineStore(pool),
-            memories: new Memories(new PgMemoryStore(pool)),
-            llm: new OpenRouterProvider(cfg.openRouter, fetch, warn),
-            access: accessChecker(config),
-          },
+    playground: playground === undefined ? undefined : { engine: playground, countsUsage },
   };
 }
 
@@ -173,8 +161,23 @@ async function main(): Promise<void> {
   }
 
   const metrics = new Metrics();
-  const { engine, missing } = buildEngine(config, pool, tools, metrics);
-  const admin = buildAdmin(config, pool, tools, metrics, { ready: engine !== undefined, missing });
+  const access = accessChecker(config);
+  const core = buildEngine(config, pool, tools, access);
+  const missing = missingEngineConfig(config.engine, pool !== undefined);
+  // As rotas das ferramentas só se ligam com a configuração completa (incluindo o acesso).
+  const engine =
+    core === undefined || missing.length > 0 || config.engine.apiSecret === undefined
+      ? undefined
+      : { engine: core, apiSecret: config.engine.apiSecret, metrics };
+  const admin = buildAdmin(
+    config,
+    pool,
+    tools,
+    metrics,
+    { ready: engine !== undefined, missing },
+    core,
+    access !== undefined,
+  );
 
   // As memórias só precisam da base de dados e do segredo do Salesforce, não do StepAccess.
   const memories =
@@ -207,7 +210,7 @@ async function main(): Promise<void> {
     if (config.engine.stepAccess === 'bypass') {
       app.log.warn('STEPACCESS_BYPASS ativo: os pedidos não são verificados no StepAccess');
     }
-    app.log.info({ tools: engine.tools.map((t) => t.name) }, 'motor pronto');
+    app.log.info({ tools: core?.tools().map((t) => t.name) }, 'motor pronto');
   }
   if (memories !== undefined) app.log.info('memórias ligadas em /v1/memories');
   app.log.info(

@@ -5,7 +5,7 @@ import type { CostEvent } from '../src/engine/usage.js';
 import type { ToolDefinition } from '../src/engine/tool.js';
 import { EngineError } from '../src/engine/errors.js';
 import { sentimentTool } from '../src/tools/sentiment.js';
-import { fakeAccess, fakeLlm, fakeStore } from './engine/fakes.js';
+import { fakeAccess, fakeEngine, fakeLlm } from './engine/fakes.js';
 import { buildTestApp } from './helpers.js';
 
 const SECRET = 's'.repeat(40);
@@ -50,15 +50,12 @@ async function start(access = fakeAccess(), metrics?: Metrics) {
   const costs: CostEvent[] = [];
   app = await buildTestApp({
     engine: {
-      tools: [sentimentTool as unknown as ToolDefinition],
-      apiSecret: SECRET,
-      deps: {
+      engine: fakeEngine([sentimentTool as unknown as ToolDefinition], {
         access: access.access,
-        ...fakeStore(),
         llm: llm.llm,
-        defaultModel: 'm',
         usage: { report: (e) => costs.push(e) },
-      },
+      }),
+      apiSecret: SECRET,
       ...(metrics && { metrics }),
     },
   });
@@ -74,6 +71,18 @@ describe('POST /v1/compat/n8n', () => {
     const res = await post(app, BODY);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ success: true, data: RESULT });
+  });
+
+  it('ignora os campos que a ferramenta não declara (payload, orgUrl, recordId…)', async () => {
+    const { app, llm } = await start();
+    const res = await post(app, {
+      ...BODY,
+      payload: { qualquer: 'coisa' },
+      orgUrl: 'https://exemplo.my.salesforce.com',
+      recordId: '500AAAAAAAAAAAAAAA',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(llm.requests[0]?.user ?? '').not.toContain('qualquer');
   });
 
   it('envia o custo com o mesmo id do X-Request-Id', async () => {

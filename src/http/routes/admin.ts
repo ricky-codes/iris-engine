@@ -21,12 +21,9 @@ import {
   setActivePromptVersion,
   type ToolCatalogRow,
 } from '../../admin/tools.js';
-import type { AccessChecker } from '../../engine/access.js';
-import type { LlmProvider } from '../../engine/llm.js';
 import type { Metrics } from '../../engine/metrics.js';
 import type { ModelInfo } from '../../adapters/openrouter-models.js';
-import { callModel, prepareRun, type EngineDeps } from '../../engine/run.js';
-import type { EngineStore } from '../../engine/store.js';
+import type { Engine } from '../../engine/engine.js';
 import type { ToolDefinition } from '../../engine/tool.js';
 import { AppError, type ErrorDetail } from '../errors.js';
 
@@ -45,11 +42,9 @@ export interface AdminRoutesOptions {
   /** Sem dependências não há playground (falta base de dados ou OpenRouter). */
   playground:
     | {
-        store: EngineStore;
-        memories: EngineDeps['memories'];
-        llm: LlmProvider;
-        /** Para contar utilização a pedido. Sem StepAccess configurado, `undefined`. */
-        access: AccessChecker | undefined;
+        engine: Engine;
+        /** `false` sem StepAccess configurado: não se pode pedir para contar utilização. */
+        countsUsage: boolean;
       }
     | undefined;
 }
@@ -548,20 +543,12 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
       const deps = playgroundDeps();
       const { orgId, userId, input, systemPrompt, model } = request.body;
       checkInput(tool, input);
-      const prepared = await prepareRun(
-        {
-          access: deps.access ?? { check: async () => undefined },
-          store: deps.store,
-          memories: deps.memories,
-          defaultModel: opts.defaultModel,
-        },
-        tool,
+      const prepared = await deps.engine.preview(
+        tool.name,
         { orgId, userId, input },
         {
-          checkAccess: false,
-          requireEnabled: false,
-          ...(systemPrompt !== undefined && { systemPromptOverride: systemPrompt }),
-          ...(model !== undefined && { modelOverride: model }),
+          ...(systemPrompt !== undefined && { systemPrompt }),
+          ...(model !== undefined && { model }),
         },
       );
       return {
@@ -593,7 +580,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
       const deps = playgroundDeps();
       const { orgId, userId, input, systemPrompt, model, countUsage } = request.body;
       checkInput(tool, input);
-      if (countUsage === true && deps.access === undefined) {
+      if (countUsage === true && !deps.countsUsage) {
         throw new AppError(
           'service_unavailable',
           503,
@@ -602,23 +589,15 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
       }
 
       const started = performance.now();
-      const prepared = await prepareRun(
-        {
-          access: deps.access ?? { check: async () => undefined },
-          store: deps.store,
-          memories: deps.memories,
-          defaultModel: opts.defaultModel,
-        },
-        tool,
+      const { prepared, result, attempts } = await deps.engine.trial(
+        tool.name,
         { orgId, userId, input },
         {
           checkAccess: countUsage === true,
-          requireEnabled: false,
-          ...(systemPrompt !== undefined && { systemPromptOverride: systemPrompt }),
-          ...(model !== undefined && { modelOverride: model }),
+          ...(systemPrompt !== undefined && { systemPrompt }),
+          ...(model !== undefined && { model }),
         },
       );
-      const { result, attempts } = await callModel(deps.llm, tool, prepared);
       return {
         tool: tool.name,
         ok: result !== undefined,

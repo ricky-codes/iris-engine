@@ -13,6 +13,7 @@ export const ENGINE_ERROR_CODES = [
   'not_found',
   'forbidden',
   'memory_limit_reached',
+  'unknown_tool',
 ] as const;
 
 export type EngineErrorCode = (typeof ENGINE_ERROR_CODES)[number];

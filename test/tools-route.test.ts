@@ -4,7 +4,7 @@ import { Metrics } from '../src/engine/metrics.js';
 import type { ToolDefinition } from '../src/engine/tool.js';
 import { EngineError } from '../src/engine/errors.js';
 import { diagnosticTool } from '../src/tools/diagnostic.js';
-import { fakeAccess, fakeLlm, fakeStore } from './engine/fakes.js';
+import { fakeAccess, fakeEngine, fakeLlm } from './engine/fakes.js';
 import { buildTestApp } from './helpers.js';
 
 const SECRET = 's'.repeat(40);
@@ -20,9 +20,11 @@ afterEach(async () => {
 async function start(access = fakeAccess(), llm = fakeLlm('{"reply":"Olá!"}')) {
   app = await buildTestApp({
     engine: {
-      tools: [diagnosticTool as unknown as ToolDefinition],
+      engine: fakeEngine([diagnosticTool as unknown as ToolDefinition], {
+        access: access.access,
+        llm: llm.llm,
+      }),
       apiSecret: SECRET,
-      deps: { access: access.access, ...fakeStore(), llm: llm.llm, defaultModel: 'm' },
     },
   });
   return { app, access, llm };
@@ -145,10 +147,9 @@ describe('métricas', () => {
     const llm = fakeLlm('{"reply":"ok"}');
     app = await buildTestApp({
       engine: {
-        tools: [diagnosticTool as unknown as ToolDefinition],
+        engine: fakeEngine([diagnosticTool as unknown as ToolDefinition], { llm: llm.llm }),
         apiSecret: SECRET,
         metrics,
-        deps: { access: fakeAccess().access, ...fakeStore(), llm: llm.llm, defaultModel: 'm' },
       },
     });
     const post = (headers: Record<string, string>, payload: object) =>
@@ -160,10 +161,12 @@ describe('métricas', () => {
 
     app = await buildTestApp({
       engine: {
-        tools: [diagnosticTool as unknown as ToolDefinition],
+        engine: fakeEngine([diagnosticTool as unknown as ToolDefinition], {
+          access: denied.access,
+          llm: llm.llm,
+        }),
         apiSecret: SECRET,
         metrics,
-        deps: { access: denied.access, ...fakeStore(), llm: llm.llm, defaultModel: 'm' },
       },
     });
     await post(AUTH, BODY);

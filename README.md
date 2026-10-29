@@ -203,8 +203,10 @@ src/
     routes/memories.ts    /v1/memories: o utilizador vê, cria e apaga as suas memórias
     routes/admin.ts       /v1/admin/* (docs/ADMIN_API.md)
   engine/                 o motor: não importa do servidor, dos adaptadores nem da configuração (regra de lint)
+    engine.ts             a porta de entrada: createEngine({ settings, tools, access, store, memories, llm })
+                          → run, preview, trial, tools, memories; valida a entrada; emite eventos
     tool.ts               o contrato de uma ferramenta
-    run.ts                o caminho de um pedido (configuração, acesso, memórias, modelo, validação)
+    run.ts                os passos de um pedido (configuração, acesso, memórias, modelo, validação)
     errors.ts             EngineError: código estável, sem estado HTTP
     access.ts             interface de quem decide o acesso
     llm.ts                interface do fornecedor de modelos

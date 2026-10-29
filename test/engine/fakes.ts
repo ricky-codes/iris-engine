@@ -2,7 +2,8 @@ import type { AccessChecker } from '../../src/engine/access.js';
 import type { LlmProvider, LlmRequest, LlmResponse } from '../../src/engine/llm.js';
 import type { Memory, MemoryStore, RequestMemories } from '../../src/engine/memory.js';
 import type { EngineStore, ToolSettings } from '../../src/engine/store.js';
-import type { ToolDefaults } from '../../src/engine/tool.js';
+import { createEngine, type EngineOptions } from '../../src/engine/engine.js';
+import type { ToolDefaults, ToolDefinition } from '../../src/engine/tool.js';
 import { EngineError } from '../../src/engine/errors.js';
 
 /** Respostas HTTP gravadas para substituir o `fetch` nos testes dos clientes. */
@@ -46,8 +47,11 @@ export function fakeStore(
       ...overrides,
     }),
   };
-  const memoryReader: Pick<MemoryStore, 'forRequest'> = { forRequest: async () => memories };
-  return { store, memories: memoryReader };
+  const memoryStore: MemoryStore = {
+    ...fakeMemoryStore().store,
+    forRequest: async () => memories,
+  };
+  return { store, memories: memoryStore };
 }
 
 /** Devolve as respostas por ordem; a última repete-se. */
@@ -110,4 +114,19 @@ export function fakeMemoryStore() {
     summary: async (orgId) => ({ orgId, org: { count: 0, limit: 50 }, users: [] }),
   };
   return { store, rows };
+}
+
+/** Um motor com ferramentas reais e dependências falsas. */
+export function fakeEngine(
+  tools: ToolDefinition[],
+  deps: Partial<Omit<EngineOptions, 'tools' | 'settings'>> = {},
+) {
+  return createEngine({
+    settings: { defaultModel: 'm' },
+    tools,
+    access: fakeAccess().access,
+    llm: fakeLlm('{}').llm,
+    ...fakeStore(),
+    ...deps,
+  });
 }

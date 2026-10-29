@@ -1,7 +1,6 @@
 import { Type } from '@sinclair/typebox';
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import type { FastifyError, FastifyRequest } from 'fastify';
-import { runTool } from '../../engine/run.js';
 import { errorCodeOf, resolveError } from '../error-handler.js';
 import { AppError } from '../errors.js';
 import { bearerAuth, type ToolRoutesOptions } from './tools.js';
@@ -13,17 +12,6 @@ const ACTION_TOOLS: Record<string, string | undefined> = {
   reply: 'reply',
   knowledge: undefined,
 };
-
-/** Campos do Case que o Apex envia. Tudo o resto no corpo é ignorado. */
-const CASE_FIELDS = [
-  'case',
-  'account',
-  'contact',
-  'relatedCases',
-  'caseComments',
-  'emailMessages',
-  'payload',
-] as const;
 
 const Body = Type.Object(
   {
@@ -85,7 +73,7 @@ export const compatRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async 
       ]);
     }
     const toolName = ACTION_TOOLS[body.action];
-    const tool = opts.tools.find((t) => t.name === toolName);
+    const tool = toolName === undefined ? undefined : opts.engine.tool(toolName);
     // Antes do StepAccess: uma ação que ainda não existe não gasta utilização.
     if (tool === undefined) {
       throw new AppError(
@@ -95,10 +83,15 @@ export const compatRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async 
       );
     }
 
-    const input = Object.fromEntries(CASE_FIELDS.filter((k) => k in body).map((k) => [k, body[k]]));
+    // Só os campos que a ferramenta declara; o resto do que o Apex envia é ignorado.
+    const input = Object.fromEntries(
+      Object.keys(tool.input.properties)
+        .filter((k) => k in body)
+        .map((k) => [k, body[k]]),
+    );
     usage.set(request, { tool: tool.name });
     const started = performance.now();
-    const { result, meta } = await runTool(opts.deps, tool, {
+    const { result, meta } = await opts.engine.run(tool.name, {
       orgId: body.orgId,
       userId: body.userId,
       input,

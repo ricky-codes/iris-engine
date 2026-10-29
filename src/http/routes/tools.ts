@@ -3,14 +3,13 @@ import { Type, type TObject } from '@sinclair/typebox';
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import type { FastifyRequest } from 'fastify';
 import type { Metrics } from '../../engine/metrics.js';
-import { runTool, type EngineDeps } from '../../engine/run.js';
+import type { Engine } from '../../engine/engine.js';
 import type { ToolDefinition } from '../../engine/tool.js';
 import { errorCodeOf } from '../error-handler.js';
 import { AppError } from '../errors.js';
 
 export interface ToolRoutesOptions {
-  tools: ToolDefinition[];
-  deps: EngineDeps;
+  engine: Engine;
   apiSecret: string;
   /** Contadores agregados (sem conteúdo) para a API de administração. */
   metrics?: Metrics;
@@ -62,7 +61,7 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
 
   // Tokens de cada pedido, para as métricas. Somem com o pedido.
   const usage = new WeakMap<FastifyRequest, { inputTokens?: number; outputTokens?: number }>();
-  const toolNames = new Set(opts.tools.map((t) => t.name));
+  const toolNames = new Set(opts.engine.tools().map((t) => t.name));
 
   app.addHook('onResponse', async (request, reply) => {
     if (opts.metrics === undefined || request.method !== 'POST') return;
@@ -79,14 +78,14 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
   });
 
   app.get('/v1/tools', async () => ({
-    tools: opts.tools.map((t) => ({
+    tools: opts.engine.tools().map((t) => ({
       name: t.name,
       version: t.version,
       description: t.description,
     })),
   }));
 
-  for (const tool of opts.tools) {
+  for (const tool of opts.engine.tools()) {
     app.post(`/v1/tools/${tool.name}`, { schema: { body: bodySchema(tool) } }, async (request) => {
       const body = request.body as Record<string, unknown> & { orgId: string; userId: string };
       const { orgId, userId } = body;
@@ -96,7 +95,7 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
       );
 
       const started = performance.now();
-      const { result, meta } = await runTool(opts.deps, tool, {
+      const { result, meta } = await opts.engine.run(tool.name, {
         orgId,
         userId,
         input,

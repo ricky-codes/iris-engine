@@ -57,6 +57,7 @@ const ENGINE_HTTP_STATUS: Record<EngineErrorCode, number> = {
   not_found: 404,
   forbidden: 403,
   memory_limit_reached: 409,
+  unknown_tool: 404,
 };
 
 /** Um erro do motor no formato da API. O código e a mensagem passam tal como estão. */

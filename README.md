@@ -47,25 +47,26 @@ O script confirma primeiro que o `.env` tem tudo o que a produção exige (sem m
 
 Variáveis de ambiente, validadas no arranque (`src/config.ts`). Com configuração inválida, o processo termina com código 1 e a lista de problemas. Ver `.env.example`.
 
-| Variável                                                  | Omissão                                                                             |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `NODE_ENV`                                                | `development`                                                                       |
-| `HOST`                                                    | `0.0.0.0`                                                                           |
-| `PORT`                                                    | `8080`                                                                              |
-| `LOG_LEVEL`                                               | `info`                                                                              |
-| `MAX_BODY_BYTES`                                          | `1048576`                                                                           |
-| `SHUTDOWN_TIMEOUT_MS`                                     | `10000`                                                                             |
-| `DATABASE_URL`                                            | _(vazio)_                                                                           |
-| `MIGRATIONS_DIR`                                          | `migrations`                                                                        |
-| `API_SECRET`                                              | _(vazio)_ — segredo partilhado com o Salesforce, ≥ 32 caracteres                    |
-| `STEPACCESS_URL`, `_USER`, `_PASSWORD`, `_COMPONENT_UUID` | _(vazio)_ — todos ou nenhum                                                         |
-| `STEPACCESS_TIMEOUT_MS`                                   | `3000`                                                                              |
-| `STEPACCESS_BYPASS`                                       | `false` — proibido em produção                                                      |
-| `OPENROUTER_API_KEY`                                      | _(vazio)_                                                                           |
-| `OPENROUTER_BASE_URL`                                     | `https://openrouter.ai/api/v1`                                                      |
-| `LLM_DEFAULT_MODEL`                                       | `google/gemini-2.5-flash`                                                           |
-| `ENABLE_DIAGNOSTIC_TOOL`                                  | `false`                                                                             |
-| `ADMIN_API_SECRET`                                        | _(vazio)_ — liga a API de administração; ≥ 32 caracteres, diferente do `API_SECRET` |
+| Variável                                                  | Omissão                                                                                       |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                                                | `development`                                                                                 |
+| `HOST`                                                    | `0.0.0.0`                                                                                     |
+| `PORT`                                                    | `8080`                                                                                        |
+| `LOG_LEVEL`                                               | `info`                                                                                        |
+| `MAX_BODY_BYTES`                                          | `1048576`                                                                                     |
+| `SHUTDOWN_TIMEOUT_MS`                                     | `10000`                                                                                       |
+| `DATABASE_URL`                                            | _(vazio)_                                                                                     |
+| `MIGRATIONS_DIR`                                          | `migrations`                                                                                  |
+| `API_SECRET`                                              | _(vazio)_ — segredo partilhado com o Salesforce, ≥ 32 caracteres                              |
+| `STEPACCESS_URL`, `_USER`, `_PASSWORD`, `_COMPONENT_UUID` | _(vazio)_ — todos ou nenhum                                                                   |
+| `STEPACCESS_TIMEOUT_MS`                                   | `3000`                                                                                        |
+| `STEPACCESS_BYPASS`                                       | `false` — proibido em produção                                                                |
+| `ACCESS_MODE`                                             | `stepaccess` — ou `open`: acesso só pelo `API_SECRET`, sem StepAccess (permitido em produção) |
+| `OPENROUTER_API_KEY`                                      | _(vazio)_                                                                                     |
+| `OPENROUTER_BASE_URL`                                     | `https://openrouter.ai/api/v1`                                                                |
+| `LLM_DEFAULT_MODEL`                                       | `google/gemini-2.5-flash`                                                                     |
+| `ENABLE_DIAGNOSTIC_TOOL`                                  | `false`                                                                                       |
+| `ADMIN_API_SECRET`                                        | _(vazio)_ — liga a API de administração; ≥ 32 caracteres, diferente do `API_SECRET`           |
 
 ## Endpoints
 

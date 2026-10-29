@@ -4,7 +4,7 @@ import type pg from 'pg';
 import { buildApp } from './app.js';
 import { ConfigError, loadConfig, missingEngineConfig, type AppConfig } from './config.js';
 import { createPool } from './db/pool.js';
-import { BypassAccessChecker } from './adapters/bypass-access.js';
+import { OpenAccessChecker } from './adapters/open-access.js';
 import { checkOpenRouter, checkStepAccess, timed, type CheckResult } from './adapters/health.js';
 import { ModelCatalog } from './adapters/openrouter-models.js';
 import { OpenRouterProvider } from './adapters/openrouter.js';
@@ -39,7 +39,9 @@ function readVersion(): string {
 function accessChecker(config: AppConfig): AccessChecker | undefined {
   const sa = config.engine.stepAccess;
   if (sa === undefined) return undefined;
-  return sa === 'bypass' ? new BypassAccessChecker() : new StepAccessClient(sa, fetch, warn);
+  return sa === 'open' || sa === 'bypass'
+    ? new OpenAccessChecker()
+    : new StepAccessClient(sa, fetch, warn);
 }
 
 /** Sem StepAccess configurado: recusa tudo o que precise de verificar acesso. */
@@ -69,7 +71,7 @@ function buildEngine(
     memories: new PgMemoryStore(pool),
     llm: new OpenRouterProvider(cfg.openRouter, fetch, warn),
     ...(cfg.stepAccess !== undefined &&
-      cfg.stepAccess !== 'bypass' && {
+      typeof cfg.stepAccess === 'object' && {
         usage: new StepAccessUsageReporter(cfg.stepAccess, fetch, warn),
       }),
   });
@@ -100,9 +102,11 @@ function buildAdmin(
       }),
       sa === undefined
         ? notConfigured('STEPACCESS_* em falta')
-        : sa === 'bypass'
-          ? notConfigured('STEPACCESS_BYPASS ativo: pedidos não verificados')
-          : checkStepAccess(sa.url),
+        : sa === 'open'
+          ? notConfigured('ACCESS_MODE=open: acesso só pelo API_SECRET, sem StepAccess')
+          : sa === 'bypass'
+            ? notConfigured('STEPACCESS_BYPASS ativo: pedidos não verificados')
+            : checkStepAccess(sa.url),
       cfg.openRouter === undefined
         ? notConfigured('OPENROUTER_API_KEY em falta')
         : checkOpenRouter(cfg.openRouter),
@@ -117,7 +121,7 @@ function buildAdmin(
       },
       engine: { ready: engine.ready, missing: engine.missing, tools: tools.map((t) => t.name) },
       config: {
-        stepAccess: sa === undefined ? 'missing' : sa === 'bypass' ? 'bypass' : 'live',
+        stepAccess: sa === undefined ? 'missing' : typeof sa === 'string' ? sa : 'live',
         openRouter: cfg.openRouter === undefined ? 'missing' : 'configured',
         defaultModel: cfg.defaultModel,
         diagnosticTool: cfg.enableDiagnosticTool,
@@ -176,7 +180,8 @@ async function main(): Promise<void> {
     metrics,
     { ready: engine !== undefined, missing },
     core,
-    access !== undefined,
+    // Só o StepAccess conta utilização; no modo aberto ou em bypass não há o que contar.
+    typeof config.engine.stepAccess === 'object',
   );
 
   // As memórias só precisam da base de dados e do segredo do Salesforce, não do StepAccess.
@@ -209,6 +214,11 @@ async function main(): Promise<void> {
   } else {
     if (config.engine.stepAccess === 'bypass') {
       app.log.warn('STEPACCESS_BYPASS ativo: os pedidos não são verificados no StepAccess');
+    }
+    if (config.engine.stepAccess === 'open') {
+      app.log.info(
+        'ACCESS_MODE=open: acesso só pelo API_SECRET, sem StepAccess; o custo fica nos logs',
+      );
     }
     app.log.info({ tools: core?.tools().map((t) => t.name) }, 'motor pronto');
   }

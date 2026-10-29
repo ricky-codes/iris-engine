@@ -237,15 +237,15 @@ Resposta `200`:
 }
 ```
 
-| Campo                       | Significado                                                                                                         |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `engine.ready`              | `true` = o Salesforce consegue usar a IRIS. `false` = falta configuração (ver `missing`).                           |
-| `engine.missing`            | O que falta configurar (texto), ex.: `"OPENROUTER_API_KEY"`.                                                        |
-| `engine.tools`              | Ferramentas implementadas e ativas neste servidor.                                                                  |
-| `config.stepAccess`         | `live` (verifica cada pedido), `bypass` (**não verifica — só desenvolvimento**, mostrar aviso vermelho), `missing`. |
-| `config.openRouter`         | `configured` ou `missing`.                                                                                          |
-| `checks.*.status`           | `ok`, `failed` (ver `detail`, ex.: `"HTTP 401"`, `"TimeoutError"`), `not_configured` (ver `detail`).                |
-| `checks.openRouter.credits` | `usage` = USD gastos com a chave; `limit` = limite da chave em USD (`null` = sem limite). Pode faltar.              |
+| Campo                       | Significado                                                                                                                                                                                                      |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine.ready`              | `true` = o Salesforce consegue usar a IRIS. `false` = falta configuração (ver `missing`).                                                                                                                        |
+| `engine.missing`            | O que falta configurar (texto), ex.: `"OPENROUTER_API_KEY"`.                                                                                                                                                     |
+| `engine.tools`              | Ferramentas implementadas e ativas neste servidor.                                                                                                                                                               |
+| `config.stepAccess`         | `live` (verifica cada pedido), `open` (`ACCESS_MODE=open`: acesso só pelo `API_SECRET`, sem licenças — escolha deliberada), `bypass` (**não verifica — só desenvolvimento**, mostrar aviso vermelho), `missing`. |
+| `config.openRouter`         | `configured` ou `missing`.                                                                                                                                                                                       |
+| `checks.*.status`           | `ok`, `failed` (ver `detail`, ex.: `"HTTP 401"`, `"TimeoutError"`), `not_configured` (ver `detail`).                                                                                                             |
+| `checks.openRouter.credits` | `usage` = USD gastos com a chave; `limit` = limite da chave em USD (`null` = sem limite). Pode faltar.                                                                                                           |
 
 ### 5.2 `GET /v1/admin/metrics`
 

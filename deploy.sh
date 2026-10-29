@@ -63,16 +63,29 @@ NODE_ENV_VALUE="$(env_value NODE_ENV)"
 # A imagem define NODE_ENV=production quando o .env não diz outra coisa.
 EFFECTIVE_ENV="${NODE_ENV_VALUE:-production}"
 BYPASS="$(env_value STEPACCESS_BYPASS)"
+ACCESS_MODE="$(env_value ACCESS_MODE)"
+ACCESS_MODE="${ACCESS_MODE:-stepaccess}"
 
 step "A verificar a configuração ($EFFECTIVE_ENV)"
 MISSING=()
 env_set API_SECRET || MISSING+=("API_SECRET")
 env_set OPENROUTER_API_KEY || MISSING+=("OPENROUTER_API_KEY")
-if [ "$BYPASS" != "true" ]; then
-  for key in STEPACCESS_URL STEPACCESS_USER STEPACCESS_PASSWORD STEPACCESS_COMPONENT_UUID; do
-    env_set "$key" || MISSING+=("$key")
-  done
-fi
+case "$ACCESS_MODE" in
+  open)
+    # Acesso só pelo API_SECRET: o StepAccess não pode estar configurado ao mesmo tempo.
+    for key in STEPACCESS_URL STEPACCESS_USER STEPACCESS_PASSWORD STEPACCESS_COMPONENT_UUID STEPACCESS_BYPASS; do
+      env_set "$key" && fail "ACCESS_MODE=open não usa o StepAccess: remova $key do .env."
+    done
+    ;;
+  stepaccess)
+    if [ "$BYPASS" != "true" ]; then
+      for key in STEPACCESS_URL STEPACCESS_USER STEPACCESS_PASSWORD STEPACCESS_COMPONENT_UUID; do
+        env_set "$key" || MISSING+=("$key")
+      done
+    fi
+    ;;
+  *) fail "ACCESS_MODE=$ACCESS_MODE não é válido: use stepaccess ou open." ;;
+esac
 
 if [ "$EFFECTIVE_ENV" = "production" ]; then
   [ "$BYPASS" = "true" ] && fail "STEPACCESS_BYPASS=true é proibido em produção: o serviço não arranca. Remova-o do .env."
@@ -80,6 +93,7 @@ if [ "$EFFECTIVE_ENV" = "production" ]; then
     fail "Em produção faltam no .env: ${MISSING[*]}. O serviço não arrancaria."
   fi
   ok "Configuração completa para produção"
+  [ "$ACCESS_MODE" = "open" ] && warn "ACCESS_MODE=open: acesso só pelo API_SECRET, sem licenças nem contagem de utilização no StepAccess."
 else
   if [ "${#MISSING[@]}" -gt 0 ]; then
     warn "Faltam no .env: ${MISSING[*]}. O motor ficará desligado (só /healthz e /readyz)."

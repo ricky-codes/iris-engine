@@ -7,13 +7,13 @@ const STEPACCESS = {
   STEPACCESS_PASSWORD: 'segredo',
   STEPACCESS_COMPONENT_UUID: '3f2a9c1e-8b7d-4e6f-9a0b-1c2d3e4f5a6b',
 };
-const PRODUCTION = {
+const PRODUCTION_NO_STEPACCESS = {
   NODE_ENV: 'production',
   DATABASE_URL: 'postgres://u:p@localhost:5432/d',
   API_SECRET: 'x'.repeat(32),
   OPENROUTER_API_KEY: 'sk-or-teste',
-  ...STEPACCESS,
 };
+const PRODUCTION = { ...PRODUCTION_NO_STEPACCESS, ...STEPACCESS };
 
 describe('loadConfig', () => {
   it('aplica os valores por omissão', () => {
@@ -82,6 +82,29 @@ describe('loadConfig', () => {
     const config = loadConfig({ STEPACCESS_BYPASS: 'true', ENABLE_DIAGNOSTIC_TOOL: 'true' });
     expect(config.engine.stepAccess).toBe('bypass');
     expect(config.engine.enableDiagnosticTool).toBe(true);
+  });
+
+  it('ACCESS_MODE=open: em produção chega o API_SECRET, sem StepAccess', () => {
+    const rest = PRODUCTION_NO_STEPACCESS;
+    expect(() => loadConfig(rest)).toThrow(/STEPACCESS_URL/);
+    expect(loadConfig({ ...rest, ACCESS_MODE: 'open' }).engine.stepAccess).toBe('open');
+    // O resto do motor continua obrigatório.
+    expect(() => loadConfig({ ...rest, ACCESS_MODE: 'open', API_SECRET: '' })).toThrow(
+      /API_SECRET/,
+    );
+  });
+
+  it('ACCESS_MODE=open não se mistura com o StepAccess nem com o atalho', () => {
+    expect(() => loadConfig({ ACCESS_MODE: 'open', ...STEPACCESS })).toThrow(
+      /não se usa com ACCESS_MODE=open/,
+    );
+    expect(() => loadConfig({ ACCESS_MODE: 'open', STEPACCESS_BYPASS: 'true' })).toThrow(
+      /STEPACCESS_BYPASS: não se usa/,
+    );
+    expect(() => loadConfig({ ACCESS_MODE: 'aberto' })).toThrow(/ACCESS_MODE/);
+    expect(
+      loadConfig({ ...STEPACCESS, ACCESS_MODE: 'stepaccess' }).engine.stepAccess,
+    ).toMatchObject({ url: 'https://access.example.com' });
   });
 
   it('o segredo de admin é opcional, mas tem de ser diferente do API_SECRET', () => {

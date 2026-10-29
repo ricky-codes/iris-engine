@@ -46,6 +46,11 @@ const EnvSchema = Type.Object({
   STEPACCESS_TIMEOUT_MS: Type.Integer({ minimum: 100, default: 3000 }),
   // Só fora de produção: deixa passar todos os pedidos sem perguntar ao StepAccess.
   STEPACCESS_BYPASS: Type.Boolean({ default: false }),
+  // Quem controla o acesso às ferramentas. `stepaccess`: licenças e utilização no StepAccess.
+  // `open`: só a credencial da API (API_SECRET), sem StepAccess; o custo fica nos logs.
+  ACCESS_MODE: Type.Union([Type.Literal('stepaccess'), Type.Literal('open')], {
+    default: 'stepaccess',
+  }),
 
   // OpenRouter: fornecedor dos modelos de IA.
   OPENROUTER_API_KEY: Type.Optional(Type.String({ minLength: 1 })),
@@ -87,8 +92,11 @@ export interface StepAccessConfig {
 
 export interface EngineConfig {
   apiSecret: string | undefined;
-  /** `bypass`: sem StepAccess (só fora de produção). `undefined`: não configurado. */
-  stepAccess: StepAccessConfig | 'bypass' | undefined;
+  /**
+   * `open`: sem StepAccess, por escolha (`ACCESS_MODE=open`). `bypass`: sem StepAccess, só
+   * fora de produção. `undefined`: não configurado.
+   */
+  stepAccess: StepAccessConfig | 'open' | 'bypass' | undefined;
   openRouter: { apiKey: string; baseUrl: string } | undefined;
   defaultModel: string;
   enableDiagnosticTool: boolean;
@@ -152,22 +160,41 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     ]);
   }
 
+  if (converted.ACCESS_MODE === 'open') {
+    const conflicts = [
+      ...(stepAccessCount > 0
+        ? ['STEPACCESS_URL, STEPACCESS_USER, STEPACCESS_PASSWORD e STEPACCESS_COMPONENT_UUID']
+        : []),
+      ...(converted.STEPACCESS_BYPASS ? ['STEPACCESS_BYPASS'] : []),
+    ];
+    if (conflicts.length > 0) {
+      throw new ConfigError(
+        conflicts.map(
+          (c) => `${c}: não se usa com ACCESS_MODE=open (o acesso é só pelo API_SECRET)`,
+        ),
+      );
+    }
+  }
+
   const engine: EngineConfig = {
     apiSecret: converted.API_SECRET,
-    stepAccess: converted.STEPACCESS_BYPASS
-      ? 'bypass'
-      : converted.STEPACCESS_URL !== undefined &&
-          converted.STEPACCESS_USER !== undefined &&
-          converted.STEPACCESS_PASSWORD !== undefined &&
-          converted.STEPACCESS_COMPONENT_UUID !== undefined
-        ? {
-            url: converted.STEPACCESS_URL.replace(/\/+$/, ''),
-            user: converted.STEPACCESS_USER,
-            password: converted.STEPACCESS_PASSWORD,
-            componentUuid: converted.STEPACCESS_COMPONENT_UUID,
-            timeoutMs: converted.STEPACCESS_TIMEOUT_MS,
-          }
-        : undefined,
+    stepAccess:
+      converted.ACCESS_MODE === 'open'
+        ? 'open'
+        : converted.STEPACCESS_BYPASS
+          ? 'bypass'
+          : converted.STEPACCESS_URL !== undefined &&
+              converted.STEPACCESS_USER !== undefined &&
+              converted.STEPACCESS_PASSWORD !== undefined &&
+              converted.STEPACCESS_COMPONENT_UUID !== undefined
+            ? {
+                url: converted.STEPACCESS_URL.replace(/\/+$/, ''),
+                user: converted.STEPACCESS_USER,
+                password: converted.STEPACCESS_PASSWORD,
+                componentUuid: converted.STEPACCESS_COMPONENT_UUID,
+                timeoutMs: converted.STEPACCESS_TIMEOUT_MS,
+              }
+            : undefined,
     openRouter:
       converted.OPENROUTER_API_KEY === undefined
         ? undefined

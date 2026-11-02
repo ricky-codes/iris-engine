@@ -13,7 +13,12 @@ import { PgEngineStore, syncToolCatalog } from './adapters/postgres-store.js';
 import { StepAccessClient } from './adapters/stepaccess-access.js';
 import { StepAccessUsageReporter } from './adapters/stepaccess-usage.js';
 import type { AccessChecker } from './engine/access.js';
-import type { RuntimeFacts } from './admin/topology.js';
+import { statusReport } from './admin/status.js';
+import { collectTopology } from './admin/topology-source.js';
+import type { RuntimeFacts, Topology } from './admin/topology.js';
+import { AlertMonitor } from './alerts/monitor.js';
+import { PgLeaderLock } from './adapters/pg-leader-lock.js';
+import { NoopAlertSink, WebhookAlertSink } from './adapters/webhook-alert-sink.js';
 import { createEngine, type Engine } from './engine/engine.js';
 import { DEFAULT_MAX_ATTEMPTS } from './engine/run.js';
 import { EngineError } from './engine/errors.js';
@@ -94,30 +99,28 @@ function buildEngine(
   });
 }
 
-function buildAdmin(
+/** O que só o servidor sabe: configuração em vigor, rotas ligadas e verificações das dependências. */
+function runtimeFacts(
   config: AppConfig,
   pool: pg.Pool | undefined,
-  tools: ToolDefinition[],
-  metrics: Metrics,
   engine: { ready: boolean; missing: string[] },
-  playground: Engine | undefined,
-  countsUsage: boolean,
+  core: Engine | undefined,
   memoriesOn: boolean,
-): AdminRoutesOptions | undefined {
-  if (config.adminApiSecret === undefined || pool === undefined) return undefined;
+): () => Promise<RuntimeFacts> {
   const { engine: cfg } = config;
   const startedAt = new Date();
   const version = readVersion();
-
-  const runtime = async (): Promise<RuntimeFacts> => {
+  return async () => {
     const sa = cfg.stepAccess;
     const notConfigured = (detail: string): Promise<CheckResult> =>
       Promise.resolve({ status: 'not_configured', latencyMs: null, detail });
     const [database, stepAccess, openRouter] = await Promise.all([
-      timed(async () => {
-        await pool.query('SELECT 1');
-        return undefined;
-      }),
+      pool === undefined
+        ? notConfigured('DATABASE_URL em falta')
+        : timed(async () => {
+            await pool.query('SELECT 1');
+            return undefined;
+          }),
       sa === undefined
         ? notConfigured('STEPACCESS_* em falta')
         : sa === 'open'
@@ -141,7 +144,7 @@ function buildAdmin(
         ready: engine.ready,
         missing: engine.missing,
         defaultModel: cfg.defaultModel,
-        maxAttempts: playground?.settings.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+        maxAttempts: core?.settings.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
       },
       access: sa === undefined ? 'missing' : typeof sa === 'string' ? sa : 'live',
       openRouter: cfg.openRouter === undefined ? 'missing' : 'configured',
@@ -149,21 +152,30 @@ function buildAdmin(
       checks: { database, stepAccess, openRouter },
     };
   };
+}
 
-  const status = async (): Promise<StatusReport> => {
-    const rt = await runtime();
-    return {
-      service: rt.service,
-      engine: { ready: engine.ready, missing: engine.missing, tools: tools.map((t) => t.name) },
-      config: {
-        stepAccess: rt.access,
-        openRouter: rt.openRouter,
-        defaultModel: cfg.defaultModel,
-        diagnosticTool: cfg.enableDiagnosticTool,
-      },
-      checks: rt.checks,
-    };
-  };
+function buildAdmin(
+  config: AppConfig,
+  pool: pg.Pool | undefined,
+  tools: ToolDefinition[],
+  metrics: Metrics,
+  runtime: () => Promise<RuntimeFacts>,
+  topology: () => Promise<Topology>,
+  monitor: AlertMonitor,
+  playground: Engine | undefined,
+  countsUsage: boolean,
+): AdminRoutesOptions | undefined {
+  if (config.adminApiSecret === undefined || pool === undefined) return undefined;
+  const { engine: cfg } = config;
+
+  const status = async (): Promise<StatusReport> =>
+    statusReport({
+      runtime: await runtime(),
+      tools: tools.map((t) => t.name),
+      defaultModel: cfg.defaultModel,
+      diagnosticTool: cfg.enableDiagnosticTool,
+      alerts: monitor.facts(),
+    });
 
   return {
     secret: config.adminApiSecret,
@@ -173,7 +185,8 @@ function buildAdmin(
     defaultFallbackModels: cfg.fallbackModels,
     metrics,
     status,
-    runtime,
+    topology,
+    alerts: monitor,
     models: new ModelCatalog(cfg.openRouter?.baseUrl ?? 'https://openrouter.ai/api/v1'),
     playground: playground === undefined ? undefined : { engine: playground, countsUsage },
   };
@@ -216,16 +229,53 @@ async function main(): Promise<void> {
       ? undefined
       : { memories: new Memories(new PgMemoryStore(pool)), apiSecret: config.engine.apiSecret };
 
+  const engineState = { ready: engine !== undefined, missing };
+  const runtime = runtimeFacts(config, pool, engineState, core, memories !== undefined);
+
+  // Alertas: avaliados em intervalo a partir da topologia e das métricas; enviados por webhook.
+  const { alerts: alertsCfg } = config;
+  const sink =
+    alertsCfg.webhook === undefined
+      ? new NoopAlertSink()
+      : new WebhookAlertSink(alertsCfg.webhook, fetch);
+  const leader = pool === undefined ? undefined : new PgLeaderLock(pool);
+  const breakers = () => core?.openBreakers() ?? [];
+  const topology = (): Promise<Topology> =>
+    collectTopology({
+      pool,
+      runtime,
+      tools,
+      defaultModel: config.engine.defaultModel,
+      defaultFallbackModels: config.engine.fallbackModels,
+      metrics,
+      breakers,
+      alerts: () => monitor.facts(),
+    });
+  const monitor = new AlertMonitor({
+    sink,
+    format: alertsCfg.webhook?.format ?? null,
+    topology,
+    metrics,
+    breakers,
+    service: { name: 'iris-engine', environment: config.env },
+    consoleUrl: alertsCfg.consoleUrl,
+    windowMs: alertsCfg.windowMs,
+    repeatMs: alertsCfg.repeatMs,
+    leader,
+    log: warn,
+  });
+
   const admin = buildAdmin(
     config,
     pool,
     tools,
     metrics,
-    { ready: engine !== undefined, missing },
+    runtime,
+    topology,
+    monitor,
     core,
     // Só o StepAccess conta utilização; no modo aberto ou em bypass não há o que contar.
     typeof config.engine.stepAccess === 'object',
-    memories !== undefined,
   );
 
   const app = await buildApp({
@@ -244,6 +294,12 @@ async function main(): Promise<void> {
               },
             },
           ],
+  });
+  monitor.start(alertsCfg.evalIntervalMs);
+  app.addHook('onClose', async () => {
+    monitor.stop();
+    await monitor.flush();
+    await leader?.release();
   });
   if (pool !== undefined) app.addHook('onClose', async () => pool.end());
   logger = app.log;

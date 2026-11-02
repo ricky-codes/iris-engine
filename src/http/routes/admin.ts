@@ -21,10 +21,9 @@ import {
   setActivePromptVersion,
   type ToolCatalogRow,
 } from '../../admin/tools.js';
-import { MAX_MEMORY_CHARS, MAX_ORG_MEMORIES, MAX_USER_MEMORIES } from '../../engine/memory.js';
 import type { Metrics } from '../../engine/metrics.js';
-import { buildTopology, type RuntimeFacts, type ToolFact } from '../../admin/topology.js';
-import { memoriesIn } from '../../admin/commands.js';
+import type { Topology } from '../../admin/topology.js';
+import type { Alert, DeliveryResult } from '../../alerts/types.js';
 import type { ModelInfo } from '../../adapters/openrouter-models.js';
 import type { Engine } from '../../engine/engine.js';
 import { fallbackChain } from '../../engine/store.js';
@@ -44,8 +43,13 @@ export interface AdminRoutesOptions {
   defaultFallbackModels: string[];
   metrics: Metrics;
   status: () => Promise<StatusReport>;
-  /** Configuração em vigor, rotas ligadas e verificações, para a topologia. */
-  runtime: () => Promise<RuntimeFacts>;
+  /** Os módulos e o estado de cada um (ver src/admin/topology-source.ts). */
+  topology: () => Promise<Topology>;
+  /** Os alertas ativos e recentes, e o envio de um alerta de teste. */
+  alerts: {
+    view(): { configured: boolean; active: Alert[]; recent: Alert[] };
+    sendTest(): Promise<DeliveryResult>;
+  };
   models: { list(): Promise<{ models: ModelInfo[]; fetchedAt: string }> };
   /** Sem dependências não há playground (falta base de dados ou OpenRouter). */
   playground:
@@ -176,42 +180,17 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
   app.get('/v1/admin/metrics', async () => opts.metrics.snapshot());
 
   // Os módulos da IRIS, como estão ligados e o estado de cada um, para a consola desenhar.
-  app.get('/v1/admin/topology', async () => {
-    const memories = memoriesIn(opts.pool);
-    const [runtime, catalog, org, user] = await Promise.all([
-      opts.runtime(),
-      listToolCatalog(opts.pool),
-      memories.count({ scope: 'org' }),
-      memories.count({ scope: 'user' }),
-    ]);
-    const usage = new Map(opts.metrics.snapshot().byTool.map((t) => [t.tool, t]));
-    const tools: ToolFact[] = catalog.map((row) => {
-      const t = toolJson(row);
-      return {
-        name: t.name,
-        implemented: t.implemented,
-        version: t.version,
-        enabled: t.enabled,
-        model: t.config?.model ?? null,
-        modelSource: t.config?.source ?? null,
-        fallbackModels: t.config?.fallbackModels ?? [],
-        prompt: { source: t.prompt.source, version: t.prompt.activeVersion },
-        requests: usage.get(t.name)?.requests ?? 0,
-        failed: usage.get(t.name)?.failed ?? 0,
-        fallbacks: usage.get(t.name)?.fallbacks ?? 0,
-      };
-    });
-    return buildTopology({
-      runtime,
-      tools,
-      breakers: opts.playground?.engine.openBreakers() ?? [],
-      memories: {
-        org,
-        user,
-        limits: { chars: MAX_MEMORY_CHARS, perOrg: MAX_ORG_MEMORIES, perUser: MAX_USER_MEMORIES },
-      },
-    });
-  });
+  app.get('/v1/admin/topology', async () => opts.topology());
+
+  // ---------- alertas ----------
+
+  app.get('/v1/admin/alerts', async () => opts.alerts.view());
+
+  // Envia já um alerta de teste e devolve como correu (estado HTTP e duração, sem o corpo).
+  app.post('/v1/admin/alerts/test', async () => ({
+    key: 'test',
+    ...(await opts.alerts.sendTest()),
+  }));
 
   app.get(
     '/v1/admin/models',

@@ -63,6 +63,7 @@ function topology(over: Partial<TopologyInput> = {}) {
       runtime: runtime(),
       tools: [sentiment, reply],
       breakers: [],
+      alerts: { configured: false, format: null, active: 0, lastSentAt: null, lastError: null },
       memories: { org: 3, user: 7, limits: { chars: 500, perOrg: 50, perUser: 20 } },
       ...over,
     },
@@ -206,6 +207,34 @@ describe('buildTopology', () => {
       status: 'warning',
       summary: 'Disjuntor aberto: gemini-2.5-flash',
     });
+  });
+
+  it('alertas: sem webhook ficam desligados; com falha no último envio, aviso', () => {
+    const none = topology();
+    expect(node(none, 'adapter.alerts')).toMatchObject({ label: 'sem envio', status: 'off' });
+    expect(node(none, 'external.webhook').status).toBe('off');
+    expect(hasEdge(none, 'adapter.alerts', 'external.webhook')).toBe(false);
+    expect(hasEdge(none, 'core.alerts', 'port.alerts')).toBe(true);
+    expect(none.overall).toBe('ok');
+
+    const failing = topology({
+      alerts: {
+        configured: true,
+        format: 'slack',
+        active: 2,
+        lastSentAt: null,
+        lastError: 'HTTP 500',
+      },
+    });
+    expect(node(failing, 'adapter.alerts')).toMatchObject({
+      label: 'WebhookAlertSink',
+      status: 'warning',
+      summary: 'O último envio falhou: HTTP 500',
+      details: { active: 2, lastError: 'HTTP 500', format: 'slack' },
+      configure: { where: 'env' },
+    });
+    expect(node(failing, 'core.alerts').summary).toBe('2 alerta(s) ativo(s)');
+    expect(hasEdge(failing, 'adapter.alerts', 'external.webhook')).toBe(true);
   });
 
   it('ferramentas: desligada, sem implementação e com muitas falhas', () => {

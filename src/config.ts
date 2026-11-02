@@ -66,6 +66,21 @@ const EnvSchema = Type.Object({
   // callout do Apex (120 s), com margem para o resto do pedido.
   LLM_TOTAL_TIMEOUT_MS: Type.Integer({ minimum: 2000, maximum: 115_000, default: 30_000 }),
 
+  // Alertas: POST JSON para um webhook (n8n, Slack, email…) quando algo fica mal. Sem URL, os
+  // alertas continuam a ser calculados e ficam visíveis na API de administração.
+  ALERT_WEBHOOK_URL: Type.Optional(Type.String({ pattern: '^https?://[^\\s]+$' })),
+  // Segredo para a assinatura HMAC (cabeçalho X-Iris-Signature). Obrigatório com o URL.
+  ALERT_WEBHOOK_SECRET: Type.Optional(Type.String({ minLength: 32 })),
+  // `iris` (JSON completo) ou `slack` ({ text }).
+  ALERT_WEBHOOK_FORMAT: Type.Union([Type.Literal('iris'), Type.Literal('slack')], {
+    default: 'iris',
+  }),
+  ALERT_EVAL_INTERVAL_MS: Type.Integer({ minimum: 10_000, default: 60_000 }),
+  ALERT_WINDOW_MS: Type.Integer({ minimum: 60_000, default: 900_000 }),
+  ALERT_REPEAT_MS: Type.Integer({ minimum: 60_000, default: 14_400_000 }),
+  // Endereço da consola, para o alerta levar um link.
+  CONSOLE_URL: Type.Optional(Type.String({ pattern: '^https?://[^\\s]+$' })),
+
   // Ferramenta de diagnóstico, para testar a ligação ponta a ponta.
   ENABLE_DIAGNOSTIC_TOOL: Type.Boolean({ default: false }),
 });
@@ -85,6 +100,16 @@ export interface AppConfig {
   engine: EngineConfig;
   /** Sem segredo não há API de administração. */
   adminApiSecret: string | undefined;
+  alerts: AlertsConfig;
+}
+
+export interface AlertsConfig {
+  /** Sem webhook os alertas são calculados, mas não enviados. */
+  webhook: { url: string; secret: string; format: 'iris' | 'slack' } | undefined;
+  evalIntervalMs: number;
+  windowMs: number;
+  repeatMs: number;
+  consoleUrl: string | undefined;
 }
 
 export interface StepAccessConfig {
@@ -235,6 +260,18 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
   };
 
   if (
+    (converted.ALERT_WEBHOOK_URL === undefined) !==
+    (converted.ALERT_WEBHOOK_SECRET === undefined)
+  ) {
+    throw new ConfigError(['ALERT_WEBHOOK_URL e ALERT_WEBHOOK_SECRET: ou os dois ou nenhum']);
+  }
+  if (converted.ALERT_WINDOW_MS < converted.ALERT_EVAL_INTERVAL_MS * 2) {
+    throw new ConfigError([
+      'ALERT_WINDOW_MS: tem de ser pelo menos o dobro de ALERT_EVAL_INTERVAL_MS',
+    ]);
+  }
+
+  if (
     converted.ADMIN_API_SECRET !== undefined &&
     converted.ADMIN_API_SECRET === converted.API_SECRET
   ) {
@@ -258,5 +295,19 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     migrationsDir: converted.MIGRATIONS_DIR,
     engine,
     adminApiSecret: converted.ADMIN_API_SECRET,
+    alerts: {
+      webhook:
+        converted.ALERT_WEBHOOK_URL === undefined || converted.ALERT_WEBHOOK_SECRET === undefined
+          ? undefined
+          : {
+              url: converted.ALERT_WEBHOOK_URL,
+              secret: converted.ALERT_WEBHOOK_SECRET,
+              format: converted.ALERT_WEBHOOK_FORMAT,
+            },
+      evalIntervalMs: converted.ALERT_EVAL_INTERVAL_MS,
+      windowMs: converted.ALERT_WINDOW_MS,
+      repeatMs: converted.ALERT_REPEAT_MS,
+      consoleUrl: converted.CONSOLE_URL?.replace(/\/+$/, ''),
+    },
   };
 }

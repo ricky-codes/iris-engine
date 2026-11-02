@@ -1,0 +1,192 @@
+import { describe, expect, it } from 'vitest';
+import {
+  buildTopology,
+  type RuntimeFacts,
+  type ToolFact,
+  type TopologyInput,
+} from '../../src/admin/topology.js';
+
+const OK = { status: 'ok' as const, latencyMs: 12 };
+
+function runtime(over: Partial<RuntimeFacts> = {}): RuntimeFacts {
+  return {
+    service: {
+      name: 'iris-engine',
+      version: '0.1.0',
+      environment: 'production',
+      startedAt: '2026-11-02T00:00:00.000Z',
+      uptimeSeconds: 60,
+    },
+    engine: { ready: true, missing: [], defaultModel: 'google/gemini-2.5-flash', maxAttempts: 2 },
+    access: 'live',
+    openRouter: 'configured',
+    routes: { tools: true, compat: true, memories: true },
+    checks: {
+      database: OK,
+      stepAccess: OK,
+      openRouter: { ...OK, credits: { usage: 1, limit: 100 } },
+    },
+    ...over,
+  };
+}
+
+const sentiment: ToolFact = {
+  name: 'sentiment',
+  implemented: true,
+  version: 1,
+  enabled: true,
+  model: 'google/gemini-2.5-flash',
+  modelSource: 'default',
+  prompt: { source: 'code', version: null },
+  requests: 10,
+  failed: 0,
+};
+const reply: ToolFact = {
+  name: 'reply',
+  implemented: false,
+  version: null,
+  enabled: true,
+  model: null,
+  modelSource: null,
+  prompt: { source: 'none', version: null },
+  requests: 0,
+  failed: 0,
+};
+
+function topology(over: Partial<TopologyInput> = {}) {
+  return buildTopology(
+    {
+      runtime: runtime(),
+      tools: [sentiment, reply],
+      memories: { org: 3, user: 7, limits: { chars: 500, perOrg: 50, perUser: 20 } },
+      ...over,
+    },
+    new Date('2026-11-02T12:00:00.000Z'),
+  );
+}
+
+const node = (t: ReturnType<typeof topology>, id: string) => {
+  const n = t.nodes.find((x) => x.id === id);
+  if (n === undefined) throw new Error(`sem nó ${id}`);
+  return n;
+};
+const hasEdge = (t: ReturnType<typeof topology>, from: string, to: string) =>
+  t.edges.some((e) => e.from === from && e.to === to);
+
+describe('buildTopology', () => {
+  it('com tudo ligado, está tudo ok e as ligações apontam para nós que existem', () => {
+    const t = topology();
+    expect(t.overall).toBe('ok');
+    expect(t.generatedAt).toBe('2026-11-02T12:00:00.000Z');
+    const ids = new Set(t.nodes.map((n) => n.id));
+    expect(ids.size).toBe(t.nodes.length);
+    for (const e of t.edges) {
+      expect(ids.has(e.from), e.from).toBe(true);
+      expect(ids.has(e.to), e.to).toBe(true);
+    }
+    for (const n of t.nodes) expect(t.layers).toContain(n.layer);
+    expect(node(t, 'adapter.access')).toMatchObject({ label: 'StepAccessClient', status: 'ok' });
+    expect(hasEdge(t, 'adapter.access', 'external.stepaccess')).toBe(true);
+    expect(node(t, 'core.memories')).toMatchObject({
+      summary: '3 da org · 7 de utilizadores',
+      configure: { where: 'admin_api', path: '/v1/admin/memories' },
+    });
+  });
+
+  it('modo aberto: sem StepAccess, sem envio de custo, e isso não é um erro', () => {
+    const t = topology({
+      runtime: runtime({
+        access: 'open',
+        checks: {
+          database: OK,
+          stepAccess: { status: 'not_configured', latencyMs: null },
+          openRouter: OK,
+        },
+      }),
+    });
+    expect(t.overall).toBe('ok');
+    expect(node(t, 'adapter.access')).toMatchObject({ label: 'OpenAccessChecker', status: 'ok' });
+    expect(node(t, 'external.stepaccess').status).toBe('off');
+    expect(node(t, 'adapter.usage')).toMatchObject({ status: 'off', label: 'sem envio' });
+    expect(hasEdge(t, 'adapter.access', 'external.stepaccess')).toBe(false);
+    expect(node(t, 'adapter.access').configure).toMatchObject({ where: 'env' });
+  });
+
+  it('bypass é um aviso; sem StepAccess configurado é um erro', () => {
+    expect(
+      node(topology({ runtime: runtime({ access: 'bypass' }) }), 'adapter.access').status,
+    ).toBe('warning');
+    const missing = topology({
+      runtime: runtime({
+        access: 'missing',
+        engine: { ready: false, missing: ['STEPACCESS_URL'], defaultModel: 'm', maxAttempts: 2 },
+        routes: { tools: false, compat: false, memories: true },
+      }),
+    });
+    expect(missing.overall).toBe('error');
+    expect(node(missing, 'core.engine')).toMatchObject({
+      status: 'error',
+      summary: 'Desligado: falta STEPACCESS_URL',
+    });
+    expect(node(missing, 'http.tools')).toMatchObject({
+      status: 'off',
+      configure: { where: 'env', keys: ['STEPACCESS_URL'] },
+    });
+  });
+
+  it('uma dependência em baixo passa o erro a quem a usa', () => {
+    const t = topology({
+      runtime: runtime({
+        checks: {
+          database: { status: 'failed', latencyMs: 3000, detail: 'TimeoutError' },
+          stepAccess: { status: 'failed', latencyMs: 5, detail: 'HTTP 500' },
+          openRouter: OK,
+        },
+      }),
+    });
+    expect(node(t, 'external.postgres')).toMatchObject({
+      status: 'error',
+      summary: 'Falhou: TimeoutError',
+    });
+    expect(node(t, 'adapter.pgMemoryStore').status).toBe('error');
+    expect(node(t, 'core.memories').status).toBe('error');
+    expect(node(t, 'port.access').status).toBe('error');
+  });
+
+  it('créditos do OpenRouter perto do limite dão um aviso', () => {
+    const t = topology({
+      runtime: runtime({
+        checks: {
+          database: OK,
+          stepAccess: OK,
+          openRouter: { ...OK, credits: { usage: 95, limit: 100 } },
+        },
+      }),
+    });
+    expect(node(t, 'external.openrouter')).toMatchObject({
+      status: 'warning',
+      summary: 'Créditos quase no limite (95 de 100 USD)',
+    });
+  });
+
+  it('ferramentas: desligada, sem implementação e com muitas falhas', () => {
+    const t = topology({
+      tools: [
+        { ...sentiment, enabled: false },
+        reply,
+        { ...sentiment, name: 'diagnostic', requests: 10, failed: 3 },
+      ],
+    });
+    expect(node(t, 'tool.sentiment')).toMatchObject({
+      status: 'off',
+      configure: { where: 'admin_api', path: '/v1/admin/tools/sentiment' },
+    });
+    expect(node(t, 'tool.reply')).toMatchObject({ status: 'off', label: 'reply' });
+    expect(hasEdge(t, 'tool.reply', 'core.engine')).toBe(false);
+    expect(node(t, 'tool.diagnostic')).toMatchObject({
+      status: 'warning',
+      summary: '30% dos pedidos falharam desde o arranque',
+    });
+    expect(t.overall).toBe('warning');
+  });
+});

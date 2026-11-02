@@ -13,7 +13,9 @@ import { PgEngineStore, syncToolCatalog } from './adapters/postgres-store.js';
 import { StepAccessClient } from './adapters/stepaccess-access.js';
 import { StepAccessUsageReporter } from './adapters/stepaccess-usage.js';
 import type { AccessChecker } from './engine/access.js';
+import type { RuntimeFacts } from './admin/topology.js';
 import { createEngine, type Engine } from './engine/engine.js';
+import { DEFAULT_MAX_ATTEMPTS } from './engine/run.js';
 import { EngineError } from './engine/errors.js';
 import { Memories } from './engine/memory.js';
 import { Metrics } from './engine/metrics.js';
@@ -85,13 +87,14 @@ function buildAdmin(
   engine: { ready: boolean; missing: string[] },
   playground: Engine | undefined,
   countsUsage: boolean,
+  memoriesOn: boolean,
 ): AdminRoutesOptions | undefined {
   if (config.adminApiSecret === undefined || pool === undefined) return undefined;
   const { engine: cfg } = config;
   const startedAt = new Date();
   const version = readVersion();
 
-  const status = async (): Promise<StatusReport> => {
+  const runtime = async (): Promise<RuntimeFacts> => {
     const sa = cfg.stepAccess;
     const notConfigured = (detail: string): Promise<CheckResult> =>
       Promise.resolve({ status: 'not_configured', latencyMs: null, detail });
@@ -119,14 +122,31 @@ function buildAdmin(
         startedAt: startedAt.toISOString(),
         uptimeSeconds: Math.round((Date.now() - startedAt.getTime()) / 1000),
       },
+      engine: {
+        ready: engine.ready,
+        missing: engine.missing,
+        defaultModel: cfg.defaultModel,
+        maxAttempts: playground?.settings.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+      },
+      access: sa === undefined ? 'missing' : typeof sa === 'string' ? sa : 'live',
+      openRouter: cfg.openRouter === undefined ? 'missing' : 'configured',
+      routes: { tools: engine.ready, compat: engine.ready, memories: memoriesOn },
+      checks: { database, stepAccess, openRouter },
+    };
+  };
+
+  const status = async (): Promise<StatusReport> => {
+    const rt = await runtime();
+    return {
+      service: rt.service,
       engine: { ready: engine.ready, missing: engine.missing, tools: tools.map((t) => t.name) },
       config: {
-        stepAccess: sa === undefined ? 'missing' : typeof sa === 'string' ? sa : 'live',
-        openRouter: cfg.openRouter === undefined ? 'missing' : 'configured',
+        stepAccess: rt.access,
+        openRouter: rt.openRouter,
         defaultModel: cfg.defaultModel,
         diagnosticTool: cfg.enableDiagnosticTool,
       },
-      checks: { database, stepAccess, openRouter },
+      checks: rt.checks,
     };
   };
 
@@ -137,6 +157,7 @@ function buildAdmin(
     defaultModel: cfg.defaultModel,
     metrics,
     status,
+    runtime,
     models: new ModelCatalog(cfg.openRouter?.baseUrl ?? 'https://openrouter.ai/api/v1'),
     playground: playground === undefined ? undefined : { engine: playground, countsUsage },
   };
@@ -173,6 +194,12 @@ async function main(): Promise<void> {
     core === undefined || missing.length > 0 || config.engine.apiSecret === undefined
       ? undefined
       : { engine: core, apiSecret: config.engine.apiSecret, metrics };
+  // As memórias só precisam da base de dados e do segredo do Salesforce, não do StepAccess.
+  const memories =
+    pool === undefined || config.engine.apiSecret === undefined
+      ? undefined
+      : { memories: new Memories(new PgMemoryStore(pool)), apiSecret: config.engine.apiSecret };
+
   const admin = buildAdmin(
     config,
     pool,
@@ -182,13 +209,8 @@ async function main(): Promise<void> {
     core,
     // Só o StepAccess conta utilização; no modo aberto ou em bypass não há o que contar.
     typeof config.engine.stepAccess === 'object',
+    memories !== undefined,
   );
-
-  // As memórias só precisam da base de dados e do segredo do Salesforce, não do StepAccess.
-  const memories =
-    pool === undefined || config.engine.apiSecret === undefined
-      ? undefined
-      : { memories: new Memories(new PgMemoryStore(pool)), apiSecret: config.engine.apiSecret };
 
   const app = await buildApp({
     config,

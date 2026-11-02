@@ -320,6 +320,74 @@ Resposta `200`:
 
 Preços em USD por milhão de tokens (`null` se o OpenRouter não indicar). Erro: `502 provider_unavailable` se o OpenRouter não responder.
 
+### 5.4 `GET /v1/admin/topology`
+
+A IRIS descrita a si própria: os módulos, como estão ligados e o estado de cada um. Serve para a consola **desenhar o diagrama do motor** (vista geral) e abrir a configuração certa ao clicar num módulo. Tudo sai do que está a correr (configuração, verificações do `/status`, catálogo de ferramentas, contagem de memórias e métricas): **não desenhar a estrutura à mão na UI**, porque muda com a configuração (modo de acesso, ferramentas, rotas ligadas).
+
+Faz as mesmas verificações do `/status` (base de dados, StepAccess, OpenRouter): chamar com o mesmo ritmo (ex.: a cada 30 s com a página aberta).
+
+Resposta `200` (excerto):
+
+```json
+{
+  "generatedAt": "2026-11-02T12:00:00.000Z",
+  "service": {
+    "name": "iris-engine",
+    "version": "0.1.0",
+    "environment": "production",
+    "startedAt": "…",
+    "uptimeSeconds": 3600
+  },
+  "overall": "ok",
+  "layers": ["client", "http", "core", "port", "adapter", "external", "tool"],
+  "nodes": [
+    {
+      "id": "adapter.access",
+      "layer": "adapter",
+      "label": "StepAccessClient",
+      "status": "ok",
+      "summary": "Confirma a licença e conta cada pedido",
+      "details": { "mode": "live" },
+      "configure": { "where": "env", "keys": ["ACCESS_MODE", "STEPACCESS_URL", "…"] }
+    },
+    {
+      "id": "tool.sentiment",
+      "layer": "tool",
+      "label": "sentiment v1",
+      "status": "ok",
+      "summary": "Ligada · google/gemini-2.5-flash",
+      "details": {
+        "implemented": true,
+        "enabled": true,
+        "model": "google/gemini-2.5-flash",
+        "modelSource": "default",
+        "prompt": "código",
+        "requests": 42,
+        "failed": 1
+      },
+      "configure": { "where": "admin_api", "path": "/v1/admin/tools/sentiment" }
+    }
+  ],
+  "edges": [
+    { "from": "port.access", "to": "adapter.access" },
+    { "from": "adapter.access", "to": "external.stepaccess", "label": "GET /v1/access" }
+  ]
+}
+```
+
+| Campo               | Significado                                                                                                                                                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `layers`            | As camadas, de cima para baixo: quem chama (`client`), rotas (`http`), núcleo (`core`), interfaces do núcleo (`port`), implementações (`adapter`), serviços externos (`external`) e ferramentas (`tool`).                |
+| `nodes[].id`        | Estável entre chamadas (ex.: `core.engine`, `external.postgres`, `tool.<nome>`). Usar como chave na UI.                                                                                                                  |
+| `nodes[].status`    | `ok` · `warning` (funciona com reservas: `bypass`, créditos perto do limite, ≥ 20% de falhas numa ferramenta) · `error` (não funciona) · `off` (desligado ou não configurado — **não é um erro**).                       |
+| `nodes[].summary`   | Uma frase pronta a mostrar junto ao módulo.                                                                                                                                                                              |
+| `nodes[].details`   | Valores para o painel lateral (modelo, tentativas, contagens, latência…). Só números, texto, booleanos ou `null`.                                                                                                        |
+| `nodes[].configure` | Onde se muda: `{ "where": "admin_api", "path": "…" }` → abrir o ecrã dessa rota; `{ "where": "env", "keys": [...] }` → só no `.env` do servidor (mostrar as variáveis, sem botão de editar); `null` → nada a configurar. |
+| `overall`           | O pior estado dos módulos ligados (os `off` não contam).                                                                                                                                                                 |
+| `edges`             | Ligações `from → to`, com `label` opcional (ex.: o pedido HTTP ao StepAccess).                                                                                                                                           |
+
+Os módulos e as ligações mudam com a configuração: em `ACCESS_MODE=open` o adaptador de acesso é `OpenAccessChecker`, o StepAccess fica `off` e não há ligações para ele; ferramentas do catálogo sem implementação aparecem `off` e sem ligação ao núcleo.
+
 ---
 
 ## 6. Ferramentas e prompts

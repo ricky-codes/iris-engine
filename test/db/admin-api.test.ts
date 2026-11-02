@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import type { RuntimeFacts, Topology } from '../../src/admin/topology.js';
 import { Metrics } from '../../src/engine/metrics.js';
 import { PgMemoryStore } from '../../src/adapters/postgres-memory-store.js';
 import { createEngine } from '../../src/engine/engine.js';
@@ -14,6 +15,24 @@ const SECRET = 'a'.repeat(40);
 const READ = { authorization: `Bearer ${SECRET}` };
 const WRITE = { ...READ, 'x-admin-actor': 'ricardo@stepahead.pt' };
 const tool = diagnosticTool as unknown as ToolDefinition;
+const RUNTIME: RuntimeFacts = {
+  service: {
+    name: 'iris-engine',
+    version: '0.1.0',
+    environment: 'test',
+    startedAt: '2026-11-02T00:00:00.000Z',
+    uptimeSeconds: 1,
+  },
+  engine: { ready: true, missing: [], defaultModel: 'google/gemini-2.5-flash', maxAttempts: 2 },
+  access: 'open',
+  openRouter: 'configured',
+  routes: { tools: true, compat: true, memories: true },
+  checks: {
+    database: { status: 'ok', latencyMs: 1 },
+    stepAccess: { status: 'not_configured', latencyMs: null },
+    openRouter: { status: 'ok', latencyMs: 1 },
+  },
+};
 
 describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () => {
   let db: TestDb;
@@ -42,6 +61,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
         defaultModel: 'google/gemini-2.5-flash',
         metrics,
         status: async () => ({ engine: { ready: true } }),
+        runtime: async () => RUNTIME,
         models: {
           list: async () => ({
             fetchedAt: '2026-10-13T00:00:00.000Z',
@@ -115,6 +135,29 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
   describe('estado, métricas e modelos', () => {
     it('devolve o estado montado pelo servidor', async () => {
       expect((await get('/v1/admin/status')).json()).toEqual({ engine: { ready: true } });
+    });
+
+    it('descreve a topologia a partir do catálogo, das memórias e das métricas', async () => {
+      await addMemory(db.pool, { org: sfId('00D') }, 'regra');
+      await addMemory(db.pool, { org: sfId('00D'), user: sfId('005') }, 'preferência');
+      const res = await get('/v1/admin/topology');
+      expect(res.statusCode).toBe(200);
+      const t = res.json<Topology>();
+      expect(t.service.name).toBe('iris-engine');
+      const byId = new Map(t.nodes.map((n) => [n.id, n]));
+      expect(byId.get('tool.diagnostic')).toMatchObject({
+        status: 'ok',
+        label: 'diagnostic v1',
+        details: { implemented: true, prompt: 'código' },
+        configure: { where: 'admin_api', path: '/v1/admin/tools/diagnostic' },
+      });
+      expect(byId.get('tool.diagnostic')?.details.requests).toBe(0);
+      expect(byId.get('adapter.access')).toMatchObject({ label: 'OpenAccessChecker' });
+      expect(byId.get('core.memories')?.details.org).toBeGreaterThanOrEqual(1);
+      expect(byId.get('core.memories')?.details.user).toBeGreaterThanOrEqual(1);
+      expect((await ready().inject({ method: 'GET', url: '/v1/admin/topology' })).statusCode).toBe(
+        401,
+      );
     });
 
     it('devolve as métricas agregadas', async () => {
@@ -378,6 +421,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
           defaultModel: 'm',
           metrics,
           status: async () => ({}),
+          runtime: async () => RUNTIME,
           models: { list: async () => ({ fetchedAt: '', models: [] }) },
           playground: {
             engine: createEngine({

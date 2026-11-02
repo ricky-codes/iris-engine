@@ -18,6 +18,7 @@ describe('Metrics', () => {
       durationMs: 300,
       inputTokens: 20,
       outputTokens: 4,
+      fallback: true,
     });
     m.record({ tool: 'sentiment', errorCode: 'access_denied', durationMs: 5 });
     now = new Date('2026-10-14T09:00:00Z');
@@ -33,6 +34,7 @@ describe('Metrics', () => {
       avgDurationMs: 200,
       inputTokens: 30,
       outputTokens: 6,
+      fallbacks: 1,
     });
     expect(s.byTool.map((t) => [t.tool, t.requests])).toEqual([
       ['reply', 1],
@@ -42,6 +44,26 @@ describe('Metrics', () => {
     expect(s.byDay.map((d) => [d.day, d.requests])).toEqual([
       ['2026-10-13', 3],
       ['2026-10-14', 1],
+    ]);
+  });
+
+  it('conta pedidos servidos por modelos de recurso só quando correram bem', () => {
+    const m = new Metrics();
+    m.record({ tool: 'reply', errorCode: undefined, durationMs: 1, fallback: true });
+    m.record({ tool: 'reply', errorCode: 'timeout', durationMs: 1, fallback: true });
+    m.record({ tool: 'reply', errorCode: undefined, durationMs: 1, fallback: false });
+    expect(m.snapshot().byTool[0]).toMatchObject({ requests: 3, fallbacks: 1 });
+  });
+
+  it('conta as chamadas a cada modelo, com falhas e tempo médio das que responderam', () => {
+    const m = new Metrics();
+    m.recordModelCall({ model: 'b/modelo', ok: true, durationMs: 100 });
+    m.recordModelCall({ model: 'b/modelo', ok: true, durationMs: 300 });
+    m.recordModelCall({ model: 'b/modelo', ok: false, durationMs: 9000 });
+    m.recordModelCall({ model: 'a/outro', ok: false, durationMs: 50 });
+    expect(m.snapshot().byModel).toEqual([
+      { model: 'a/outro', calls: 1, failed: 1, avgDurationMs: null },
+      { model: 'b/modelo', calls: 3, failed: 1, avgDurationMs: 200 },
     ]);
   });
 

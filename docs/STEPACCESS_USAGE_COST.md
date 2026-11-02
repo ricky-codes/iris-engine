@@ -27,20 +27,20 @@ Content-Type: application/json
 }
 ```
 
-| Campo           | Tipo              | Significado                                                                                                                 |
-| --------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `componentUuid` | string (UUID)     | O componente IRIS no StepAccess (o mesmo do `GET /v1/access`).                                                              |
-| `requestId`     | string (UUID)     | Id do pedido na IRIS, igual ao cabeçalho `X-Request-Id` devolvido ao Salesforce. **Único**: serve de chave de idempotência. |
-| `orgId`         | string, 18 car.   | Id Salesforce da org (`00D…`), o mesmo enviado no `GET /v1/access`.                                                         |
-| `userId`        | string, 18 car.   | Id Salesforce do utilizador (`005…`).                                                                                       |
-| `tool`          | string            | Ferramenta: `sentiment` (hoje), depois `tipification`, `reply`, …                                                           |
-| `outcome`       | string            | `success` (resposta válida) ou `invalid_model_output` (o modelo falhou o formato nas duas tentativas, mas foi pago).        |
-| `model`         | string            | Modelo que respondeu, como o OpenRouter o indica.                                                                           |
-| `attempts`      | inteiro, 1 ou 2   | Chamadas ao modelo neste pedido. O custo já é a soma de todas.                                                              |
-| `inputTokens`   | inteiro ou `null` | Tokens de entrada (todas as tentativas).                                                                                    |
-| `outputTokens`  | inteiro ou `null` | Tokens de saída (todas as tentativas).                                                                                      |
-| `costUsd`       | número ou `null`  | Custo em dólares (créditos OpenRouter). Valores muito pequenos (ex.: `0.00041`). `null` se o fornecedor não o indicou.      |
-| `occurredAt`    | string (ISO 8601) | Quando a IRIS terminou o pedido, em UTC.                                                                                    |
+| Campo           | Tipo              | Significado                                                                                                                                         |
+| --------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `componentUuid` | string (UUID)     | O componente IRIS no StepAccess (o mesmo do `GET /v1/access`).                                                                                      |
+| `requestId`     | string (UUID)     | Id do pedido na IRIS, igual ao cabeçalho `X-Request-Id` devolvido ao Salesforce. **Único**: serve de chave de idempotência.                         |
+| `orgId`         | string, 18 car.   | Id Salesforce da org (`00D…`), o mesmo enviado no `GET /v1/access`.                                                                                 |
+| `userId`        | string, 18 car.   | Id Salesforce do utilizador (`005…`).                                                                                                               |
+| `tool`          | string            | Ferramenta: `sentiment` (hoje), depois `tipification`, `reply`, …                                                                                   |
+| `outcome`       | string            | `success` (resposta válida) ou `invalid_model_output` (o modelo falhou o formato nas duas tentativas, mas foi pago).                                |
+| `model`         | string            | Modelo que respondeu, como o OpenRouter o indica. Com modelos de recurso, é o que deu a resposta (ou a última resposta paga).                       |
+| `attempts`      | inteiro ≥ 1       | Chamadas ao modelo neste pedido, em todos os modelos da cadeia (até 8 com a configuração por omissão: 4 modelos × 2). O custo já é a soma de todas. |
+| `inputTokens`   | inteiro ou `null` | Tokens de entrada (todas as tentativas).                                                                                                            |
+| `outputTokens`  | inteiro ou `null` | Tokens de saída (todas as tentativas).                                                                                                              |
+| `costUsd`       | número ou `null`  | Custo em dólares (créditos OpenRouter). Valores muito pequenos (ex.: `0.00041`). `null` se o fornecedor não o indicou.                              |
+| `occurredAt`    | string (ISO 8601) | Quando a IRIS terminou o pedido, em UTC.                                                                                                            |
 
 ## Respostas esperadas
 
@@ -74,7 +74,7 @@ CREATE TABLE usage_cost (
   tool           text        NOT NULL,
   outcome        text        NOT NULL CHECK (outcome IN ('success', 'invalid_model_output')),
   model          text        NOT NULL,
-  attempts       smallint    NOT NULL CHECK (attempts BETWEEN 1 AND 2),
+  attempts       smallint    NOT NULL CHECK (attempts BETWEEN 1 AND 20),
   input_tokens   integer,
   output_tokens  integer,
   cost_usd       numeric(14, 8),

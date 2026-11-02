@@ -51,9 +51,16 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('o que o motor lê da base de d
 
   it('sem configuração na base de dados, usa os valores da ferramenta e o modelo por omissão', async () => {
     await syncToolCatalog(db.pool, ['diagnostic']);
-    expect(await store.settingsFor('diagnostic', DEFAULTS, 'google/gemini-2.5-flash')).toEqual({
+    expect(
+      await store.settingsFor('diagnostic', DEFAULTS, {
+        model: 'google/gemini-2.5-flash',
+        fallbackModels: ['openai/gpt-4.1-mini', 'google/gemini-2.5-flash'],
+      }),
+    ).toEqual({
       ...DEFAULTS,
       model: 'google/gemini-2.5-flash',
+      // Sem configuração gravada valem os do motor, sem o principal.
+      fallbackModels: ['openai/gpt-4.1-mini'],
       enabled: true,
       systemPrompt: undefined,
     });
@@ -79,8 +86,12 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('o que o motor lê da base de d
       [prompt.rows[0]!.prompt_id],
     );
 
-    expect(await store.settingsFor('diagnostic', DEFAULTS, 'x')).toEqual({
+    // Com configuração gravada valem os modelos de recurso dela, mesmo nenhum.
+    expect(
+      await store.settingsFor('diagnostic', DEFAULTS, { model: 'x', fallbackModels: ['y'] }),
+    ).toEqual({
       model: 'anthropic/claude-sonnet',
+      fallbackModels: [],
       temperature: 0.5,
       maxOutputTokens: 900,
       timeoutMs: 9000,

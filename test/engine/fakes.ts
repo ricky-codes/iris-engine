@@ -1,7 +1,7 @@
 import type { AccessChecker } from '../../src/engine/access.js';
 import type { LlmProvider, LlmRequest, LlmResponse } from '../../src/engine/llm.js';
 import type { Memory, MemoryStore, RequestMemories } from '../../src/engine/memory.js';
-import type { EngineStore, ToolSettings } from '../../src/engine/store.js';
+import type { EngineStore, ModelDefaults, ToolSettings } from '../../src/engine/store.js';
 import { createEngine, type EngineOptions } from '../../src/engine/engine.js';
 import type { ToolDefaults, ToolDefinition } from '../../src/engine/tool.js';
 import { EngineError } from '../../src/engine/errors.js';
@@ -39,9 +39,10 @@ export function fakeStore(
   overrides: Partial<ToolSettings> = {},
 ) {
   const store: EngineStore = {
-    settingsFor: async (_tool: string, defaults: ToolDefaults, defaultModel: string) => ({
+    settingsFor: async (_tool: string, defaults: ToolDefaults, models: ModelDefaults) => ({
       ...defaults,
-      model: defaultModel,
+      model: models.model,
+      fallbackModels: models.fallbackModels,
       enabled: true,
       systemPrompt: undefined,
       ...overrides,

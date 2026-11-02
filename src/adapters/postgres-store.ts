@@ -1,5 +1,10 @@
 import type { Pool } from 'pg';
-import type { EngineStore, ToolSettings } from '../engine/store.js';
+import {
+  fallbackChain,
+  type EngineStore,
+  type ModelDefaults,
+  type ToolSettings,
+} from '../engine/store.js';
 import type { ToolDefaults } from '../engine/tool.js';
 
 export class PgEngineStore implements EngineStore {
@@ -8,7 +13,7 @@ export class PgEngineStore implements EngineStore {
   async settingsFor(
     tool: string,
     defaults: ToolDefaults,
-    defaultModel: string,
+    models: ModelDefaults,
   ): Promise<ToolSettings> {
     const { rows } = await this.pool.query<{
       model: string | null;
@@ -17,9 +22,14 @@ export class PgEngineStore implements EngineStore {
       timeout_ms: number | null;
       is_enabled: boolean | null;
       system_template: string | null;
+      fallbacks: string[] | null;
     }>(
       `SELECT lm.code AS model, tc.temperature, tc.max_output_tokens, tc.timeout_ms,
-              tc.is_enabled, pv.system_template
+              tc.is_enabled, pv.system_template,
+              CASE WHEN tc.tool_id IS NULL THEN NULL ELSE
+                ARRAY(SELECT fm.code FROM tool_config_fallback f
+                      JOIN llm_model fm ON fm.llm_model_id = f.llm_model_id
+                      WHERE f.tool_id = tc.tool_id ORDER BY f.position) END AS fallbacks
        FROM tool t
        LEFT JOIN tool_config tc ON tc.tool_id = t.tool_id
        LEFT JOIN llm_model lm   ON lm.llm_model_id = tc.llm_model_id
@@ -29,8 +39,11 @@ export class PgEngineStore implements EngineStore {
       [tool],
     );
     const row = rows[0];
+    const model = row?.model ?? models.model;
     return {
-      model: row?.model ?? defaultModel,
+      model,
+      // Com configuração gravada valem os seus modelos de recurso (mesmo nenhum); sem ela, os do motor.
+      fallbackModels: fallbackChain(model, row?.fallbacks ?? models.fallbackModels),
       temperature: row?.temperature == null ? defaults.temperature : Number(row.temperature),
       maxOutputTokens: row?.max_output_tokens ?? defaults.maxOutputTokens,
       timeoutMs: row?.timeout_ms ?? defaults.timeoutMs,

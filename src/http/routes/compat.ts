@@ -45,7 +45,7 @@ export const compatRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async 
 
   const usage = new WeakMap<
     FastifyRequest,
-    { tool: string; inputTokens?: number; outputTokens?: number }
+    { tool: string; inputTokens?: number; outputTokens?: number; fallback?: boolean }
   >();
 
   app.addHook('onResponse', async (request, reply) => {
@@ -57,6 +57,7 @@ export const compatRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async 
       durationMs: reply.elapsedTime,
       inputTokens: used.inputTokens,
       outputTokens: used.outputTokens,
+      fallback: used.fallback,
     });
   });
 
@@ -101,6 +102,7 @@ export const compatRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async 
       tool: tool.name,
       ...(meta.inputTokens !== undefined && { inputTokens: meta.inputTokens }),
       ...(meta.outputTokens !== undefined && { outputTokens: meta.outputTokens }),
+      fallback: meta.fallback,
     });
     request.log.info(
       {

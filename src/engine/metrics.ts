@@ -14,6 +14,17 @@ export interface ToolCounters {
   avgDurationMs: number | null;
   inputTokens: number;
   outputTokens: number;
+  /** Pedidos que só tiveram resposta com um modelo de recurso. */
+  fallbacks: number;
+}
+
+/** Chamadas a cada modelo (as tentativas, não os pedidos), desde o arranque. */
+export interface ModelCounters {
+  model: string;
+  calls: number;
+  /** Chamadas sem resposta válida: fornecedor em baixo, tempo esgotado ou resposta inválida. */
+  failed: number;
+  avgDurationMs: number | null;
 }
 
 export interface MetricsSnapshot {
@@ -22,6 +33,14 @@ export interface MetricsSnapshot {
   byTool: ({ tool: string } & ToolCounters)[];
   /** Últimos dias (UTC), do mais antigo para o mais recente. */
   byDay: ({ day: string } & ToolCounters)[];
+  byModel: ModelCounters[];
+}
+
+/** Uma chamada a um modelo. Só o nome do modelo, o resultado e o tempo. */
+export interface ModelCallMetric {
+  model: string;
+  ok: boolean;
+  durationMs: number;
 }
 
 interface Bucket {
@@ -32,6 +51,7 @@ interface Bucket {
   successDurationMs: number;
   inputTokens: number;
   outputTokens: number;
+  fallbacks: number;
 }
 
 export interface MetricEvent {
@@ -41,6 +61,8 @@ export interface MetricEvent {
   durationMs: number;
   inputTokens?: number | undefined;
   outputTokens?: number | undefined;
+  /** `true` quando a resposta veio de um modelo de recurso. */
+  fallback?: boolean | undefined;
 }
 
 const emptyBucket = (): Bucket => ({
@@ -51,6 +73,7 @@ const emptyBucket = (): Bucket => ({
   successDurationMs: 0,
   inputTokens: 0,
   outputTokens: 0,
+  fallbacks: 0,
 });
 
 function add(bucket: Bucket, event: MetricEvent): void {
@@ -64,6 +87,7 @@ function add(bucket: Bucket, event: MetricEvent): void {
   }
   bucket.inputTokens += event.inputTokens ?? 0;
   bucket.outputTokens += event.outputTokens ?? 0;
+  if (event.fallback === true && event.errorCode === undefined) bucket.fallbacks++;
 }
 
 function merge(target: Bucket, source: Bucket): void {
@@ -73,6 +97,7 @@ function merge(target: Bucket, source: Bucket): void {
   target.successDurationMs += source.successDurationMs;
   target.inputTokens += source.inputTokens;
   target.outputTokens += source.outputTokens;
+  target.fallbacks += source.fallbacks;
   for (const [code, n] of source.errorsByCode)
     target.errorsByCode.set(code, (target.errorsByCode.get(code) ?? 0) + n);
 }
@@ -89,6 +114,7 @@ function view(bucket: Bucket): ToolCounters {
       bucket.succeeded === 0 ? null : Math.round(bucket.successDurationMs / bucket.succeeded),
     inputTokens: bucket.inputTokens,
     outputTokens: bucket.outputTokens,
+    fallbacks: bucket.fallbacks,
   };
 }
 
@@ -98,6 +124,10 @@ export class Metrics {
   private readonly startedAt: Date;
   private readonly byTool = new Map<string, Bucket>();
   private readonly byDay = new Map<string, Bucket>();
+  private readonly byModel = new Map<
+    string,
+    { calls: number; failed: number; okDurationMs: number }
+  >();
 
   constructor(private readonly clock: () => Date = () => new Date()) {
     this.startedAt = clock();
@@ -119,6 +149,15 @@ export class Metrics {
     add(daily, event);
   }
 
+  recordModelCall(call: ModelCallMetric): void {
+    let m = this.byModel.get(call.model);
+    if (m === undefined)
+      this.byModel.set(call.model, (m = { calls: 0, failed: 0, okDurationMs: 0 }));
+    m.calls++;
+    if (call.ok) m.okDurationMs += call.durationMs;
+    else m.failed++;
+  }
+
   snapshot(): MetricsSnapshot {
     const totals = emptyBucket();
     for (const bucket of this.byTool.values()) merge(totals, bucket);
@@ -131,6 +170,15 @@ export class Metrics {
       byDay: [...this.byDay]
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([day, bucket]) => ({ day, ...view(bucket) })),
+      byModel: [...this.byModel]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([model, m]) => ({
+          model,
+          calls: m.calls,
+          failed: m.failed,
+          avgDurationMs:
+            m.calls === m.failed ? null : Math.round(m.okDurationMs / (m.calls - m.failed)),
+        })),
     };
   }
 }

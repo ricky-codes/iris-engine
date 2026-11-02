@@ -41,14 +41,26 @@ export interface ToolFact {
   model: string | null;
   modelSource: 'database' | 'default' | null;
   prompt: { source: 'database' | 'code' | 'none'; version: number | null };
+  /** Modelos de recurso, por ordem. */
+  fallbackModels: string[];
   /** Pedidos desde o arranque (métricas em memória). */
   requests: number;
   failed: number;
+  /** Pedidos que só tiveram resposta com um modelo de recurso. */
+  fallbacks: number;
+}
+
+/** Modelos que o disjuntor está a saltar agora. */
+export interface BreakerFact {
+  model: string;
+  openSince: string;
+  openUntil: string;
 }
 
 export interface TopologyInput {
   runtime: RuntimeFacts;
   tools: ToolFact[];
+  breakers: BreakerFact[];
   memories: {
     org: number;
     user: number;
@@ -140,6 +152,16 @@ const ENV_OPENROUTER: ConfigureAt = {
 };
 const ENV_DATABASE: ConfigureAt = { where: 'env', keys: ['DATABASE_URL'] };
 
+/** O nome do modelo sem o fornecedor (`google/gemini-2.5-flash` → `gemini-2.5-flash`). */
+const shortModel = (m: string): string => m.slice(m.indexOf('/') + 1);
+
+/** A cadeia de modelos de uma ferramenta, para mostrar: `gemini-2.5-flash → gpt-4.1-mini`. */
+const chainText = (t: ToolFact): string | null =>
+  t.model === null ? null : [t.model, ...t.fallbackModels].map(shortModel).join(' → ');
+
+/** Pelo menos 5 pedidos e 20% ou mais servidos por um modelo de recurso. */
+export const FALLBACK_WARNING = { minRequests: 5, rate: 0.2 };
+
 function toolNode(t: ToolFact): TopologyNode {
   const failureRate = t.requests === 0 ? 0 : t.failed / t.requests;
   const status: NodeStatus = !t.implemented
@@ -175,6 +197,8 @@ function toolNode(t: ToolFact): TopologyNode {
             : 'nenhum',
       requests: t.requests,
       failed: t.failed,
+      fallbacks: t.fallbacks,
+      chain: chainText(t),
     },
     configure: { where: 'admin_api', path: `/v1/admin/tools/${t.name}` },
   };
@@ -194,6 +218,17 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
       : nearLimit && checks.openRouter.status === 'ok'
         ? 'warning'
         : fromCheck(checks.openRouter);
+  // Os modelos: a cadeia é a mesma em todas as ferramentas, ou "várias".
+  const live = tools.filter((t) => t.implemented);
+  const chains = [...new Set(live.map(chainText).filter((c): c is string => c !== null))];
+  const llmRequests = live.reduce((n, t) => n + t.requests, 0);
+  const llmFallbacks = live.reduce((n, t) => n + t.fallbacks, 0);
+  const manyFallbacks =
+    llmRequests >= FALLBACK_WARNING.minRequests &&
+    llmFallbacks / llmRequests >= FALLBACK_WARNING.rate;
+  const breakers = input.breakers;
+  const llmAdapter: NodeStatus =
+    openRouter === 'ok' && (manyFallbacks || breakers.length > 0) ? 'warning' : openRouter;
   const accessAdapter = ACCESS_ADAPTER[rt.access];
   const access: NodeStatus =
     rt.access === 'live' ? fromCheck(checks.stepAccess) : accessAdapter.status;
@@ -386,12 +421,20 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
       id: 'adapter.llm',
       layer: 'adapter',
       label: 'OpenRouterProvider',
-      status: openRouter,
+      status: llmAdapter,
       summary:
         rt.openRouter === 'missing'
           ? 'OPENROUTER_API_KEY em falta'
-          : 'JSON Schema · sem fornecedores que guardem dados',
-      details: {},
+          : breakers.length > 0
+            ? `Disjuntor aberto: ${breakers.map((b) => shortModel(b.model)).join(', ')}`
+            : manyFallbacks
+              ? `${String(Math.round((llmFallbacks / llmRequests) * 100))}% dos pedidos servidos por modelos de recurso`
+              : 'JSON Schema · sem fornecedores que guardem dados',
+      details: {
+        chain: chains.length === 0 ? null : chains.length === 1 ? (chains[0] ?? null) : 'várias',
+        fallbacks: llmFallbacks,
+        openBreakers: breakers.length === 0 ? null : breakers.map((b) => b.model).join(', '),
+      },
       configure: ENV_OPENROUTER,
     },
     // serviços externos

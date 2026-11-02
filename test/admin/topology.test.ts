@@ -38,8 +38,10 @@ const sentiment: ToolFact = {
   model: 'google/gemini-2.5-flash',
   modelSource: 'default',
   prompt: { source: 'code', version: null },
+  fallbackModels: [],
   requests: 10,
   failed: 0,
+  fallbacks: 0,
 };
 const reply: ToolFact = {
   name: 'reply',
@@ -49,8 +51,10 @@ const reply: ToolFact = {
   model: null,
   modelSource: null,
   prompt: { source: 'none', version: null },
+  fallbackModels: [],
   requests: 0,
   failed: 0,
+  fallbacks: 0,
 };
 
 function topology(over: Partial<TopologyInput> = {}) {
@@ -58,6 +62,7 @@ function topology(over: Partial<TopologyInput> = {}) {
     {
       runtime: runtime(),
       tools: [sentiment, reply],
+      breakers: [],
       memories: { org: 3, user: 7, limits: { chars: 500, perOrg: 50, perUser: 20 } },
       ...over,
     },
@@ -166,6 +171,40 @@ describe('buildTopology', () => {
     expect(node(t, 'external.openrouter')).toMatchObject({
       status: 'warning',
       summary: 'Créditos quase no limite (95 de 100 USD)',
+    });
+  });
+
+  it('modelos: mostra a cadeia, conta os pedidos servidos por recurso e avisa', () => {
+    const chained = {
+      ...sentiment,
+      fallbackModels: ['openai/gpt-4.1-mini'],
+      requests: 10,
+      fallbacks: 1,
+    };
+    const t = topology({ tools: [chained, reply] });
+    expect(node(t, 'adapter.llm')).toMatchObject({
+      status: 'ok',
+      details: { chain: 'gemini-2.5-flash → gpt-4.1-mini', fallbacks: 1, openBreakers: null },
+    });
+    expect(node(t, 'tool.sentiment').details).toMatchObject({ fallbacks: 1 });
+
+    const many = topology({
+      tools: [
+        { ...chained, fallbacks: 3 },
+        { ...chained, name: 'diagnostic', model: 'x/outro', fallbacks: 3 },
+      ],
+    });
+    expect(node(many, 'adapter.llm')).toMatchObject({
+      status: 'warning',
+      details: { chain: 'várias', fallbacks: 6 },
+    });
+
+    const open = topology({
+      breakers: [{ model: 'google/gemini-2.5-flash', openSince: 'a', openUntil: 'b' }],
+    });
+    expect(node(open, 'adapter.llm')).toMatchObject({
+      status: 'warning',
+      summary: 'Disjuntor aberto: gemini-2.5-flash',
     });
   });
 

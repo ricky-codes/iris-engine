@@ -60,7 +60,10 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
   app.addHook('onRequest', bearerAuth(opts.apiSecret));
 
   // Tokens de cada pedido, para as métricas. Somem com o pedido.
-  const usage = new WeakMap<FastifyRequest, { inputTokens?: number; outputTokens?: number }>();
+  const usage = new WeakMap<
+    FastifyRequest,
+    { inputTokens?: number; outputTokens?: number; fallback?: boolean }
+  >();
   const toolNames = new Set(opts.engine.tools().map((t) => t.name));
 
   app.addHook('onResponse', async (request, reply) => {
@@ -74,6 +77,7 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
       durationMs: reply.elapsedTime,
       inputTokens: tokens?.inputTokens,
       outputTokens: tokens?.outputTokens,
+      fallback: tokens?.fallback,
     });
   });
 
@@ -104,6 +108,7 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
       usage.set(request, {
         ...(meta.inputTokens !== undefined && { inputTokens: meta.inputTokens }),
         ...(meta.outputTokens !== undefined && { outputTokens: meta.outputTokens }),
+        fallback: meta.fallback,
       });
       request.log.info(
         { tool: tool.name, ...meta, durationMs: Math.round(performance.now() - started) },

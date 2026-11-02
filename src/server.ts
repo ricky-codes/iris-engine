@@ -62,16 +62,31 @@ function buildEngine(
   pool: pg.Pool | undefined,
   tools: ToolDefinition[],
   access: AccessChecker | undefined,
+  metrics: Metrics,
 ): Engine | undefined {
   const { engine: cfg } = config;
   if (pool === undefined || cfg.openRouter === undefined) return undefined;
   return createEngine({
-    settings: { defaultModel: cfg.defaultModel },
+    settings: {
+      defaultModel: cfg.defaultModel,
+      fallbackModels: cfg.fallbackModels,
+      totalTimeoutMs: cfg.totalTimeoutMs,
+    },
     tools,
     access: access ?? noAccess,
     store: new PgEngineStore(pool),
     memories: new PgMemoryStore(pool),
     llm: new OpenRouterProvider(cfg.openRouter, fetch, warn),
+    // Cada chamada a um modelo entra nas métricas por modelo (só nome, resultado e tempo).
+    onEvent: (e) => {
+      if (e.type === 'model_call') {
+        metrics.recordModelCall({
+          model: e.model,
+          ok: e.reason === 'ok',
+          durationMs: e.durationMs,
+        });
+      }
+    },
     ...(cfg.stepAccess !== undefined &&
       typeof cfg.stepAccess === 'object' && {
         usage: new StepAccessUsageReporter(cfg.stepAccess, fetch, warn),
@@ -155,6 +170,7 @@ function buildAdmin(
     pool,
     tools,
     defaultModel: cfg.defaultModel,
+    defaultFallbackModels: cfg.fallbackModels,
     metrics,
     status,
     runtime,
@@ -187,7 +203,7 @@ async function main(): Promise<void> {
 
   const metrics = new Metrics();
   const access = accessChecker(config);
-  const core = buildEngine(config, pool, tools, access);
+  const core = buildEngine(config, pool, tools, access, metrics);
   const missing = missingEngineConfig(config.engine, pool !== undefined);
   // As rotas das ferramentas só se ligam com a configuração completa (incluindo o acesso).
   const engine =

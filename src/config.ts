@@ -60,6 +60,11 @@ const EnvSchema = Type.Object({
   }),
   // Modelo usado quando a ferramenta não tem configuração na base de dados.
   LLM_DEFAULT_MODEL: Type.String({ minLength: 1, default: 'google/gemini-2.5-flash' }),
+  // Modelos de recurso dessas ferramentas, separados por vírgulas (máximo 3).
+  LLM_FALLBACK_MODELS: Type.Optional(Type.String()),
+  // Teto de tempo para todas as chamadas ao modelo de um pedido. Fica abaixo do limite de
+  // callout do Apex (120 s), com margem para o resto do pedido.
+  LLM_TOTAL_TIMEOUT_MS: Type.Integer({ minimum: 2000, maximum: 115_000, default: 30_000 }),
 
   // Ferramenta de diagnóstico, para testar a ligação ponta a ponta.
   ENABLE_DIAGNOSTIC_TOOL: Type.Boolean({ default: false }),
@@ -99,6 +104,9 @@ export interface EngineConfig {
   stepAccess: StepAccessConfig | 'open' | 'bypass' | undefined;
   openRouter: { apiKey: string; baseUrl: string } | undefined;
   defaultModel: string;
+  /** Modelos de recurso das ferramentas sem configuração na base de dados. */
+  fallbackModels: string[];
+  totalTimeoutMs: number;
   enableDiagnosticTool: boolean;
 }
 
@@ -176,6 +184,24 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     }
   }
 
+  const fallbackModels = (converted.LLM_FALLBACK_MODELS ?? '')
+    .split(',')
+    .map((m) => m.trim())
+    .filter((m) => m !== '');
+  const fallbackIssues = [
+    ...(fallbackModels.length > 3 ? ['LLM_FALLBACK_MODELS: no máximo 3 modelos'] : []),
+    ...(new Set(fallbackModels).size !== fallbackModels.length
+      ? ['LLM_FALLBACK_MODELS: modelos repetidos']
+      : []),
+    ...(fallbackModels.includes(converted.LLM_DEFAULT_MODEL)
+      ? ['LLM_FALLBACK_MODELS: não pode incluir o LLM_DEFAULT_MODEL']
+      : []),
+    ...(fallbackModels.some((m) => m.length > 200 || /\s/.test(m))
+      ? ['LLM_FALLBACK_MODELS: cada modelo tem até 200 caracteres, sem espaços']
+      : []),
+  ];
+  if (fallbackIssues.length > 0) throw new ConfigError(fallbackIssues);
+
   const engine: EngineConfig = {
     apiSecret: converted.API_SECRET,
     stepAccess:
@@ -203,6 +229,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
             baseUrl: converted.OPENROUTER_BASE_URL.replace(/\/+$/, ''),
           },
     defaultModel: converted.LLM_DEFAULT_MODEL,
+    fallbackModels,
+    totalTimeoutMs: converted.LLM_TOTAL_TIMEOUT_MS,
     enableDiagnosticTool: converted.ENABLE_DIAGNOSTIC_TOOL,
   };
 

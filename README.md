@@ -65,6 +65,8 @@ Variáveis de ambiente, validadas no arranque (`src/config.ts`). Com configuraç
 | `OPENROUTER_API_KEY`                                      | _(vazio)_                                                                                     |
 | `OPENROUTER_BASE_URL`                                     | `https://openrouter.ai/api/v1`                                                                |
 | `LLM_DEFAULT_MODEL`                                       | `google/gemini-2.5-flash`                                                                     |
+| `LLM_FALLBACK_MODELS`                                     | _(vazio)_ — modelos de recurso por omissão, separados por vírgulas (máximo 3)                 |
+| `LLM_TOTAL_TIMEOUT_MS`                                    | `30000` — teto de tempo das chamadas ao modelo de um pedido (2000 a 115000)                   |
 | `ENABLE_DIAGNOSTIC_TOOL`                                  | `false`                                                                                       |
 | `ADMIN_API_SECRET`                                        | _(vazio)_ — liga a API de administração; ≥ 32 caracteres, diferente do `API_SECRET`           |
 
@@ -207,7 +209,8 @@ src/
     engine.ts             a porta de entrada: createEngine({ settings, tools, access, store, memories, llm })
                           → run, preview, trial, tools, memories; valida a entrada; emite eventos
     tool.ts               o contrato de uma ferramenta
-    run.ts                os passos de um pedido (configuração, acesso, memórias, modelo, validação)
+    run.ts                os passos de um pedido (configuração, acesso, memórias, cadeia de modelos, validação)
+    breaker.ts            disjuntor por modelo, em memória
     errors.ts             EngineError: código estável, sem estado HTTP
     access.ts             interface de quem decide o acesso
     llm.ts                interface do fornecedor de modelos

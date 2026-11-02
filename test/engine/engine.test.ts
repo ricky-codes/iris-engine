@@ -19,7 +19,12 @@ describe('createEngine', () => {
     expect(engine.tools().map((t) => t.name)).toEqual(['diagnostic']);
     expect(engine.tool('diagnostic')).toBe(tool);
     expect(engine.tool('nao_existe')).toBeUndefined();
-    expect(engine.settings).toEqual({ defaultModel: 'm', maxAttempts: 2 });
+    expect(engine.settings).toEqual({
+      defaultModel: 'm',
+      fallbackModels: [],
+      maxAttempts: 2,
+      totalTimeoutMs: 30_000,
+    });
   });
 
   it.each([
@@ -98,7 +103,10 @@ describe('Engine.run', () => {
     });
     await expect(denied.run('diagnostic', REQ)).rejects.toThrow();
 
-    expect(events).toMatchObject([
+    expect(events.filter((e) => e.type === 'model_call')).toMatchObject([
+      { tool: 'diagnostic', model: 'm', reason: 'ok', fallback: false },
+    ]);
+    expect(events.filter((e) => e.type !== 'model_call')).toMatchObject([
       {
         type: 'run_completed',
         tool: 'diagnostic',

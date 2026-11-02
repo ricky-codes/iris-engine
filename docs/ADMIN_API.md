@@ -261,7 +261,8 @@ Resposta `200`:
     "errorsByCode": { "access_denied": 6, "quota_exceeded": 3, "provider_unavailable": 1 },
     "avgDurationMs": 1840,
     "inputTokens": 152300,
-    "outputTokens": 20110
+    "outputTokens": 20110,
+    "fallbacks": 4
   },
   "byTool": [
     {
@@ -272,7 +273,8 @@ Resposta `200`:
       "errorsByCode": { "access_denied": 5 },
       "avgDurationMs": 1650,
       "inputTokens": 98000,
-      "outputTokens": 12000
+      "outputTokens": 12000,
+      "fallbacks": 3
     }
   ],
   "byDay": [
@@ -284,13 +286,20 @@ Resposta `200`:
       "errorsByCode": {},
       "avgDurationMs": 1840,
       "inputTokens": 152300,
-      "outputTokens": 20110
+      "outputTokens": 20110,
+      "fallbacks": 4
     }
+  ],
+  "byModel": [
+    { "model": "google/gemini-2.5-flash", "calls": 131, "failed": 9, "avgDurationMs": 1710 },
+    { "model": "openai/gpt-4.1-mini", "calls": 6, "failed": 0, "avgDurationMs": 2240 }
   ]
 }
 ```
 
 - `avgDurationMs`: média só dos pedidos bem-sucedidos; `null` se não houve nenhum.
+- `fallbacks`: pedidos bem-sucedidos que só tiveram resposta com um modelo de recurso.
+- `byModel`: chamadas a cada modelo (tentativas, não pedidos), por ordem alfabética. `failed` = sem resposta válida (fornecedor em baixo, tempo esgotado ou resposta inválida); `avgDurationMs` só das que responderam bem. O playground não conta.
 - `byDay`: dias UTC, do mais antigo para o mais recente, no máximo 30.
 - Mostrar sempre `since` ("desde o arranque às …").
 
@@ -386,6 +395,8 @@ Resposta `200` (excerto):
 | `overall`           | O pior estado dos módulos ligados (os `off` não contam).                                                                                                                                                                 |
 | `edges`             | Ligações `from → to`, com `label` opcional (ex.: o pedido HTTP ao StepAccess).                                                                                                                                           |
 
+Modelos (`adapter.llm`): `details.chain` é a cadeia de modelos (sem o fornecedor, ex.: `"gemini-2.5-flash → gpt-4.1-mini"`) quando é igual em todas as ferramentas implementadas, ou `"várias"`; `details.fallbacks` é o total de pedidos servidos por um modelo de recurso desde o arranque; `details.openBreakers` lista os modelos com o disjuntor aberto (ou `null`). Fica `warning` com ≥ 20% dos pedidos (mínimo 5) servidos por recurso, ou com algum disjuntor aberto. Cada `tool.<nome>` tem `details.fallbacks` e `details.chain`.
+
 Os módulos e as ligações mudam com a configuração: em `ACCESS_MODE=open` o adaptador de acesso é `OpenAccessChecker`, o StepAccess fica `off` e não há ligações para ele; ferramentas do catálogo sem implementação aparecem `off` e sem ligação ao núcleo.
 
 ---
@@ -410,6 +421,7 @@ Resposta `200`:
         "temperature": 0.2,
         "maxOutputTokens": 300,
         "timeoutMs": 20000,
+        "fallbackModels": ["openai/gpt-4.1-mini"],
         "source": "default"
       },
       "prompt": { "source": "code", "activeVersion": null, "versionCount": 0 }
@@ -427,14 +439,15 @@ Resposta `200`:
 }
 ```
 
-| Campo           | Significado                                                                 |
-| --------------- | --------------------------------------------------------------------------- |
-| `implemented`   | Existe no código deste servidor (pode correr).                              |
-| `version`       | Versão do contrato de entrada/saída (só implementadas).                     |
-| `enabled`       | `false` = o Salesforce recebe 503 nesta ferramenta.                         |
-| `config`        | Configuração efetiva; `null` = não implementada e sem configuração gravada. |
-| `config.source` | `database` (gravada pelo admin) ou `default` (valores do código).           |
-| `prompt.source` | `database` (versão ativa), `code` (prompt de origem) ou `none`.             |
+| Campo                   | Significado                                                                                                                       |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `implemented`           | Existe no código deste servidor (pode correr).                                                                                    |
+| `version`               | Versão do contrato de entrada/saída (só implementadas).                                                                           |
+| `enabled`               | `false` = o Salesforce recebe 503 nesta ferramenta.                                                                               |
+| `config`                | Configuração efetiva; `null` = não implementada e sem configuração gravada.                                                       |
+| `config.source`         | `database` (gravada pelo admin) ou `default` (valores do código).                                                                 |
+| `config.fallbackModels` | Modelos de recurso, por ordem. Com `source: "database"`, os gravados (pode ser `[]`); com `default`, os de `LLM_FALLBACK_MODELS`. |
+| `prompt.source`         | `database` (versão ativa), `code` (prompt de origem) ou `none`.                                                                   |
 
 ### 6.2 `GET /v1/admin/tools/:name`
 
@@ -444,6 +457,7 @@ Tudo de 6.1, mais:
 {
   "defaults": {
     "model": "google/gemini-2.5-flash",
+    "fallbackModels": ["openai/gpt-4.1-mini"],
     "temperature": 0.2,
     "maxOutputTokens": 300,
     "timeoutMs": 20000
@@ -467,15 +481,16 @@ Tudo de 6.1, mais:
 
 ### 6.3 `PUT /v1/admin/tools/:name/config`
 
-Grava a configuração (substitui toda). Corpo (todos obrigatórios):
+Grava a configuração (substitui toda). Corpo (todos obrigatórios, exceto `fallbackModels`):
 
-| Campo             | Tipo    | Regras                                   |
-| ----------------- | ------- | ---------------------------------------- |
-| `model`           | string  | 1–200; id do OpenRouter (usar `/models`) |
-| `temperature`     | number  | 0–2                                      |
-| `maxOutputTokens` | integer | 1–32000                                  |
-| `timeoutMs`       | integer | 1000–120000                              |
-| `enabled`         | boolean |                                          |
+| Campo             | Tipo     | Regras                                                               |
+| ----------------- | -------- | -------------------------------------------------------------------- |
+| `model`           | string   | 1–200; id do OpenRouter (usar `/models`)                             |
+| `temperature`     | number   | 0–2                                                                  |
+| `maxOutputTokens` | integer  | 1–32000                                                              |
+| `timeoutMs`       | integer  | 1000–120000                                                          |
+| `enabled`         | boolean  |                                                                      |
+| `fallbackModels`  | string[] | opcional, omissão `[]`; até 3, cada um 1–200; por ordem de tentativa |
 
 ```json
 {
@@ -483,13 +498,23 @@ Grava a configuração (substitui toda). Corpo (todos obrigatórios):
   "temperature": 0.3,
   "maxOutputTokens": 800,
   "timeoutMs": 20000,
-  "enabled": true
+  "enabled": true,
+  "fallbackModels": ["google/gemini-2.5-flash", "openai/gpt-4.1-mini"]
 }
 ```
 
 Resposta `200`: o detalhe da ferramenta (como 6.2), já com `config.source = "database"`. Erros: `404 unknown_tool`, `422`.
 
-> A IRIS não verifica se o modelo existe no OpenRouter. Um modelo errado ou sem suporte para JSON Schema faz os pedidos falharem com `502 provider_unavailable`. **Na UI, escolher o modelo a partir de `/models` e testar no playground antes de gravar.**
+**Modelos de recurso.** Quando o modelo principal (ou o OpenRouter) falha, o motor experimenta estes por ordem:
+
+- fornecedor em baixo (`provider_unavailable`) ou tempo esgotado (`timeout`) → passa logo ao seguinte;
+- resposta que não cumpre o esquema → uma nova tentativa no mesmo modelo e, se falhar outra vez, passa ao seguinte;
+- cada chamada usa o `timeoutMs` da ferramenta, dentro de um teto por pedido (`LLM_TOTAL_TIMEOUT_MS`, 30 s por omissão); não se começa uma tentativa com menos de 1 s;
+- **disjuntor**: depois de 3 falhas de fornecedor seguidas, o modelo é saltado durante 60 s (exceto se for o último da cadeia).
+
+Omitir `fallbackModels` grava `[]` (apaga os que existiam). Cada modelo de recurso é validado contra o catálogo do OpenRouter (o mesmo de `/models`, com cache de 15 min): erros `422 invalid_request` com a mensagem "Os modelos de recurso não são válidos." e um `details[]` por modelo, com `path` = `body.fallbackModels.<i>` e `issue` = `repetido`, `é o modelo principal`, `não existe no catálogo de modelos do OpenRouter` ou `não suporta respostas com JSON Schema`. Mais de 3: `422` com `path` = `body.fallbackModels`. Se o OpenRouter não responder ao pedir o catálogo: `502 provider_unavailable` (nada é gravado).
+
+> A IRIS não verifica se o modelo **principal** existe no OpenRouter. Um modelo errado ou sem suporte para JSON Schema faz os pedidos falharem com `502 provider_unavailable`. **Na UI, escolher o modelo a partir de `/models` e testar no playground antes de gravar.**
 
 ### 6.4 `DELETE /v1/admin/tools/:name/config`
 
@@ -648,13 +673,14 @@ Resposta `200`: `{ "deleted": 7 }`. Não falha se não houver nada (`deleted: 0`
 
 Corpo comum (`preview` e `run`):
 
-| Campo          | Tipo   | Regras                                                                         |
-| -------------- | ------ | ------------------------------------------------------------------------------ |
-| `orgId`        | string | `00D…` 18 car. — memórias desta org                                            |
-| `userId`       | string | `005…` 18 car. — memórias deste utilizador                                     |
-| `input`        | object | campos da ferramenta (ver `inputSchema` em 6.2), validados como no pedido real |
-| `systemPrompt` | string | opcional, 1–20000 — substitui o prompt só neste teste                          |
-| `model`        | string | opcional, 1–200 — substitui o modelo só neste teste                            |
+| Campo                    | Tipo     | Regras                                                                           |
+| ------------------------ | -------- | -------------------------------------------------------------------------------- |
+| `orgId`                  | string   | `00D…` 18 car. — memórias desta org                                              |
+| `userId`                 | string   | `005…` 18 car. — memórias deste utilizador                                       |
+| `input`                  | object   | campos da ferramenta (ver `inputSchema` em 6.2), validados como no pedido real   |
+| `systemPrompt`           | string   | opcional, 1–20000 — substitui o prompt só neste teste                            |
+| `model`                  | string   | opcional, 1–200 — substitui o modelo só neste teste                              |
+| `fallbackModelsOverride` | string[] | opcional, até 3 — substitui os modelos de recurso só neste teste (`[]` = nenhum) |
 
 Ferramenta não implementada: `404 unknown_tool`. Sem OpenRouter configurado: `503`. Entrada inválida: `422` com `details[].path` = `body.input.<campo>`.
 
@@ -670,6 +696,7 @@ Monta o prompt **sem chamar o modelo** (sem custo). Resposta `200`:
     "temperature": 0.2,
     "maxOutputTokens": 300,
     "timeoutMs": 20000,
+    "fallbackModels": ["openai/gpt-4.1-mini"],
     "enabled": true
   },
   "memories": { "org": ["Tratar sempre o cliente por você."], "user": [] },
@@ -702,6 +729,7 @@ Resposta `200` (mesmo quando o modelo responde mal — ver `ok`):
   "tool": "diagnostic",
   "ok": true,
   "result": { "reply": "Olá! Estou a funcionar." },
+  "error": null,
   "countedUsage": false,
   "durationMs": 1432,
   "settings": {
@@ -709,15 +737,29 @@ Resposta `200` (mesmo quando o modelo responde mal — ver `ok`):
     "temperature": 0.2,
     "maxOutputTokens": 300,
     "timeoutMs": 20000,
+    "fallbackModels": ["openai/gpt-4.1-mini"],
     "enabled": true
   },
   "memories": { "org": ["Tratar sempre o cliente por você."], "user": [] },
   "prompt": { "system": "…", "user": "Olá" },
   "attempts": [
     {
+      "text": null,
+      "valid": false,
+      "reason": "provider_unavailable",
+      "fallback": false,
+      "requestedModel": "google/gemini-2.5-flash",
+      "model": "google/gemini-2.5-flash",
+      "durationMs": 412
+    },
+    {
       "text": "{\"reply\":\"Olá! Estou a funcionar.\"}",
       "valid": true,
-      "model": "google/gemini-2.5-flash",
+      "reason": "ok",
+      "fallback": true,
+      "requestedModel": "openai/gpt-4.1-mini",
+      "model": "openai/gpt-4.1-mini",
+      "durationMs": 1020,
       "inputTokens": 180,
       "outputTokens": 14,
       "costUsd": 0.0000963
@@ -726,14 +768,19 @@ Resposta `200` (mesmo quando o modelo responde mal — ver `ok`):
 }
 ```
 
-| Campo                | Significado                                                                                                                         |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `ok`                 | `true` = resposta válida em `result`. `false` = as duas tentativas não cumpriram o esquema (`result: null`; ver `attempts[].text`). |
-| `attempts`           | 1 ou 2 tentativas, com o texto bruto devolvido pelo modelo.                                                                         |
-| `attempts[].model`   | Modelo que de facto respondeu (o OpenRouter pode indicar uma variante).                                                             |
-| `attempts[].costUsd` | Custo da tentativa em dólares, indicado pelo OpenRouter (ausente se não vier).                                                      |
+| Campo                       | Significado                                                                                                                                     |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ok`                        | `true` = resposta válida em `result`. `false` = toda a cadeia de modelos falhou (`result: null`; ver `error` e `attempts`).                     |
+| `error`                     | `null` com `ok: true`. Com `ok: false`: `{ code, message }` da última tentativa (`invalid_model_output`, `provider_unavailable` ou `timeout`).  |
+| `attempts`                  | Uma entrada por tentativa, pela ordem da cadeia (modelo principal e depois os de recurso), incluindo os modelos saltados.                       |
+| `attempts[].reason`         | `ok` · `invalid_output` (não cumpriu o esquema) · `provider_unavailable` · `timeout` · `skipped_breaker` (saltado pelo disjuntor, sem chamada). |
+| `attempts[].fallback`       | `true` quando o modelo não é o principal.                                                                                                       |
+| `attempts[].requestedModel` | Modelo pedido.                                                                                                                                  |
+| `attempts[].model`          | Modelo que de facto respondeu (o OpenRouter pode indicar uma variante); igual a `requestedModel` quando não houve resposta.                     |
+| `attempts[].text`           | Texto bruto devolvido pelo modelo; `null` quando não houve resposta.                                                                            |
+| `attempts[].costUsd`        | Custo da tentativa em dólares, indicado pelo OpenRouter (ausente se não vier).                                                                  |
 
-Erros do modelo (rede, chave, créditos, modelo sem suporte) dão `502 provider_unavailable`; tempo esgotado `504 timeout`.
+Falhas do modelo (rede, chave, créditos, tempo esgotado) **já não** dão 502/504 no playground: a resposta é `200` com `ok: false`, o `error` e as tentativas, para se ver em que modelo e porquê falhou. O playground usa o mesmo disjuntor que os pedidos reais, mas não entra nas métricas.
 
 ---
 

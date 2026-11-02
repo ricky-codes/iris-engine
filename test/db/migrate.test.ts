@@ -47,6 +47,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('migrações', () => {
       'prompt_version',
       'tool',
       'tool_config',
+      'tool_config_fallback',
       'user_memory',
     ]);
   });

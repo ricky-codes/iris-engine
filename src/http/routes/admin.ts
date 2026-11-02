@@ -27,6 +27,7 @@ import { buildTopology, type RuntimeFacts, type ToolFact } from '../../admin/top
 import { memoriesIn } from '../../admin/commands.js';
 import type { ModelInfo } from '../../adapters/openrouter-models.js';
 import type { Engine } from '../../engine/engine.js';
+import { fallbackChain } from '../../engine/store.js';
 import type { ToolDefinition } from '../../engine/tool.js';
 import { AppError, type ErrorDetail } from '../errors.js';
 
@@ -39,6 +40,8 @@ export interface AdminRoutesOptions {
   /** Ferramentas implementadas e ativas neste servidor. */
   tools: ToolDefinition[];
   defaultModel: string;
+  /** Modelos de recurso das ferramentas sem configuração gravada (`LLM_FALLBACK_MODELS`). */
+  defaultFallbackModels: string[];
   metrics: Metrics;
   status: () => Promise<StatusReport>;
   /** Configuração em vigor, rotas ligadas e verificações, para a topologia. */
@@ -106,6 +109,9 @@ const PlaygroundBody = Type.Object(
     input: Type.Record(Type.String(), Type.Unknown()),
     systemPrompt: Type.Optional(Type.String({ minLength: 1, maxLength: 20_000 })),
     model: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+    fallbackModelsOverride: Type.Optional(
+      Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 3 }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -188,14 +194,17 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
         enabled: t.enabled,
         model: t.config?.model ?? null,
         modelSource: t.config?.source ?? null,
+        fallbackModels: t.config?.fallbackModels ?? [],
         prompt: { source: t.prompt.source, version: t.prompt.activeVersion },
         requests: usage.get(t.name)?.requests ?? 0,
         failed: usage.get(t.name)?.failed ?? 0,
+        fallbacks: usage.get(t.name)?.fallbacks ?? 0,
       };
     });
     return buildTopology({
       runtime,
       tools,
+      breakers: opts.playground?.engine.openBreakers() ?? [],
       memories: {
         org,
         user,
@@ -248,6 +257,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
               temperature: row.config.temperature,
               maxOutputTokens: row.config.maxOutputTokens,
               timeoutMs: row.config.timeoutMs,
+              fallbackModels: row.config.fallbackModels,
               source: 'database' as const,
             }
           : defaults === null
@@ -257,6 +267,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
                 temperature: defaults.temperature,
                 maxOutputTokens: defaults.maxOutputTokens,
                 timeoutMs: defaults.timeoutMs,
+                fallbackModels: fallbackChain(defaults.model, opts.defaultFallbackModels),
                 source: 'default' as const,
               },
       prompt: {
@@ -272,6 +283,30 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
     };
   };
 
+  /**
+   * Os modelos de recurso: sem repetidos, nenhum igual ao principal, e todos no catálogo do
+   * OpenRouter com suporte para JSON Schema (sem isso, cada chamada falharia).
+   */
+  async function checkFallbackModels(model: string, fallbackModels: string[]): Promise<void> {
+    if (fallbackModels.length === 0) return;
+    const { models } = await opts.models.list();
+    const known = new Map(models.map((m) => [m.id, m]));
+    const details: ErrorDetail[] = [];
+    fallbackModels.forEach((code, i) => {
+      const path = `body.fallbackModels.${String(i)}`;
+      const info = known.get(code);
+      if (code === model) details.push({ path, issue: 'é o modelo principal' });
+      else if (fallbackModels.indexOf(code) !== i) details.push({ path, issue: 'repetido' });
+      else if (info === undefined)
+        details.push({ path, issue: 'não existe no catálogo de modelos do OpenRouter' });
+      else if (!info.supportsStructuredOutput)
+        details.push({ path, issue: 'não suporta respostas com JSON Schema' });
+    });
+    if (details.length > 0) {
+      throw new AppError('invalid_request', 422, 'Os modelos de recurso não são válidos.', details);
+    }
+  }
+
   async function catalogRow(name: string): Promise<ToolCatalogRow> {
     const row = (await listToolCatalog(opts.pool)).find((r) => r.name === name);
     if (row === undefined) throw new AppError('unknown_tool', 404, 'Ferramenta desconhecida.');
@@ -283,7 +318,14 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
     const code = registered.get(name);
     return {
       ...toolJson(row),
-      defaults: code === undefined ? null : { model: opts.defaultModel, ...code.defaults },
+      defaults:
+        code === undefined
+          ? null
+          : {
+              model: opts.defaultModel,
+              fallbackModels: fallbackChain(opts.defaultModel, opts.defaultFallbackModels),
+              ...code.defaults,
+            },
       codePrompt: code?.systemPrompt ?? null,
       inputSchema: code === undefined ? null : (JSON.parse(JSON.stringify(code.input)) as unknown),
       outputSchema:
@@ -313,6 +355,9 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
             maxOutputTokens: Type.Integer({ minimum: 1, maximum: 32_000 }),
             timeoutMs: Type.Integer({ minimum: 1000, maximum: 120_000 }),
             enabled: Type.Boolean(),
+            fallbackModels: Type.Optional(
+              Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 3 }),
+            ),
           },
           { additionalProperties: false },
         ),
@@ -320,7 +365,11 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
     },
     async (request) => {
       await catalogRow(request.params.name);
-      await guard(() => saveToolConfig(opts.pool, request.params.name, request.body));
+      const fallbackModels = request.body.fallbackModels ?? [];
+      await checkFallbackModels(request.body.model, fallbackModels);
+      await guard(() =>
+        saveToolConfig(opts.pool, request.params.name, { ...request.body, fallbackModels }),
+      );
       return toolDetail(request.params.name);
     },
   );
@@ -581,7 +630,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
     async (request) => {
       const tool = playgroundTool(request.params.name);
       const deps = playgroundDeps();
-      const { orgId, userId, input, systemPrompt, model } = request.body;
+      const { orgId, userId, input, systemPrompt, model, fallbackModelsOverride } = request.body;
       checkInput(tool, input);
       const prepared = await deps.engine.preview(
         tool.name,
@@ -589,6 +638,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
         {
           ...(systemPrompt !== undefined && { systemPrompt }),
           ...(model !== undefined && { model }),
+          ...(fallbackModelsOverride !== undefined && { fallbackModels: fallbackModelsOverride }),
         },
       );
       return {
@@ -618,7 +668,8 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
     async (request) => {
       const tool = playgroundTool(request.params.name);
       const deps = playgroundDeps();
-      const { orgId, userId, input, systemPrompt, model, countUsage } = request.body;
+      const { orgId, userId, input, systemPrompt, model, countUsage, fallbackModelsOverride } =
+        request.body;
       checkInput(tool, input);
       if (countUsage === true && !deps.countsUsage) {
         throw new AppError(
@@ -629,19 +680,25 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
       }
 
       const started = performance.now();
-      const { prepared, result, attempts } = await deps.engine.trial(
+      const { prepared, result, attempts, error } = await deps.engine.trial(
         tool.name,
         { orgId, userId, input },
         {
           checkAccess: countUsage === true,
           ...(systemPrompt !== undefined && { systemPrompt }),
           ...(model !== undefined && { model }),
+          ...(fallbackModelsOverride !== undefined && { fallbackModels: fallbackModelsOverride }),
         },
       );
       return {
         tool: tool.name,
         ok: result !== undefined,
         result: result ?? null,
+        // Quando toda a cadeia falhou: o código e a mensagem do último erro (nunca do fornecedor).
+        error:
+          error === undefined || result !== undefined
+            ? null
+            : { code: error.code, message: error.message },
         countedUsage: countUsage === true,
         durationMs: Math.round(performance.now() - started),
         settings: prepared.settings,

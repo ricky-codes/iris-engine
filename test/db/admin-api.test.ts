@@ -4,6 +4,7 @@ import type { RuntimeFacts, Topology } from '../../src/admin/topology.js';
 import { Metrics } from '../../src/engine/metrics.js';
 import { PgMemoryStore } from '../../src/adapters/postgres-memory-store.js';
 import { createEngine } from '../../src/engine/engine.js';
+import { EngineError } from '../../src/engine/errors.js';
 import { PgEngineStore, syncToolCatalog } from '../../src/adapters/postgres-store.js';
 import type { ToolDefinition } from '../../src/engine/tool.js';
 import { diagnosticTool } from '../../src/tools/diagnostic.js';
@@ -59,6 +60,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
         pool: db.pool,
         tools: [tool],
         defaultModel: 'google/gemini-2.5-flash',
+        defaultFallbackModels: [],
         metrics,
         status: async () => ({ engine: { ready: true } }),
         runtime: async () => RUNTIME,
@@ -217,6 +219,99 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
 
       const reset = await send('DELETE', '/v1/admin/tools/diagnostic/config');
       expect(reset.json()).toMatchObject({ enabled: true, config: { source: 'default' } });
+    });
+
+    it('grava modelos de recurso por ordem, devolve-os e substitui-os por inteiro', async () => {
+      const config = {
+        model: 'anthropic/claude-sonnet-4.5',
+        temperature: 0.2,
+        maxOutputTokens: 300,
+        timeoutMs: 15000,
+        enabled: true,
+      };
+      const saved = await send('PUT', '/v1/admin/tools/diagnostic/config', {
+        ...config,
+        fallbackModels: ['a'],
+      });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json()).toMatchObject({ config: { fallbackModels: ['a'], source: 'database' } });
+      const listed = (await get('/v1/admin/tools')).json<{ tools: { name: string }[] }>();
+      expect(listed.tools.find((t) => t.name === 'diagnostic')).toMatchObject({
+        config: { fallbackModels: ['a'] },
+      });
+      expect(
+        await new PgEngineStore(db.pool).settingsFor('diagnostic', tool.defaults, {
+          model: 'm',
+          fallbackModels: ['outro'],
+        }),
+      ).toMatchObject({ model: 'anthropic/claude-sonnet-4.5', fallbackModels: ['a'] });
+
+      // A omissão de fallbackModels apaga os que existiam.
+      const cleared = await send('PUT', '/v1/admin/tools/diagnostic/config', config);
+      expect(cleared.json()).toMatchObject({ config: { fallbackModels: [] } });
+      await send('DELETE', '/v1/admin/tools/diagnostic/config');
+      expect((await get('/v1/admin/tools/diagnostic')).json()).toMatchObject({
+        config: { source: 'default', fallbackModels: [] },
+        defaults: { fallbackModels: [] },
+      });
+    });
+
+    it.each([
+      ['repetidos', ['a', 'a'], 'repetido'],
+      ['igual ao principal', ['anthropic/claude-sonnet-4.5'], 'é o modelo principal'],
+      ['inexistente', ['nao/existe'], 'não existe no catálogo de modelos do OpenRouter'],
+      ['sem JSON Schema', ['b'], 'não suporta respostas com JSON Schema'],
+    ])('recusa modelos de recurso %s, sem gravar nada', async (_label, fallbackModels, issue) => {
+      const res = await send('PUT', '/v1/admin/tools/diagnostic/config', {
+        model: 'anthropic/claude-sonnet-4.5',
+        temperature: 0.2,
+        maxOutputTokens: 300,
+        timeoutMs: 15000,
+        enabled: true,
+        fallbackModels,
+      });
+      expect(res.statusCode).toBe(422);
+      expect(res.json()).toMatchObject({
+        error: {
+          code: 'invalid_request',
+          message: 'Os modelos de recurso não são válidos.',
+          details: [{ issue }],
+        },
+      });
+      expect((await get('/v1/admin/tools/diagnostic')).json()).toMatchObject({
+        config: { source: 'default' },
+      });
+    });
+
+    it('recusa mais de 3 modelos de recurso', async () => {
+      const res = await send('PUT', '/v1/admin/tools/diagnostic/config', {
+        model: 'x',
+        temperature: 0.2,
+        maxOutputTokens: 300,
+        timeoutMs: 15000,
+        enabled: true,
+        fallbackModels: ['a', 'b', 'c', 'd'],
+      });
+      expect(res.statusCode).toBe(422);
+      expect(res.json()).toMatchObject({ error: { details: [{ path: 'body.fallbackModels' }] } });
+    });
+
+    it('a base de dados recusa o modelo principal como modelo de recurso', async () => {
+      await send('PUT', '/v1/admin/tools/diagnostic/config', {
+        model: 'anthropic/claude-sonnet-4.5',
+        temperature: 0.2,
+        maxOutputTokens: 300,
+        timeoutMs: 15000,
+        enabled: true,
+      });
+      await expect(
+        db.pool.query(
+          `INSERT INTO tool_config_fallback (tool_id, position, llm_model_id)
+           SELECT tool_id, 1, llm_model_id FROM tool_config
+           WHERE tool_id = (SELECT tool_id FROM tool WHERE code = 'diagnostic')`,
+        ),
+      ).rejects.toThrow(/fallback_is_main/);
+      await send('DELETE', '/v1/admin/tools/diagnostic/config');
     });
 
     it('valida a configuração e recusa ferramentas desconhecidas', async () => {
@@ -396,7 +491,15 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
         countedUsage: false,
         settings: { model: 'outro/modelo' },
         prompt: { system: 'Prompt de teste.' },
-        attempts: [{ valid: true, text: '{"reply":"Olá do playground"}' }],
+        attempts: [
+          {
+            valid: true,
+            text: '{"reply":"Olá do playground"}',
+            reason: 'ok',
+            fallback: false,
+            requestedModel: 'outro/modelo',
+          },
+        ],
       });
       expect(llm.requests[0]?.model).toBe('outro/modelo');
       expect(access.calls).toHaveLength(0);
@@ -419,6 +522,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
           pool: db.pool,
           tools: [tool],
           defaultModel: 'm',
+          defaultFallbackModels: [],
           metrics,
           status: async () => ({}),
           runtime: async () => RUNTIME,
@@ -445,6 +549,53 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
         ok: false,
         result: null,
         attempts: [{ valid: false }, { valid: false }],
+        error: { code: 'invalid_model_output' },
+      });
+    });
+
+    it('com o fornecedor em baixo, passa ao modelo de recurso indicado e mostra o motivo', async () => {
+      llm = fakeLlm(
+        new EngineError('provider_unavailable', 'Indisponível.'),
+        '{"reply":"Do recurso"}',
+      );
+      await ready().close();
+      app = await buildTestApp({
+        admin: {
+          secret: SECRET,
+          pool: db.pool,
+          tools: [tool],
+          defaultModel: 'm',
+          defaultFallbackModels: [],
+          metrics,
+          status: async () => ({}),
+          runtime: async () => RUNTIME,
+          models: { list: async () => ({ fetchedAt: '', models: [] }) },
+          playground: {
+            engine: createEngine({
+              settings: { defaultModel: 'm' },
+              tools: [tool],
+              store: new PgEngineStore(db.pool),
+              memories: new PgMemoryStore(db.pool),
+              llm: llm.llm,
+              access: { check: async () => undefined },
+            }),
+            countsUsage: false,
+          },
+        },
+      });
+      const res = await send('POST', '/v1/admin/playground/diagnostic/run', {
+        ...body(sfId('00D'), sfId('005')),
+        fallbackModelsOverride: ['outro/recurso'],
+      });
+      expect(res.json()).toMatchObject({
+        ok: true,
+        error: null,
+        result: { reply: 'Do recurso' },
+        settings: { model: 'm', fallbackModels: ['outro/recurso'] },
+        attempts: [
+          { requestedModel: 'm', reason: 'provider_unavailable', fallback: false, text: null },
+          { requestedModel: 'outro/recurso', reason: 'ok', fallback: true },
+        ],
       });
     });
 

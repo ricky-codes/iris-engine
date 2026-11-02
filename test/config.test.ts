@@ -32,6 +32,8 @@ describe('loadConfig', () => {
         stepAccess: undefined,
         openRouter: undefined,
         defaultModel: 'google/gemini-2.5-flash',
+        fallbackModels: [],
+        totalTimeoutMs: 30_000,
         enableDiagnosticTool: false,
       },
     });
@@ -105,6 +107,24 @@ describe('loadConfig', () => {
     expect(
       loadConfig({ ...STEPACCESS, ACCESS_MODE: 'stepaccess' }).engine.stepAccess,
     ).toMatchObject({ url: 'https://access.example.com' });
+  });
+
+  it('modelos de recurso por omissão: lista separada por vírgulas, até 3, sem o principal', () => {
+    expect(
+      loadConfig({ LLM_FALLBACK_MODELS: ' openai/gpt-4.1-mini , anthropic/claude-haiku-4.5,' })
+        .engine.fallbackModels,
+    ).toEqual(['openai/gpt-4.1-mini', 'anthropic/claude-haiku-4.5']);
+    expect(() => loadConfig({ LLM_FALLBACK_MODELS: 'a,b,c,d' })).toThrow(/no máximo 3/);
+    expect(() => loadConfig({ LLM_FALLBACK_MODELS: 'a,a' })).toThrow(/repetidos/);
+    expect(() => loadConfig({ LLM_DEFAULT_MODEL: 'x/y', LLM_FALLBACK_MODELS: 'a,x/y' })).toThrow(
+      /LLM_DEFAULT_MODEL/,
+    );
+  });
+
+  it('o teto de tempo do pedido fica entre 2 e 115 s', () => {
+    expect(loadConfig({ LLM_TOTAL_TIMEOUT_MS: '45000' }).engine.totalTimeoutMs).toBe(45_000);
+    expect(() => loadConfig({ LLM_TOTAL_TIMEOUT_MS: '1000' })).toThrow(/LLM_TOTAL_TIMEOUT_MS/);
+    expect(() => loadConfig({ LLM_TOTAL_TIMEOUT_MS: '120000' })).toThrow(/LLM_TOTAL_TIMEOUT_MS/);
   });
 
   it('o segredo de admin é opcional, mas tem de ser diferente do API_SECRET', () => {

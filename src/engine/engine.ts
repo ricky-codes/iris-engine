@@ -1,21 +1,24 @@
 import { Type } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import type { AccessChecker } from './access.js';
+import { CircuitBreaker, type OpenBreaker } from './breaker.js';
 import { EngineError, type EngineErrorCode, type EngineErrorDetail } from './errors.js';
 import type { LlmProvider } from './llm.js';
 import { Memories, type MemoryStore } from './memory.js';
 import {
   DEFAULT_MAX_ATTEMPTS,
+  DEFAULT_TOTAL_TIMEOUT_MS,
   callModel,
   prepareRun,
   runTool,
   type EngineDeps,
   type ModelAttempt,
+  type ModelCall,
   type PreparedRun,
   type RunRequest,
   type RunResult,
 } from './run.js';
-import type { EngineStore } from './store.js';
+import { fallbackChain, type EngineStore } from './store.js';
 import type { ToolDefinition } from './tool.js';
 import type { UsageReporter } from './usage.js';
 
@@ -23,8 +26,12 @@ import type { UsageReporter } from './usage.js';
 export interface EngineSettings {
   /** Modelo usado quando a ferramenta não tem um configurado. */
   defaultModel: string;
-  /** Quantas vezes se pede ao modelo uma resposta válida (1 a 5). Por omissão, 2. */
+  /** Modelos de recurso das ferramentas sem configuração na base de dados (máximo 3). */
+  fallbackModels?: string[];
+  /** Quantas vezes se pede a cada modelo uma resposta válida (1 a 5). Por omissão, 2. */
   maxAttempts?: number;
+  /** Teto de tempo para todas as chamadas ao modelo de um pedido (2 a 115 s). Por omissão, 30 s. */
+  totalTimeoutMs?: number;
 }
 
 /** O que aconteceu num pedido a uma ferramenta. Só metadados, nunca conteúdo. */
@@ -37,6 +44,8 @@ export type EngineEvent =
       requestId: string | undefined;
       durationMs: number;
       model: string;
+      /** `true` quando a resposta veio de um modelo de recurso. */
+      fallback: boolean;
       attempts: number;
       inputTokens: number | undefined;
       outputTokens: number | undefined;
@@ -54,7 +63,8 @@ export type EngineEvent =
       /** Código do erro do motor; `internal_error` para um erro inesperado. */
       code: EngineErrorCode | 'internal_error';
       costUsd: number | undefined;
-    };
+    }
+  | ({ type: 'model_call' } & ModelCall);
 
 export interface EngineOptions {
   settings: EngineSettings;
@@ -69,14 +79,17 @@ export interface EngineOptions {
   llm: LlmProvider;
   /** Para onde vai o custo de cada pedido. Opcional. */
   usage?: UsageReporter;
-  /** Recebe um evento no fim de cada pedido. Um erro aqui nunca afeta o pedido. */
+  /** Recebe um evento no fim de cada pedido e de cada chamada ao modelo. Nunca afeta o pedido. */
   onEvent?: (event: EngineEvent) => void;
+  /** Relógio em milissegundos, para o teto de tempo e o disjuntor (os testes passam um falso). */
+  now?: () => number;
 }
 
 /** Ajustes para experimentar uma ferramenta sem mexer na configuração guardada. */
 export interface TrialOverrides {
   systemPrompt?: string;
   model?: string;
+  fallbackModels?: string[];
 }
 
 /**
@@ -103,21 +116,39 @@ export interface Engine {
     name: string,
     request: RunRequest,
     options?: TrialOverrides & { checkAccess?: boolean },
-  ): Promise<{ prepared: PreparedRun; result: unknown; attempts: ModelAttempt[] }>;
+  ): Promise<{
+    prepared: PreparedRun;
+    result: unknown;
+    attempts: ModelAttempt[];
+    /** Quando toda a cadeia falhou: o erro da última tentativa. */
+    error: EngineError | undefined;
+  }>;
   readonly memories: Memories;
+  /** Os modelos que o disjuntor está a saltar agora. */
+  openBreakers(): OpenBreaker[];
 }
 
 const TOOL_NAME = /^[a-z_]+$/;
 
 function checkSettings(settings: EngineSettings): Required<EngineSettings> {
   const maxAttempts = settings.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  const totalTimeoutMs = settings.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS;
+  const fallbackModels = fallbackChain(settings.defaultModel, settings.fallbackModels ?? []);
   if (settings.defaultModel.trim() === '') {
     throw new Error('Configuração do motor: defaultModel não pode estar vazio.');
   }
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 5) {
     throw new Error('Configuração do motor: maxAttempts tem de ser um inteiro de 1 a 5.');
   }
-  return { defaultModel: settings.defaultModel, maxAttempts };
+  if (!Number.isInteger(totalTimeoutMs) || totalTimeoutMs < 2000 || totalTimeoutMs > 115_000) {
+    throw new Error(
+      'Configuração do motor: totalTimeoutMs tem de ser um inteiro de 2000 a 115000.',
+    );
+  }
+  if (fallbackModels.length > 3 || fallbackModels.some((m) => m.trim() === '')) {
+    throw new Error('Configuração do motor: no máximo 3 modelos de recurso, sem nomes vazios.');
+  }
+  return { defaultModel: settings.defaultModel, fallbackModels, maxAttempts, totalTimeoutMs };
 }
 
 function registry(tools: ToolDefinition[]): Map<string, ToolDefinition> {
@@ -147,21 +178,8 @@ function checkInput(tool: ToolDefinition, input: Record<string, unknown>): void 
 export function createEngine(options: EngineOptions): Engine {
   const settings = checkSettings(options.settings);
   const tools = registry(options.tools);
-  const deps: EngineDeps = {
-    access: options.access,
-    store: options.store,
-    memories: options.memories,
-    llm: options.llm,
-    defaultModel: settings.defaultModel,
-    maxAttempts: settings.maxAttempts,
-    ...(options.usage !== undefined && { usage: options.usage }),
-  };
-
-  const toolOr404 = (name: string): ToolDefinition => {
-    const tool = tools.get(name);
-    if (tool === undefined) throw new EngineError('unknown_tool', 'Ferramenta desconhecida.');
-    return tool;
-  };
+  const now = options.now ?? (() => Date.now());
+  const breaker = new CircuitBreaker(now);
 
   const emit = (event: EngineEvent): void => {
     try {
@@ -171,9 +189,33 @@ export function createEngine(options: EngineOptions): Engine {
     }
   };
 
+  const deps: EngineDeps = {
+    access: options.access,
+    store: options.store,
+    memories: options.memories,
+    llm: options.llm,
+    defaultModel: settings.defaultModel,
+    defaultFallbackModels: settings.fallbackModels,
+    maxAttempts: settings.maxAttempts,
+    totalTimeoutMs: settings.totalTimeoutMs,
+    breaker,
+    now,
+    onModelCall: (call) => {
+      emit({ type: 'model_call', ...call });
+    },
+    ...(options.usage !== undefined && { usage: options.usage }),
+  };
+
+  const toolOr404 = (name: string): ToolDefinition => {
+    const tool = tools.get(name);
+    if (tool === undefined) throw new EngineError('unknown_tool', 'Ferramenta desconhecida.');
+    return tool;
+  };
+
   return {
     settings,
     memories: new Memories(options.memories),
+    openBreakers: () => breaker.open(),
     tools: () => [...tools.values()],
     tool: (name) => tools.get(name),
 
@@ -218,6 +260,9 @@ export function createEngine(options: EngineOptions): Engine {
           systemPromptOverride: overrides.systemPrompt,
         }),
         ...(overrides.model !== undefined && { modelOverride: overrides.model }),
+        ...(overrides.fallbackModels !== undefined && {
+          fallbackModelsOverride: overrides.fallbackModels,
+        }),
       });
     },
 
@@ -229,9 +274,16 @@ export function createEngine(options: EngineOptions): Engine {
         requireEnabled: false,
         ...(opts.systemPrompt !== undefined && { systemPromptOverride: opts.systemPrompt }),
         ...(opts.model !== undefined && { modelOverride: opts.model }),
+        ...(opts.fallbackModels !== undefined && { fallbackModelsOverride: opts.fallbackModels }),
       });
-      const { result, attempts } = await callModel(deps.llm, tool, prepared, settings.maxAttempts);
-      return { prepared, result, attempts };
+      // O playground usa o mesmo disjuntor, mas não entra nas métricas (sem onCall).
+      const { result, attempts, error } = await callModel(deps.llm, tool, prepared, {
+        maxAttempts: settings.maxAttempts,
+        totalTimeoutMs: settings.totalTimeoutMs,
+        breaker,
+        now,
+      });
+      return { prepared, result, attempts, error };
     },
   };
 }

@@ -13,6 +13,8 @@ export interface ToolConfigInput {
   maxOutputTokens: number;
   timeoutMs: number;
   enabled: boolean;
+  /** Modelos de recurso, por ordem (máximo 3). Vazio: nenhum. */
+  fallbackModels: string[];
 }
 
 export interface StoredToolConfig extends ToolConfigInput {
@@ -45,9 +47,13 @@ export async function listToolCatalog(pool: Pool): Promise<ToolCatalogRow[]> {
     is_enabled: boolean | null;
     active_version: number | null;
     version_count: number;
+    fallbacks: string[];
   }>(
     `SELECT t.code, lm.code AS model, tc.temperature, tc.max_output_tokens, tc.timeout_ms,
             tc.is_enabled,
+            ARRAY(SELECT fm.code FROM tool_config_fallback f
+                  JOIN llm_model fm ON fm.llm_model_id = f.llm_model_id
+                  WHERE f.tool_id = t.tool_id ORDER BY f.position) AS fallbacks,
             (SELECT pv.version FROM prompt p JOIN prompt_version pv ON pv.prompt_id = p.prompt_id
               WHERE p.tool_id = t.tool_id AND pv.is_active) AS active_version,
             (SELECT count(*)::int FROM prompt p JOIN prompt_version pv ON pv.prompt_id = p.prompt_id
@@ -72,6 +78,7 @@ export async function listToolCatalog(pool: Pool): Promise<ToolCatalogRow[]> {
             maxOutputTokens: r.max_output_tokens,
             timeoutMs: r.timeout_ms,
             enabled: r.is_enabled,
+            fallbackModels: r.fallbacks,
             source: 'database',
           },
     activePromptVersion: r.active_version,
@@ -98,17 +105,20 @@ export async function saveToolConfig(
   try {
     await client.query('BEGIN');
     const id = await toolId(client, name);
-    await client.query(
-      `INSERT INTO llm_model (ai_provider_id, code)
-       SELECT ai_provider_id, $1 FROM ai_provider WHERE code = 'openrouter'
-       ON CONFLICT (ai_provider_id, code) DO NOTHING`,
-      [input.model],
-    );
-    const model = await client.query<{ llm_model_id: number }>(
-      `SELECT lm.llm_model_id FROM llm_model lm JOIN ai_provider ap USING (ai_provider_id)
-       WHERE ap.code = 'openrouter' AND lm.code = $1`,
-      [input.model],
-    );
+    const modelId = async (code: string): Promise<number | undefined> => {
+      await client.query(
+        `INSERT INTO llm_model (ai_provider_id, code)
+         SELECT ai_provider_id, $1 FROM ai_provider WHERE code = 'openrouter'
+         ON CONFLICT (ai_provider_id, code) DO NOTHING`,
+        [code],
+      );
+      const { rows } = await client.query<{ llm_model_id: number }>(
+        `SELECT lm.llm_model_id FROM llm_model lm JOIN ai_provider ap USING (ai_provider_id)
+         WHERE ap.code = 'openrouter' AND lm.code = $1`,
+        [code],
+      );
+      return rows[0]?.llm_model_id;
+    };
     await client.query(
       `INSERT INTO tool_config (tool_id, llm_model_id, temperature, max_output_tokens, timeout_ms, is_enabled)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -118,13 +128,21 @@ export async function saveToolConfig(
          is_enabled = EXCLUDED.is_enabled`,
       [
         id,
-        model.rows[0]?.llm_model_id,
+        await modelId(input.model),
         input.temperature,
         input.maxOutputTokens,
         input.timeoutMs,
         input.enabled,
       ],
     );
+    // Os modelos de recurso substituem-se por inteiro, pela ordem recebida.
+    await client.query('DELETE FROM tool_config_fallback WHERE tool_id = $1', [id]);
+    for (const [index, code] of input.fallbackModels.entries()) {
+      await client.query(
+        'INSERT INTO tool_config_fallback (tool_id, position, llm_model_id) VALUES ($1, $2, $3)',
+        [id, index + 1, await modelId(code)],
+      );
+    }
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);

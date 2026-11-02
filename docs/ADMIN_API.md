@@ -126,7 +126,7 @@ iris.exemplo.pt {
 | 403  | `access_denied`          | Playground com `countUsage: true` e o StepAccess recusou. `details[0].issue` = razão (`NOT_MEMBER`, …).          |
 | 404  | `not_found`              | Memória ou versão de prompt que não existe; rota inexistente.                                                    |
 | 404  | `unknown_tool`           | Ferramenta que não existe no catálogo (ou, no playground, sem implementação).                                    |
-| 409  | `memory_limit_reached`   | A org já tem 50 memórias.                                                                                        |
+| 409  | `memory_limit_reached`   | A org já tem 50 memórias (ou o utilizador já tem 20).                                                            |
 | 413  | `payload_too_large`      | Corpo acima do limite (1 MB por omissão).                                                                        |
 | 415  | `unsupported_media_type` | `Content-Type` não é JSON.                                                                                       |
 | 422  | `invalid_request`        | Validação falhou (campo em falta, formato errado, `X-Admin-Actor` em falta, ferramenta desconhecida numa lista). |
@@ -169,14 +169,14 @@ Hoje o catálogo tem `diagnostic` (implementada, só existe com `ENABLE_DIAGNOST
 
 Instruções curtas que mudam a forma como a IRIS responde.
 
-|              | Memória da org (`scope: "org"`) | Memória de utilizador (`scope: "user"`)                             |
-| ------------ | ------------------------------- | ------------------------------------------------------------------- |
-| O que é      | Regra da empresa                | Preferência pessoal                                                 |
-| Quem cria    | Admin da Step (esta API)        | O próprio utilizador, pedindo à IRIS (ferramenta "lembrar", futura) |
-| `source`     | sempre `"admin"`                | `"user"`                                                            |
-| O admin pode | criar, editar, apagar           | **só apagar**                                                       |
-| Vale para    | todos os utilizadores da org    | só esse utilizador                                                  |
-| Limite       | **50** por org                  | **20** por utilizador                                               |
+|              | Memória da org (`scope: "org"`) | Memória de utilizador (`scope: "user"`)                            |
+| ------------ | ------------------------------- | ------------------------------------------------------------------ |
+| O que é      | Regra da empresa                | Preferência pessoal                                                |
+| Quem cria    | Admin da Step (esta API)        | O próprio utilizador, a partir do Salesforce (`POST /v1/memories`) |
+| `source`     | sempre `"admin"`                | `"user"`                                                           |
+| O admin pode | criar, editar, apagar           | **só apagar**                                                      |
+| Vale para    | todos os utilizadores da org    | só esse utilizador                                                 |
+| Limite       | **50** por org                  | **20** por utilizador                                              |
 
 - Texto: 1 a **500** caracteres (espaços nas pontas são removidos).
 - `tools`: lista de ferramentas a que se aplica. **Lista vazia = todas as ferramentas.**
@@ -623,9 +623,9 @@ Monta o prompt **sem chamar o modelo** (sem custo). Resposta `200`:
 
 Corpo comum mais:
 
-| Campo        | Tipo    | Regras                                                                                                                                                   |
-| ------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `countUsage` | boolean | opcional, omissão `false`. `true` = pergunta ao StepAccess e conta utilização como um pedido real (pode dar `403 access_denied` / `429 quota_exceeded`). |
+| Campo        | Tipo    | Regras                                                                                                                                                                                                                                                       |
+| ------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `countUsage` | boolean | opcional, omissão `false`. `true` = pergunta ao StepAccess e conta utilização como um pedido real (pode dar `403 access_denied` / `429 quota_exceeded`). Só com `config.stepAccess = "live"`; em `open`, `bypass` ou `missing` dá `503 service_unavailable`. |
 
 Resposta `200` (mesmo quando o modelo responde mal — ver `ok`):
 

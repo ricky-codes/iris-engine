@@ -44,6 +44,8 @@ const EnvSchema = Type.Object({
     }),
   ),
   STEPACCESS_TIMEOUT_MS: Type.Integer({ minimum: 100, default: 3000 }),
+  // O envio do custo corre em segundo plano, por isso aguenta mais do que a verificação de acesso.
+  STEPACCESS_USAGE_TIMEOUT_MS: Type.Integer({ minimum: 100, default: 10_000 }),
   // Só fora de produção: deixa passar todos os pedidos sem perguntar ao StepAccess.
   STEPACCESS_BYPASS: Type.Boolean({ default: false }),
   // Quem controla o acesso às ferramentas. `stepaccess`: licenças e utilização no StepAccess.
@@ -65,6 +67,16 @@ const EnvSchema = Type.Object({
   // Teto de tempo para todas as chamadas ao modelo de um pedido. Fica abaixo do limite de
   // callout do Apex (120 s), com margem para o resto do pedido.
   LLM_TOTAL_TIMEOUT_MS: Type.Integer({ minimum: 2000, maximum: 115_000, default: 30_000 }),
+  // Quantas vezes se pede a cada modelo uma resposta válida antes de passar ao seguinte.
+  LLM_MAX_ATTEMPTS: Type.Integer({ minimum: 1, maximum: 5, default: 2 }),
+  // Disjuntor por modelo: falhas seguidas do fornecedor para o saltar, e durante quanto tempo.
+  LLM_BREAKER_THRESHOLD: Type.Integer({ minimum: 1, maximum: 20, default: 3 }),
+  LLM_BREAKER_OPEN_MS: Type.Integer({ minimum: 1000, maximum: 3_600_000, default: 60_000 }),
+
+  // Interruptor geral do streaming: `false` recusa `"stream": true` em todas as ferramentas.
+  STREAM_ENABLED: Type.Boolean({ default: true }),
+  // Pedidos por minuto, por org, nas rotas de ferramentas (por instância). 0 = sem limite.
+  RATE_LIMIT_PER_MINUTE: Type.Integer({ minimum: 0, maximum: 100_000, default: 0 }),
 
   // Alertas: POST JSON para um webhook (Slack, email, um serviço de automação…) quando algo fica mal. Sem URL, os
   // alertas continuam a ser calculados e ficam visíveis na API de administração.
@@ -118,6 +130,8 @@ export interface StepAccessConfig {
   password: string;
   componentUuid: string;
   timeoutMs: number;
+  /** Tempo máximo do envio do custo (`POST /v1/usage/cost`). */
+  usageTimeoutMs: number;
 }
 
 export interface EngineConfig {
@@ -132,6 +146,11 @@ export interface EngineConfig {
   /** Modelos de recurso das ferramentas sem configuração na base de dados. */
   fallbackModels: string[];
   totalTimeoutMs: number;
+  maxAttempts: number;
+  breaker: { threshold: number; openMs: number };
+  streamEnabled: boolean;
+  /** Pedidos por minuto e por org; 0 = sem limite. */
+  rateLimitPerMinute: number;
   enableDiagnosticTool: boolean;
 }
 
@@ -244,6 +263,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
                 password: converted.STEPACCESS_PASSWORD,
                 componentUuid: converted.STEPACCESS_COMPONENT_UUID,
                 timeoutMs: converted.STEPACCESS_TIMEOUT_MS,
+                usageTimeoutMs: converted.STEPACCESS_USAGE_TIMEOUT_MS,
               }
             : undefined,
     openRouter:
@@ -256,6 +276,10 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     defaultModel: converted.LLM_DEFAULT_MODEL,
     fallbackModels,
     totalTimeoutMs: converted.LLM_TOTAL_TIMEOUT_MS,
+    maxAttempts: converted.LLM_MAX_ATTEMPTS,
+    breaker: { threshold: converted.LLM_BREAKER_THRESHOLD, openMs: converted.LLM_BREAKER_OPEN_MS },
+    streamEnabled: converted.STREAM_ENABLED,
+    rateLimitPerMinute: converted.RATE_LIMIT_PER_MINUTE,
     enableDiagnosticTool: converted.ENABLE_DIAGNOSTIC_TOOL,
   };
 

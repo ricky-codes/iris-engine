@@ -60,6 +60,7 @@ Variáveis de ambiente, validadas no arranque (`src/config.ts`). Com configuraç
 | `API_SECRET`                                              | _(vazio)_ — segredo partilhado com o Salesforce, ≥ 32 caracteres                              |
 | `STEPACCESS_URL`, `_USER`, `_PASSWORD`, `_COMPONENT_UUID` | _(vazio)_ — todos ou nenhum                                                                   |
 | `STEPACCESS_TIMEOUT_MS`                                   | `3000`                                                                                        |
+| `STEPACCESS_USAGE_TIMEOUT_MS`                             | `10000` — tempo máximo do envio do custo (em segundo plano)                                   |
 | `STEPACCESS_BYPASS`                                       | `false` — proibido em produção                                                                |
 | `ACCESS_MODE`                                             | `stepaccess` — ou `open`: acesso só pelo `API_SECRET`, sem StepAccess (permitido em produção) |
 | `OPENROUTER_API_KEY`                                      | _(vazio)_                                                                                     |
@@ -67,6 +68,10 @@ Variáveis de ambiente, validadas no arranque (`src/config.ts`). Com configuraç
 | `LLM_DEFAULT_MODEL`                                       | `google/gemini-2.5-flash`                                                                     |
 | `LLM_FALLBACK_MODELS`                                     | _(vazio)_ — modelos de recurso por omissão, separados por vírgulas (máximo 3)                 |
 | `LLM_TOTAL_TIMEOUT_MS`                                    | `30000` — teto de tempo das chamadas ao modelo de um pedido (2000 a 115000)                   |
+| `LLM_MAX_ATTEMPTS`                                        | `2` — tentativas por modelo até obter uma resposta válida (1 a 5)                             |
+| `LLM_BREAKER_THRESHOLD`, `LLM_BREAKER_OPEN_MS`            | `3` falhas seguidas (1 a 20) e `60000` ms (1000 a 3600000) com o modelo saltado               |
+| `STREAM_ENABLED`                                          | `true` — `false` recusa `"stream": true` em todas as ferramentas                              |
+| `RATE_LIMIT_PER_MINUTE`                                   | `0` — pedidos por minuto e por org, por instância (429 acima disso); 0 = sem limite           |
 | `ENABLE_DIAGNOSTIC_TOOL`                                  | `false`                                                                                       |
 | `ADMIN_API_SECRET`                                        | _(vazio)_ — liga a API de administração; ≥ 32 caracteres, diferente do `API_SECRET`           |
 | `ALERT_WEBHOOK_URL`, `ALERT_WEBHOOK_SECRET`               | _(vazio)_ — webhook dos alertas e segredo da assinatura (≥ 32 car.); os dois ou nenhum        |

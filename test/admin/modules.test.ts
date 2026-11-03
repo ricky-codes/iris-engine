@@ -35,11 +35,13 @@ function input(over: Partial<ModulesInput> = {}): ModulesInput {
       fallbackModels: ['openai/gpt-4.1-mini'],
       maxAttempts: 2,
       totalTimeoutMs: 30_000,
+      breaker: { threshold: 3, openMs: 60_000 },
     },
     access: 'live',
     stepAccess: {
       origin: 'https://access.exemplo.pt',
       timeoutMs: 3000,
+      usageTimeoutMs: 10_000,
       componentUuid: '11111111-2222-4333-8444-555555555555',
     },
     openRouter: { baseUrl: 'https://openrouter.ai/api/v1', configured: true },
@@ -95,7 +97,7 @@ describe('describeModules', () => {
     const modules = describeModules(
       input({
         access: 'open',
-        stepAccess: { origin: null, timeoutMs: null, componentUuid: null },
+        stepAccess: { origin: null, timeoutMs: null, usageTimeoutMs: null, componentUuid: null },
       }),
     ).modules;
     const active = Object.fromEntries(modules.map((m) => [m.className, m.active]));

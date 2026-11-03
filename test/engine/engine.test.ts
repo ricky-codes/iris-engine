@@ -24,6 +24,8 @@ describe('createEngine', () => {
       fallbackModels: [],
       maxAttempts: 2,
       totalTimeoutMs: 30_000,
+      breakerThreshold: 3,
+      breakerOpenMs: 60_000,
     });
   });
 

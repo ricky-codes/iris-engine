@@ -82,6 +82,9 @@ function buildEngine(
       defaultModel: cfg.defaultModel,
       fallbackModels: cfg.fallbackModels,
       totalTimeoutMs: cfg.totalTimeoutMs,
+      maxAttempts: cfg.maxAttempts,
+      breakerThreshold: cfg.breaker.threshold,
+      breakerOpenMs: cfg.breaker.openMs,
     },
     tools,
     access: access ?? noAccess,
@@ -100,7 +103,11 @@ function buildEngine(
     },
     ...(cfg.stepAccess !== undefined &&
       typeof cfg.stepAccess === 'object' && {
-        usage: new StepAccessUsageReporter(cfg.stepAccess, fetch, warn),
+        usage: new StepAccessUsageReporter(
+          { ...cfg.stepAccess, timeoutMs: cfg.stepAccess.usageTimeoutMs },
+          fetch,
+          warn,
+        ),
       }),
   });
 }
@@ -203,6 +210,7 @@ function buildAdmin(
           fallbackModels: cfg.fallbackModels,
           maxAttempts: playground?.settings.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
           totalTimeoutMs: cfg.totalTimeoutMs,
+          breaker: cfg.breaker,
         },
         access: sa === undefined ? 'missing' : typeof sa === 'string' ? sa : 'live',
         stepAccess:
@@ -210,9 +218,10 @@ function buildAdmin(
             ? {
                 origin: new URL(sa.url).origin,
                 timeoutMs: sa.timeoutMs,
+                usageTimeoutMs: sa.usageTimeoutMs,
                 componentUuid: sa.componentUuid,
               }
-            : { origin: null, timeoutMs: null, componentUuid: null },
+            : { origin: null, timeoutMs: null, usageTimeoutMs: null, componentUuid: null },
         openRouter: {
           baseUrl: cfg.openRouter?.baseUrl ?? null,
           configured: cfg.openRouter !== undefined,
@@ -262,7 +271,13 @@ async function main(): Promise<void> {
   const engine =
     core === undefined || missing.length > 0 || config.engine.apiSecret === undefined
       ? undefined
-      : { engine: core, apiSecret: config.engine.apiSecret, metrics };
+      : {
+          engine: core,
+          apiSecret: config.engine.apiSecret,
+          metrics,
+          streamEnabled: config.engine.streamEnabled,
+          rateLimitPerMinute: config.engine.rateLimitPerMinute,
+        };
   // As memórias só precisam da base de dados e do segredo do Salesforce, não do StepAccess.
   const memories =
     pool === undefined || config.engine.apiSecret === undefined

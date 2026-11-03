@@ -17,7 +17,11 @@ afterEach(async () => {
   app = undefined;
 });
 
-async function start(access = fakeAccess(), llm = fakeLlm('{"reply":"Olá!"}')) {
+async function start(
+  access = fakeAccess(),
+  llm = fakeLlm('{"reply":"Olá!"}'),
+  extra: { streamEnabled?: boolean; rateLimitPerMinute?: number } = {},
+) {
   app = await buildTestApp({
     engine: {
       engine: fakeEngine([diagnosticTool as unknown as ToolDefinition], {
@@ -25,6 +29,7 @@ async function start(access = fakeAccess(), llm = fakeLlm('{"reply":"Olá!"}')) 
         llm: llm.llm,
       }),
       apiSecret: SECRET,
+      ...extra,
     },
   });
   return { app, access, llm };
@@ -300,5 +305,47 @@ describe('POST /v1/tools/:nome com stream', () => {
     const { app } = await start();
     const res = await app.inject({ method: 'GET', url: '/v1/tools', headers: AUTH });
     expect(res.json()).toMatchObject({ tools: [{ name: 'diagnostic', streaming: true }] });
+  });
+});
+
+describe('limite de pedidos e interruptor de streaming', () => {
+  const post = (a: FastifyInstance, payload: object, org = BODY.orgId) =>
+    a.inject({
+      method: 'POST',
+      url: '/v1/tools/diagnostic',
+      headers: AUTH,
+      payload: { ...BODY, orgId: org, ...payload },
+    });
+
+  it('429 rate_limited acima do limite da org, antes de gastar utilização', async () => {
+    const { app, access } = await start(fakeAccess(), fakeLlm('{"reply":"Olá!"}'), {
+      rateLimitPerMinute: 2,
+    });
+    expect((await post(app, {})).statusCode).toBe(200);
+    expect((await post(app, {})).statusCode).toBe(200);
+    const res = await post(app, {});
+    expect(res.statusCode).toBe(429);
+    expect(res.json()).toMatchObject({ error: { code: 'rate_limited' } });
+    expect(Number(res.headers['retry-after'])).toBeGreaterThan(0);
+    expect(access.calls).toHaveLength(2);
+    // Outra org não é afetada.
+    expect((await post(app, {}, '00DBBBBBBBBBBBBBBB')).statusCode).toBe(200);
+  });
+
+  it('sem limite configurado não recusa', async () => {
+    const { app } = await start();
+    for (let i = 0; i < 5; i++) expect((await post(app, {})).statusCode).toBe(200);
+  });
+
+  it('STREAM_ENABLED=false: stream:true dá 422 e a lista diz streaming:false', async () => {
+    const { app, access } = await start(fakeAccess(), fakeLlm('{"reply":"Olá!"}'), {
+      streamEnabled: false,
+    });
+    const res = await post(app, { stream: true });
+    expect(res.statusCode).toBe(422);
+    expect(access.calls).toHaveLength(0);
+    expect((await post(app, {})).statusCode).toBe(200);
+    const list = await app.inject({ method: 'GET', url: '/v1/tools', headers: AUTH });
+    expect(list.json()).toMatchObject({ tools: [{ streaming: false }] });
   });
 });

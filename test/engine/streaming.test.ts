@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { defineTool, type ToolDefinition } from '../../src/engine/tool.js';
 import { EngineError } from '../../src/engine/errors.js';
 import { diagnosticTool } from '../../src/tools/diagnostic.js';
-import { fakeEngine, fakeLlm } from './fakes.js';
+import { createEngine, type EngineSettings } from '../../src/engine/engine.js';
+import { fakeAccess, fakeEngine, fakeLlm, fakeStore } from './fakes.js';
 
 const REQ = { orgId: '00DAAAAAAAAAAAAAAA', userId: '005AAAAAAAAAAAAAAA' };
 const diag = diagnosticTool as unknown as ToolDefinition;
@@ -94,5 +95,35 @@ describe('Engine.run com streaming', () => {
       stream: { field: 'n' },
     }) as unknown as ToolDefinition;
     expect(() => fakeEngine([bad])).toThrow(/stream\.field/);
+  });
+});
+
+describe('disjuntor configurável', () => {
+  const make = (settings: Partial<EngineSettings>, llm = fakeLlm('{}').llm) =>
+    createEngine({
+      settings: { defaultModel: 'm', ...settings },
+      tools: [diag],
+      access: fakeAccess().access,
+      llm,
+      ...fakeStore(),
+    });
+
+  it('abre ao fim de breakerThreshold falhas seguidas', async () => {
+    const engine = make(
+      { breakerThreshold: 1, breakerOpenMs: 5000 },
+      fakeLlm(new EngineError('provider_unavailable', 'x')).llm,
+    );
+    expect(engine.openBreakers()).toEqual([]);
+    await expect(engine.run('diagnostic', { ...REQ, input: { message: 'oi' } })).rejects.toThrow();
+    expect(engine.openBreakers()).toMatchObject([{ model: 'm' }]);
+  });
+
+  it.each([
+    [{ breakerThreshold: 0 }, /breakerThreshold/],
+    [{ breakerThreshold: 21 }, /breakerThreshold/],
+    [{ breakerOpenMs: 999 }, /breakerOpenMs/],
+    [{ breakerOpenMs: 3_600_001 }, /breakerOpenMs/],
+  ])('recusa %j', (settings, message) => {
+    expect(() => make(settings)).toThrow(message);
   });
 });

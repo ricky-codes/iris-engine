@@ -1,4 +1,3 @@
-import { BREAKER_OPEN_MS, BREAKER_THRESHOLD } from '../engine/breaker.js';
 import type { NodeStatus, Topology } from './topology.js';
 
 /**
@@ -57,9 +56,15 @@ export interface ModulesInput {
     fallbackModels: string[];
     maxAttempts: number;
     totalTimeoutMs: number;
+    breaker: { threshold: number; openMs: number };
   };
   access: 'live' | 'open' | 'bypass' | 'missing';
-  stepAccess: { origin: string | null; timeoutMs: number | null; componentUuid: string | null };
+  stepAccess: {
+    origin: string | null;
+    timeoutMs: number | null;
+    usageTimeoutMs: number | null;
+    componentUuid: string | null;
+  };
   openRouter: { baseUrl: string | null; configured: boolean };
   memories: { chars: number; perOrg: number; perUser: number; org: number; user: number };
 }
@@ -370,8 +375,8 @@ export function describeModules(input: ModulesInput): ModulesReport {
       {
         key: 'timeoutMs',
         label: 'Tempo máximo de cada envio',
-        description: 'Partilhado com o StepAccessClient.',
-        value: input.stepAccess.timeoutMs,
+        description: 'Em segundo plano, por isso mais folgado que o da verificação de acesso.',
+        value: input.stepAccess.usageTimeoutMs,
         source: ENV,
         adminPath: null,
       },
@@ -383,6 +388,12 @@ export function describeModules(input: ModulesInput): ModulesReport {
         description:
           'Hoje um custo que falha duas vezes só existe no log. Uma tabela `cost_outbox` (só metadados) permitia reenviar sozinho e mostrar quantos estão pendentes. É a lacuna mais séria deste módulo.',
         suggested: 'ligada',
+      },
+      {
+        key: 'timeoutMs',
+        label: 'Tempo máximo do envio editável',
+        description: 'Passar da variável `STEPACCESS_USAGE_TIMEOUT_MS` para a base de dados.',
+        suggested: '10000 ms',
       },
       {
         key: 'retries',
@@ -451,17 +462,19 @@ export function describeModules(input: ModulesInput): ModulesReport {
       {
         key: 'maxAttempts',
         label: 'Tentativas por modelo',
-        description: 'Quantas vezes se pede uma resposta válida a cada modelo (1 a 5).',
+        description:
+          'Quantas vezes se pede uma resposta válida a cada modelo (1 a 5). `LLM_MAX_ATTEMPTS`.',
         value: engine.maxAttempts,
-        source: CODE,
+        source: ENV,
         adminPath: null,
       },
       {
         key: 'breaker',
         label: 'Disjuntor por modelo',
-        description: `Abre após ${String(BREAKER_THRESHOLD)} falhas seguidas e salta o modelo durante ${String(BREAKER_OPEN_MS / 1000)} s.`,
-        value: `${String(BREAKER_THRESHOLD)} falhas · ${String(BREAKER_OPEN_MS / 1000)} s`,
-        source: CODE,
+        description:
+          'Abre após N falhas seguidas do fornecedor e salta o modelo durante algum tempo. `LLM_BREAKER_THRESHOLD`, `LLM_BREAKER_OPEN_MS`.',
+        value: `${String(engine.breaker.threshold)} falhas · ${String(engine.breaker.openMs / 1000)} s`,
+        source: ENV,
         adminPath: null,
       },
       {
@@ -489,16 +502,11 @@ export function describeModules(input: ModulesInput): ModulesReport {
         suggested: 'tabela `engine_setting`',
       },
       {
-        key: 'maxAttempts',
-        label: 'Tentativas por modelo',
-        description: 'Hoje só se altera em código; nem existe variável de ambiente.',
-        suggested: '2 (1 a 5)',
-      },
-      {
         key: 'breaker',
-        label: 'Limiar e duração do disjuntor',
-        description: 'Falhas seguidas e tempo aberto, editáveis, e botão para o fechar à mão.',
-        suggested: '3 falhas · 60 s',
+        label: 'Tentativas e disjuntor editáveis sem reiniciar',
+        description:
+          'Tentativas por modelo, falhas seguidas e tempo aberto na base de dados (hoje no `.env`), e um botão para fechar o disjuntor à mão.',
+        suggested: '2 tentativas · 3 falhas · 60 s',
       },
       {
         key: 'dataCollection',

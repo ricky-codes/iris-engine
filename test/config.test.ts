@@ -34,6 +34,10 @@ describe('loadConfig', () => {
         defaultModel: 'google/gemini-2.5-flash',
         fallbackModels: [],
         totalTimeoutMs: 30_000,
+        maxAttempts: 2,
+        breaker: { threshold: 3, openMs: 60_000 },
+        streamEnabled: true,
+        rateLimitPerMinute: 0,
         enableDiagnosticTool: false,
       },
       alerts: {
@@ -84,6 +88,7 @@ describe('loadConfig', () => {
       password: 'segredo',
       componentUuid: '3f2a9c1e-8b7d-4e6f-9a0b-1c2d3e4f5a6b',
       timeoutMs: 3000,
+      usageTimeoutMs: 10_000,
     });
   });
 
@@ -194,5 +199,37 @@ describe('loadConfig', () => {
     const issues = (error as ConfigError).issues.join('\n');
     expect(issues).toContain('PORT');
     expect(issues).toContain('NODE_ENV');
+  });
+
+  describe('variáveis do motor', () => {
+    it('lê as tentativas, o disjuntor, o streaming, o limite de pedidos e o tempo do custo', () => {
+      const config = loadConfig({
+        ...STEPACCESS,
+        LLM_MAX_ATTEMPTS: '3',
+        LLM_BREAKER_THRESHOLD: '5',
+        LLM_BREAKER_OPEN_MS: '120000',
+        STREAM_ENABLED: 'false',
+        RATE_LIMIT_PER_MINUTE: '120',
+        STEPACCESS_USAGE_TIMEOUT_MS: '8000',
+      });
+      expect(config.engine).toMatchObject({
+        maxAttempts: 3,
+        breaker: { threshold: 5, openMs: 120_000 },
+        streamEnabled: false,
+        rateLimitPerMinute: 120,
+      });
+      expect(config.engine.stepAccess).toMatchObject({ timeoutMs: 3000, usageTimeoutMs: 8000 });
+    });
+
+    it.each([
+      ['LLM_MAX_ATTEMPTS', '0'],
+      ['LLM_MAX_ATTEMPTS', '6'],
+      ['LLM_BREAKER_THRESHOLD', '0'],
+      ['LLM_BREAKER_OPEN_MS', '10'],
+      ['RATE_LIMIT_PER_MINUTE', '-1'],
+      ['STEPACCESS_USAGE_TIMEOUT_MS', '5'],
+    ])('recusa %s=%s', (key, value) => {
+      expect(() => loadConfig({ [key]: value })).toThrow(ConfigError);
+    });
   });
 });

@@ -1,7 +1,7 @@
 import { Type } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import type { AccessChecker } from './access.js';
-import { CircuitBreaker, type OpenBreaker } from './breaker.js';
+import { BREAKER_OPEN_MS, BREAKER_THRESHOLD, CircuitBreaker, type OpenBreaker } from './breaker.js';
 import { EngineError, type EngineErrorCode, type EngineErrorDetail } from './errors.js';
 import type { LlmProvider } from './llm.js';
 import { Memories, type MemoryStore } from './memory.js';
@@ -32,6 +32,10 @@ export interface EngineSettings {
   maxAttempts?: number;
   /** Teto de tempo para todas as chamadas ao modelo de um pedido (2 a 115 s). Por omissão, 30 s. */
   totalTimeoutMs?: number;
+  /** Falhas seguidas do fornecedor para abrir o disjuntor de um modelo (1 a 20). Por omissão, 3. */
+  breakerThreshold?: number;
+  /** Durante quanto tempo o disjuntor aberto salta o modelo (1 s a 1 h). Por omissão, 60 s. */
+  breakerOpenMs?: number;
 }
 
 /** O que aconteceu num pedido a uma ferramenta. Só metadados, nunca conteúdo. */
@@ -148,7 +152,24 @@ function checkSettings(settings: EngineSettings): Required<EngineSettings> {
   if (fallbackModels.length > 3 || fallbackModels.some((m) => m.trim() === '')) {
     throw new Error('Configuração do motor: no máximo 3 modelos de recurso, sem nomes vazios.');
   }
-  return { defaultModel: settings.defaultModel, fallbackModels, maxAttempts, totalTimeoutMs };
+  const breakerThreshold = settings.breakerThreshold ?? BREAKER_THRESHOLD;
+  const breakerOpenMs = settings.breakerOpenMs ?? BREAKER_OPEN_MS;
+  if (!Number.isInteger(breakerThreshold) || breakerThreshold < 1 || breakerThreshold > 20) {
+    throw new Error('Configuração do motor: breakerThreshold tem de ser um inteiro de 1 a 20.');
+  }
+  if (!Number.isInteger(breakerOpenMs) || breakerOpenMs < 1000 || breakerOpenMs > 3_600_000) {
+    throw new Error(
+      'Configuração do motor: breakerOpenMs tem de ser um inteiro de 1000 a 3600000.',
+    );
+  }
+  return {
+    defaultModel: settings.defaultModel,
+    fallbackModels,
+    maxAttempts,
+    totalTimeoutMs,
+    breakerThreshold,
+    breakerOpenMs,
+  };
 }
 
 function registry(tools: ToolDefinition[]): Map<string, ToolDefinition> {
@@ -187,7 +208,7 @@ export function createEngine(options: EngineOptions): Engine {
   const settings = checkSettings(options.settings);
   const tools = registry(options.tools);
   const now = options.now ?? (() => Date.now());
-  const breaker = new CircuitBreaker(now);
+  const breaker = new CircuitBreaker(now, settings.breakerThreshold, settings.breakerOpenMs);
 
   const emit = (event: EngineEvent): void => {
     try {

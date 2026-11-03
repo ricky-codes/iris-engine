@@ -7,12 +7,17 @@ import type { Engine } from '../../engine/engine.js';
 import type { ToolDefinition } from '../../engine/tool.js';
 import { errorCodeOf, resolveError } from '../error-handler.js';
 import { AppError, type ErrorBody } from '../errors.js';
+import { RateLimiter } from '../rate-limit.js';
 
 export interface ToolRoutesOptions {
   engine: Engine;
   apiSecret: string;
   /** Contadores agregados (sem conteúdo) para a API de administração. */
   metrics?: Metrics;
+  /** `false` recusa `"stream": true` em todas as ferramentas. Por omissão, `true`. */
+  streamEnabled?: boolean;
+  /** Pedidos por minuto e por org (0 ou ausente = sem limite). */
+  rateLimitPerMinute?: number;
 }
 
 const sha256 = (value: string): Buffer => createHash('sha256').update(value).digest();
@@ -67,6 +72,8 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
     { inputTokens?: number; outputTokens?: number; fallback?: boolean }
   >();
   const toolNames = new Set(opts.engine.tools().map((t) => t.name));
+  const streamEnabled = opts.streamEnabled ?? true;
+  const limiter = new RateLimiter(opts.rateLimitPerMinute ?? 0);
 
   // Pedidos em streaming registam as métricas ao terminar a ligação, não no `onResponse`.
   const recorded = new WeakSet<FastifyRequest>();
@@ -106,7 +113,7 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
       name: t.name,
       version: t.version,
       description: t.description,
-      streaming: t.stream !== undefined,
+      streaming: streamEnabled && t.stream !== undefined,
     })),
   }));
 
@@ -127,6 +134,23 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
             ([k]) => k !== 'orgId' && k !== 'userId' && k !== 'version' && k !== 'stream',
           ),
         );
+
+        // Antes de gastar utilização no StepAccess ou de chamar o modelo.
+        const verdict = limiter.hit(orgId);
+        if (!verdict.allowed) {
+          throw new AppError(
+            'rate_limited',
+            429,
+            'Demasiados pedidos. Tente de novo em breve.',
+            [],
+            { 'Retry-After': String(verdict.retryAfterSeconds) },
+          );
+        }
+        if (body.stream === true && !streamEnabled) {
+          throw new AppError('invalid_request', 422, 'O pedido não é válido.', [
+            { path: 'body.stream', issue: 'o streaming está desativado neste servidor' },
+          ]);
+        }
 
         const started = performance.now();
 

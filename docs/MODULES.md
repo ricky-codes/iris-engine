@@ -59,11 +59,11 @@ Legenda das definições: **API** = muda-se pela API de administração sem rein
 
 **Se falhar:** o pedido não é afetado, mas **o custo perde-se do StepAccess**: não há fila para reenviar.
 
-| Definição                         | Hoje                                                   |
-| --------------------------------- | ------------------------------------------------------ |
-| Ligado                            | só existe com `ACCESS_MODE=stepaccess`                 |
-| Tentativas (2) e espera (1000 ms) | **código**                                             |
-| Tempo máximo                      | env `STEPACCESS_TIMEOUT_MS` (partilhado com o cliente) |
+| Definição                         | Hoje                                   |
+| --------------------------------- | -------------------------------------- |
+| Ligado                            | só existe com `ACCESS_MODE=stepaccess` |
+| Tentativas (2) e espera (1000 ms) | **código**                             |
+| Tempo máximo                      | env `STEPACCESS_USAGE_TIMEOUT_MS`      |
 
 **Falta controlar pela API:** uma fila persistente (`cost_outbox`, só metadados) com reenvio automático, o número de pendentes no `/status` e um alerta quando cresce. É a lacuna mais séria dos cinco módulos.
 
@@ -79,8 +79,8 @@ Legenda das definições: **API** = muda-se pela API de administração sem rein
 | Catálogo de modelos para escolher                      | **API** `GET /v1/admin/models`                                         |
 | Chave e URL base                                       | env `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`                        |
 | Modelo e recursos por omissão, teto de tempo do pedido | env `LLM_DEFAULT_MODEL`, `LLM_FALLBACK_MODELS`, `LLM_TOTAL_TIMEOUT_MS` |
-| Tentativas por modelo (2)                              | **código** (`maxAttempts`), sem variável                               |
-| Disjuntor (3 falhas, 60 s)                             | **código**                                                             |
+| Tentativas por modelo (2)                              | env `LLM_MAX_ATTEMPTS`                                                 |
+| Disjuntor (3 falhas, 60 s)                             | env `LLM_BREAKER_THRESHOLD`, `LLM_BREAKER_OPEN_MS`                     |
 | Política de dados (`deny`)                             | **código**                                                             |
 
 **Falta controlar pela API:** valores por omissão e teto de tempo na base de dados; tentativas e disjuntor editáveis (com botão para fechar o disjuntor); política de dados por ferramenta, com auditoria; ordem e lista de fornecedores; limiar do alerta de créditos (hoje 90%); estado da rotação da chave (só leitura, últimos 4 caracteres).

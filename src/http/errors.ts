@@ -16,7 +16,6 @@ export const ERROR_CODES = [
   'payload_too_large',
   'unsupported_media_type',
   'rate_limited',
-  'not_implemented',
   'invalid_model_output',
   'provider_unavailable',
   'timeout',

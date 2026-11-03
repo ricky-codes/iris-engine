@@ -79,4 +79,69 @@ describe('OpenRouterProvider', () => {
       code: 'timeout',
     });
   });
+
+  describe('streaming', () => {
+    const sse = (...lines: string[]) =>
+      new Response(lines.join('\n') + '\n', {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    const chunk = (obj: unknown) => `data: ${JSON.stringify(obj)}\n`;
+
+    it('pede stream, entrega os pedaços e devolve a resposta completa com o custo', async () => {
+      const f = fakeFetch(() =>
+        sse(
+          ': OPENROUTER PROCESSING\n',
+          chunk({ choices: [{ delta: { content: '{"reply":' } }] }),
+          chunk({ choices: [{ delta: { content: '"olá"}' } }] }),
+          chunk({
+            model: 'google/gemini-2.5-flash',
+            choices: [{ delta: { content: '' } }],
+            usage: { prompt_tokens: 42, completion_tokens: 7, cost: 0.00042 },
+          }),
+          'data: [DONE]\n',
+        ),
+      );
+      const pieces: string[] = [];
+      const res = await new OpenRouterProvider(CONFIG, f.fn).complete({
+        ...REQ,
+        onText: (c) => pieces.push(c),
+      });
+      expect(pieces).toEqual(['{"reply":', '"olá"}']);
+      expect(res).toEqual({
+        text: '{"reply":"olá"}',
+        model: 'google/gemini-2.5-flash',
+        inputTokens: 42,
+        outputTokens: 7,
+        costUsd: 0.00042,
+      });
+      const body = JSON.parse(f.calls[0]?.init?.body as string) as Record<string, unknown>;
+      expect(body).toMatchObject({ stream: true, usage: { include: true } });
+    });
+
+    it('sem onText não pede stream', async () => {
+      const f = fakeFetch(() => completion('{"reply":"olá"}'));
+      await new OpenRouterProvider(CONFIG, f.fn).complete(REQ);
+      expect(JSON.parse(f.calls[0]?.init?.body as string)).not.toHaveProperty('stream');
+    });
+
+    it('um erro a meio da resposta é provider_unavailable', async () => {
+      const f = fakeFetch(() =>
+        sse(
+          chunk({ choices: [{ delta: { content: '{"re' } }] }),
+          chunk({ error: { code: 502, message: 'eco do pedido' } }),
+        ),
+      );
+      await expect(
+        new OpenRouterProvider(CONFIG, f.fn).complete({ ...REQ, onText: () => undefined }),
+      ).rejects.toMatchObject({ code: 'provider_unavailable' });
+    });
+
+    it('um erro HTTP antes do stream continua a ser provider_unavailable', async () => {
+      const f = fakeFetch(() => json(502, { error: { code: 502, message: 'x' } }));
+      await expect(
+        new OpenRouterProvider(CONFIG, f.fn).complete({ ...REQ, onText: () => undefined }),
+      ).rejects.toMatchObject({ code: 'provider_unavailable' });
+    });
+  });
 });

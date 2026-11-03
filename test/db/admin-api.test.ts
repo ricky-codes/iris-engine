@@ -30,7 +30,7 @@ const RUNTIME: RuntimeFacts = {
   engine: { ready: true, missing: [], defaultModel: 'google/gemini-2.5-flash', maxAttempts: 2 },
   access: 'open',
   openRouter: 'configured',
-  routes: { tools: true, compat: true, memories: true },
+  routes: { tools: true, memories: true },
   checks: {
     database: { status: 'ok', latencyMs: 1 },
     stepAccess: { status: 'not_configured', latencyMs: null },
@@ -97,6 +97,9 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
             breakers: () => [],
             alerts: () => monitor.facts(),
           }),
+        modules: async () => {
+          throw new Error('não usado');
+        },
         alerts: monitor,
         models: {
           list: async () => ({
@@ -598,6 +601,9 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
           topology: async () => {
             throw new Error('não usado');
           },
+          modules: async () => {
+            throw new Error('não usado');
+          },
           alerts: monitor,
           models: { list: async () => ({ fetchedAt: '', models: [] }) },
           playground: {
@@ -642,6 +648,9 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
           metrics,
           status: async () => ({}),
           topology: async () => {
+            throw new Error('não usado');
+          },
+          modules: async () => {
             throw new Error('não usado');
           },
           alerts: monitor,

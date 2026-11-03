@@ -25,5 +25,6 @@ export const diagnosticTool = defineTool({
     'Devolve apenas JSON no formato {"reply": "<resposta>"}.',
   ].join('\n'),
   defaults: { temperature: 0.2, maxOutputTokens: 300, timeoutMs: 20_000 },
+  stream: { field: 'reply' },
   buildUserMessage: (input) => input.message,
 });

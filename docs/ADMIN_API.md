@@ -403,9 +403,49 @@ Alertas: `core.alerts` (o avaliador, com `details.active`) → `port.alerts` (`A
 
 Os módulos e as ligações mudam com a configuração: em `ACCESS_MODE=open` o adaptador de acesso é `OpenAccessChecker`, o StepAccess fica `off` e não há ligações para ele; ferramentas do catálogo sem implementação aparecem `off` e sem ligação ao núcleo.
 
+### 5.4b `GET /v1/admin/modules`
+
+Os cinco adaptadores que ligam o motor ao mundo, para a consola mostrar o que cada um faz e o que se pode configurar. Os mesmos que aparecem como nós `adapter.*` na topologia. Descrição completa em [`MODULES.md`](MODULES.md).
+
+```jsonc
+{
+  "generatedAt": "2026-11-03T09:00:00.000Z",
+  "modules": [
+    {
+      "id": "adapter.llm", // o nó da topologia
+      "className": "OpenRouterProvider",
+      "file": "src/adapters/openrouter.ts",
+      "port": "LlmProvider", // a interface do motor que implementa
+      "status": "ok", // ok | warning | error | off
+      "active": true, // em uso neste servidor
+      "summary": "…",
+      "description": "…",
+      "onFailure": "O que acontece ao pedido se este módulo falhar.",
+      "settings": [
+        // o que existe hoje
+        {
+          "key": "totalTimeoutMs",
+          "label": "…",
+          "description": "…",
+          "value": 30000,
+          "source": "env", // database | env | code
+          "adminPath": null,
+        }, // a rota que o altera hoje (null = só .env ou código)
+      ],
+      "proposed": [
+        // o que falta para a API o controlar por inteiro
+        { "key": "breaker", "label": "…", "description": "…", "suggested": "3 falhas · 60 s" },
+      ],
+    },
+  ],
+}
+```
+
+Nunca inclui segredos: o StepAccess aparece só com a origem do URL, e a chave do OpenRouter não aparece.
+
 ### 5.5 Alertas
 
-A IRIS avisa por webhook (para o n8n, o Slack ou o email encaminharem) quando algo fica mal. O avaliador corre a cada `ALERT_EVAL_INTERVAL_MS` (60 s por omissão) sobre a topologia (as mesmas verificações do `/status`, sem chamadas extra) e as métricas. Com várias instâncias, só a que tem o bloqueio consultivo do Postgres avalia e envia.
+A IRIS avisa por webhook (para o Slack, o email ou um serviço de automação encaminharem) quando algo fica mal. O avaliador corre a cada `ALERT_EVAL_INTERVAL_MS` (60 s por omissão) sobre a topologia (as mesmas verificações do `/status`, sem chamadas extra) e as métricas. Com várias instâncias, só a que tem o bloqueio consultivo do Postgres avalia e envia.
 
 **Regras**
 

@@ -157,6 +157,14 @@ function registry(tools: ToolDefinition[]): Map<string, ToolDefinition> {
     if (!TOOL_NAME.test(tool.name)) {
       throw new Error(`Ferramenta com nome inválido: "${tool.name}" (só a-z e _).`);
     }
+    if (tool.stream !== undefined) {
+      const prop = tool.output.properties[tool.stream.field] as { type?: unknown } | undefined;
+      if (prop?.type !== 'string') {
+        throw new Error(
+          `Ferramenta "${tool.name}": stream.field ("${tool.stream.field}") tem de ser uma propriedade de texto da saída.`,
+        );
+      }
+    }
     if (byName.has(tool.name)) throw new Error(`Ferramenta repetida: "${tool.name}".`);
     byName.set(tool.name, tool);
   }
@@ -222,6 +230,11 @@ export function createEngine(options: EngineOptions): Engine {
     async run(name, request) {
       const tool = toolOr404(name);
       checkInput(tool, request.input);
+      if (request.stream !== undefined && tool.stream === undefined) {
+        throw new EngineError('invalid_request', 'Esta ferramenta não suporta streaming.', [
+          { path: 'stream', issue: 'esta ferramenta não suporta streaming' },
+        ]);
+      }
       const started = performance.now();
       const base = {
         tool: tool.name,

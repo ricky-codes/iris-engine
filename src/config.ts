@@ -66,7 +66,7 @@ const EnvSchema = Type.Object({
   // callout do Apex (120 s), com margem para o resto do pedido.
   LLM_TOTAL_TIMEOUT_MS: Type.Integer({ minimum: 2000, maximum: 115_000, default: 30_000 }),
 
-  // Alertas: POST JSON para um webhook (n8n, Slack, email…) quando algo fica mal. Sem URL, os
+  // Alertas: POST JSON para um webhook (Slack, email, um serviço de automação…) quando algo fica mal. Sem URL, os
   // alertas continuam a ser calculados e ficam visíveis na API de administração.
   ALERT_WEBHOOK_URL: Type.Optional(Type.String({ pattern: '^https?://[^\\s]+$' })),
   // Segredo para a assinatura HMAC (cabeçalho X-Iris-Signature). Obrigatório com o URL.

@@ -28,7 +28,7 @@ function appWithProbeRoutes(env: NodeJS.ProcessEnv = {}): Promise<FastifyInstanc
         async () => ({ ok: true }),
       );
       typed.get('/probe/domain', async () => {
-        throw new AppError('not_implemented', 501, 'Ainda não implementado.');
+        throw new AppError('service_unavailable', 503, 'Indisponível.');
       });
       typed.get('/probe/crash', async () => {
         throw new Error('segredo interno');
@@ -86,8 +86,8 @@ describe('formato de erro', () => {
   it('erros de domínio mantêm código e estado', async () => {
     app = await appWithProbeRoutes();
     const res = await app.inject({ method: 'GET', url: '/probe/domain' });
-    expect(res.statusCode).toBe(501);
-    expect(res.json<ErrorBody>().error.code).toBe('not_implemented');
+    expect(res.statusCode).toBe(503);
+    expect(res.json<ErrorBody>().error.code).toBe('service_unavailable');
   });
 
   it('500 sem expor detalhes internos', async () => {

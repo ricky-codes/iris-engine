@@ -13,6 +13,7 @@ import { PgEngineStore, syncToolCatalog } from './adapters/postgres-store.js';
 import { StepAccessClient } from './adapters/stepaccess-access.js';
 import { StepAccessUsageReporter } from './adapters/stepaccess-usage.js';
 import type { AccessChecker } from './engine/access.js';
+import { describeModules } from './admin/modules.js';
 import { statusReport } from './admin/status.js';
 import { collectTopology } from './admin/topology-source.js';
 import type { RuntimeFacts, Topology } from './admin/topology.js';
@@ -22,7 +23,12 @@ import { NoopAlertSink, WebhookAlertSink } from './adapters/webhook-alert-sink.j
 import { createEngine, type Engine } from './engine/engine.js';
 import { DEFAULT_MAX_ATTEMPTS } from './engine/run.js';
 import { EngineError } from './engine/errors.js';
-import { Memories } from './engine/memory.js';
+import {
+  MAX_MEMORY_CHARS,
+  MAX_ORG_MEMORIES,
+  MAX_USER_MEMORIES,
+  Memories,
+} from './engine/memory.js';
 import { Metrics } from './engine/metrics.js';
 import type { ToolDefinition } from './engine/tool.js';
 import type { AdminRoutesOptions, StatusReport } from './http/routes/admin.js';
@@ -148,7 +154,7 @@ function runtimeFacts(
       },
       access: sa === undefined ? 'missing' : typeof sa === 'string' ? sa : 'live',
       openRouter: cfg.openRouter === undefined ? 'missing' : 'configured',
-      routes: { tools: engine.ready, compat: engine.ready, memories: memoriesOn },
+      routes: { tools: engine.ready, memories: memoriesOn },
       checks: { database, stepAccess, openRouter },
     };
   };
@@ -186,6 +192,40 @@ function buildAdmin(
     metrics,
     status,
     topology,
+    modules: async () => {
+      const t = await topology();
+      const sa = cfg.stepAccess;
+      const mem = t.nodes.find((n) => n.id === 'core.memories')?.details;
+      return describeModules({
+        topology: t,
+        engine: {
+          defaultModel: cfg.defaultModel,
+          fallbackModels: cfg.fallbackModels,
+          maxAttempts: playground?.settings.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+          totalTimeoutMs: cfg.totalTimeoutMs,
+        },
+        access: sa === undefined ? 'missing' : typeof sa === 'string' ? sa : 'live',
+        stepAccess:
+          typeof sa === 'object'
+            ? {
+                origin: new URL(sa.url).origin,
+                timeoutMs: sa.timeoutMs,
+                componentUuid: sa.componentUuid,
+              }
+            : { origin: null, timeoutMs: null, componentUuid: null },
+        openRouter: {
+          baseUrl: cfg.openRouter?.baseUrl ?? null,
+          configured: cfg.openRouter !== undefined,
+        },
+        memories: {
+          chars: MAX_MEMORY_CHARS,
+          perOrg: MAX_ORG_MEMORIES,
+          perUser: MAX_USER_MEMORIES,
+          org: typeof mem?.['org'] === 'number' ? mem['org'] : 0,
+          user: typeof mem?.['user'] === 'number' ? mem['user'] : 0,
+        },
+      });
+    },
     alerts: monitor,
     models: new ModelCatalog(cfg.openRouter?.baseUrl ?? 'https://openrouter.ai/api/v1'),
     playground: playground === undefined ? undefined : { engine: playground, countsUsage },

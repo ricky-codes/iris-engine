@@ -4,6 +4,7 @@ import type { CircuitBreaker } from './breaker.js';
 import { EngineError } from './errors.js';
 import type { LlmProvider } from './llm.js';
 import { buildSystemPrompt } from './prompt.js';
+import { StringFieldStream, type StreamHandlers } from './stream.js';
 import type { MemoryStore, RequestMemories } from './memory.js';
 import { fallbackChain, type EngineStore, type ToolSettings } from './store.js';
 import type { ToolDefinition } from './tool.js';
@@ -38,6 +39,8 @@ export interface RunRequest {
   input: Record<string, unknown>;
   /** Id do pedido HTTP, enviado com o custo. */
   requestId?: string;
+  /** Pede a resposta em streaming (só ferramentas com `stream`). */
+  stream?: StreamHandlers;
 }
 
 /** Tudo o que vai para o modelo, já montado. */
@@ -173,6 +176,8 @@ export interface CallModelOptions {
   breaker?: CircuitBreaker | undefined;
   now?: () => number;
   onCall?: ((call: ModelCall) => void) | undefined;
+  /** Streaming do campo de texto da ferramenta (`tool.stream`) para quem faz o pedido. */
+  stream?: StreamHandlers | undefined;
 }
 
 export interface CallModelResult {
@@ -206,6 +211,10 @@ export async function callModel(
   const chain = [prepared.settings.model, ...prepared.settings.fallbackModels];
   const attempts: ModelAttempt[] = [];
   let error: EngineError | undefined;
+  const streaming =
+    opts.stream !== undefined && tool.stream !== undefined ? opts.stream : undefined;
+  // Texto já enviado ao cliente por uma tentativa anterior: a seguinte começa por o anular.
+  const sent = { text: false };
 
   const budgetError = (): EngineError =>
     new EngineError('timeout', 'O modelo de IA demorou demasiado a responder.');
@@ -235,6 +244,24 @@ export async function callModel(
 
       const started = now();
       let attempt: ModelAttempt;
+      let onText: ((chunk: string) => void) | undefined;
+      if (streaming !== undefined && tool.stream !== undefined) {
+        if (sent.text) {
+          streaming.onReset();
+          sent.text = false;
+        }
+        const field = new StringFieldStream(tool.stream.field);
+        onText = (chunk) => {
+          const text = field.feed(chunk);
+          if (text === '') return;
+          sent.text = true;
+          try {
+            streaming.onDelta(text);
+          } catch {
+            // Quem ouve (ex.: um cliente que fechou a ligação) não faz falhar o pedido.
+          }
+        };
+      }
       try {
         const response = await llm.complete({
           model,
@@ -244,6 +271,7 @@ export async function callModel(
           maxOutputTokens: prepared.settings.maxOutputTokens,
           timeoutMs: Math.min(prepared.settings.timeoutMs, remaining),
           output: { name: `${tool.name}_result`, schema: prepared.schema },
+          ...(onText !== undefined && { onText }),
         });
         opts.breaker?.recordSuccess(model);
         const parsed = parseModelJson(response.text);
@@ -324,7 +352,9 @@ export async function runTool(
     checkAccess: true,
     requireEnabled: true,
   });
+  request.stream?.onStart?.();
   const { result, attempts, error } = await callModel(deps.llm, tool, prepared, {
+    ...(request.stream !== undefined && { stream: request.stream }),
     ...(deps.maxAttempts !== undefined && { maxAttempts: deps.maxAttempts }),
     ...(deps.totalTimeoutMs !== undefined && { totalTimeoutMs: deps.totalTimeoutMs }),
     ...(deps.now !== undefined && { now: deps.now }),

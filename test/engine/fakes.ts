@@ -63,6 +63,10 @@ export function fakeLlm(...texts: (string | EngineError)[]) {
       requests.push(req);
       const next = texts[Math.min(requests.length - 1, texts.length - 1)];
       if (next instanceof EngineError) throw next;
+      // Com streaming, o texto chega aos bocados de 3 caracteres.
+      if (req.onText !== undefined) {
+        for (let i = 0; i < (next ?? '').length; i += 3) req.onText((next ?? '').slice(i, i + 3));
+      }
       return {
         text: next ?? '',
         model: req.model,

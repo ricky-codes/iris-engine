@@ -31,7 +31,7 @@ export interface RuntimeFacts {
   engine: { ready: boolean; missing: string[]; defaultModel: string; maxAttempts: number };
   access: AccessMode;
   openRouter: 'configured' | 'missing';
-  routes: { tools: boolean; compat: boolean; memories: boolean };
+  routes: { tools: boolean; memories: boolean };
   checks: { database: CheckFact; stepAccess: CheckFact; openRouter: CheckFact };
 }
 
@@ -313,15 +313,6 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
       configure: null,
     },
     {
-      id: 'client.n8n',
-      layer: 'client',
-      label: 'IRIS Hub (n8n)',
-      status: routeStatus(rt.routes.compat),
-      summary: 'Formato antigo, com action',
-      details: {},
-      configure: null,
-    },
-    {
       id: 'client.console',
       layer: 'client',
       label: 'Consola de administração',
@@ -351,15 +342,6 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
         ? 'Ligada · não conta utilização'
         : 'Desligada: falta DATABASE_URL ou API_SECRET',
       details: { auth: 'API_SECRET', countsUsage: false },
-      configure: null,
-    },
-    {
-      id: 'http.compat',
-      layer: 'http',
-      label: '/v1/compat/n8n',
-      status: routeStatus(rt.routes.compat),
-      summary: rt.routes.compat ? 'Ligada · traduz action para ferramenta' : 'Desligada',
-      details: { auth: 'API_SECRET' },
       configure: null,
     },
     {
@@ -546,10 +528,8 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
   const edges: TopologyEdge[] = [
     { from: 'client.salesforce', to: 'http.tools' },
     { from: 'client.salesforce', to: 'http.memories' },
-    { from: 'client.n8n', to: 'http.compat' },
     { from: 'client.console', to: 'http.admin' },
     { from: 'http.tools', to: 'core.engine', label: 'run' },
-    { from: 'http.compat', to: 'core.engine', label: 'run' },
     { from: 'http.memories', to: 'core.memories' },
     { from: 'http.admin', to: 'core.memories' },
     { from: 'http.admin', to: 'core.engine', label: 'playground' },

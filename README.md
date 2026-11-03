@@ -82,12 +82,11 @@ Variáveis de ambiente, validadas no arranque (`src/config.ts`). Com configuraç
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /healthz`             | Processo vivo                                                                                                                                                          |
 | `GET /readyz`              | Dependências acessíveis (200 ou 503, com estado por check)                                                                                                             |
-| `GET /v1/tools`            | Lista as ferramentas disponíveis (precisa de credencial)                                                                                                               |
-| `POST /v1/tools/<nome>`    | Corre uma ferramenta (precisa de credencial)                                                                                                                           |
+| `GET /v1/tools`            | Lista as ferramentas disponíveis e se aceitam streaming (precisa de credencial)                                                                                        |
+| `POST /v1/tools/<nome>`    | Corre uma ferramenta (precisa de credencial). Com `"stream": true`, responde em SSE (ver [Streaming](#streaming))                                                      |
 | `GET /v1/memories`         | Regras da org e memórias do utilizador (`?orgId=…&userId=…`, opcional `&tool=…`). Precisa de credencial; não conta utilização no StepAccess                            |
 | `POST /v1/memories`        | Guarda uma memória do utilizador (`{orgId, userId, content, tools?}`). Precisa de credencial; não conta utilização                                                     |
 | `DELETE /v1/memories/<id>` | Apaga uma memória do próprio utilizador (`?orgId=…&userId=…`); as da org e as de colegas dão 404                                                                       |
-| `POST /v1/compat/n8n`      | Aceita o pedido do IRIS Hub (n8n) com `action` e responde `{success, data}`. Hoje só `sentiment`; as outras ações dão 501 `not_implemented`                            |
 | `/v1/admin/*`              | API de administração para o StepAccess: estado, métricas, topologia, alertas, ferramentas, prompts, memórias, playground. Ver [`docs/ADMIN_API.md`](docs/ADMIN_API.md) |
 
 Todas as respostas levam `X-Request-Id`. Os erros têm sempre este formato:
@@ -118,6 +117,30 @@ Um pedido `POST /v1/tools/<nome>` passa sempre por estes passos, por esta ordem:
 Resposta: `{ "tool": "<nome>", "version": <n>, "result": { … } }`. Nada é guardado: dos pedidos ficam só linhas de log com id, ferramenta, modelo, tokens, número de memórias e duração.
 
 Uma ferramenta é um módulo em `src/tools/` (ver `src/tools/diagnostic.ts`): nome, versão, entrada, saída, prompt de origem e valores por omissão. O motor regista-a no catálogo `tool` ao arrancar.
+
+### Streaming
+
+Algumas ferramentas têm um campo de texto livre na resposta (declaram `stream: { field }` em `src/tools/`). O pedido escolhe se quer a resposta em streaming, com `"stream": true` no corpo; sem isso, ou com `false`, a resposta é o JSON de sempre. `GET /v1/tools` diz quais as ferramentas que o aceitam (`streaming: true`); noutras, `stream: true` dá **422**. Hoje só a `diagnostic`.
+
+```bash
+curl -N -X POST localhost:8080/v1/tools/diagnostic \
+  -H "Authorization: Bearer <API_SECRET>" -H 'Content-Type: application/json' \
+  -d '{"orgId":"00D…","userId":"005…","message":"Olá IRIS","stream":true}'
+```
+
+A resposta é `text/event-stream`, com estes eventos (`data` é sempre JSON):
+
+| Evento   | Quando                                                                                        | `data`                                         |
+| -------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `start`  | Passaram a credencial, a validação, a configuração e o acesso; vai chamar-se o modelo         | `{tool, version, requestId}`                   |
+| `delta`  | Mais um pedaço do campo de texto                                                              | `{text}`                                       |
+| `reset`  | Deitar fora o texto recebido: vem aí outra tentativa (resposta inválida ou modelo de recurso) | `{}`                                           |
+| `result` | O fim: o JSON completo e validado, igual ao do pedido sem streaming                           | `{tool, version, result}`                      |
+| `error`  | Falhou depois de começar. Mesmo formato dos erros normais                                     | `{error: {code, message, details, requestId}}` |
+
+- Os erros **anteriores** ao `start` (credencial, validação, sem acesso, ferramenta desligada) saem como JSON normal, com o estado HTTP de sempre (401, 422, 403…). Depois do `start` o estado já seguiu (200) e os erros vão no evento `error`.
+- O texto dos `delta` é provisório: só o `result` está validado. Se chegar `reset` ou `error`, o cliente deve descartar o que mostrou.
+- Utilização, custo, métricas e alertas contam exatamente como num pedido normal.
 
 ### Experimentar com o OpenRouter
 
@@ -224,11 +247,12 @@ src/
     memory.ts             memórias de orgs e utilizadores: guardar, ver, alterar, apagar, juntar ao prompt; limites
     usage.ts              interface de quem recebe o custo de cada pedido
     prompt.ts             junta o prompt da ferramenta com as memórias
+    stream.ts             extrai, do JSON que chega aos bocados, o campo de texto a enviar em streaming
     metrics.ts            contadores agregados em memória (sem conteúdo)
   adapters/               as implementações das interfaces do motor, montadas em server.ts
     stepaccess-access.ts  cliente do GET /v1/access do StepAccess
     stepaccess-usage.ts   envio do custo ao StepAccess
-    bypass-access.ts      acesso sem StepAccess (só fora de produção)
+    open-access.ts        acesso sem StepAccess (ACCESS_MODE=open e STEPACCESS_BYPASS)
     openrouter.ts         cliente do OpenRouter
     openrouter-models.ts  catálogo de modelos do OpenRouter
     postgres-store.ts     configuração das ferramentas; registo do catálogo de ferramentas
@@ -250,6 +274,7 @@ src/
     tools.ts              configuração das ferramentas e versões dos prompts
     queries.ts            listar memórias e ferramentas
     topology.ts           os módulos, ligações e estado (função pura)
+    modules.ts            os cinco adaptadores descritos: função, definições e o que falta controlar
     topology-source.ts    junta o que está a correr numa topologia (rota e alertas)
     status.ts             o que o /v1/admin/status mostra
     validation.ts         validações dos dados que o administrador escreve

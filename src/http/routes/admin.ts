@@ -22,6 +22,7 @@ import {
   type ToolCatalogRow,
 } from '../../admin/tools.js';
 import type { Metrics } from '../../engine/metrics.js';
+import type { ModulesReport } from '../../admin/modules.js';
 import type { Topology } from '../../admin/topology.js';
 import type { Alert, DeliveryResult } from '../../alerts/types.js';
 import type { ModelInfo } from '../../adapters/openrouter-models.js';
@@ -45,6 +46,8 @@ export interface AdminRoutesOptions {
   status: () => Promise<StatusReport>;
   /** Os módulos e o estado de cada um (ver src/admin/topology-source.ts). */
   topology: () => Promise<Topology>;
+  /** Os adaptadores descritos: o que fazem e que definições têm (ver src/admin/modules.ts). */
+  modules: () => Promise<ModulesReport>;
   /** Os alertas ativos e recentes, e o envio de um alerta de teste. */
   alerts: {
     view(): { configured: boolean; active: Alert[]; recent: Alert[] };
@@ -181,6 +184,10 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
 
   // Os módulos da IRIS, como estão ligados e o estado de cada um, para a consola desenhar.
   app.get('/v1/admin/topology', async () => opts.topology());
+
+  // Cada adaptador (PgEngineStore, PgMemoryStore, StepAccessClient, StepAccessUsageReporter,
+  // OpenRouterProvider) com a descrição, as definições em vigor e o que falta controlar.
+  app.get('/v1/admin/modules', async () => opts.modules());
 
   // ---------- alertas ----------
 

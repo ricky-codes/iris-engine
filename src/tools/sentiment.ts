@@ -31,7 +31,7 @@ const sentimentInput = Type.Object({
 
 /**
  * Análise de sentimento de um Case: sentimento, confiança, resumo, sinais, urgência e tom
- * recomendado. Reproduz o comportamento descrito para a ação `sentiment` do IRIS Hub.
+ * recomendado.
  */
 export const sentimentTool = defineTool({
   name: 'sentiment',

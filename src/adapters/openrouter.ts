@@ -2,6 +2,11 @@ import { EngineError } from '../engine/errors.js';
 import type { LlmProvider, LlmRequest, LlmResponse } from '../engine/llm.js';
 import type { FetchLike } from './fetch.js';
 
+/** Um pedaço de uma resposta em streaming (`stream: true`). */
+interface ChatChunk extends ChatCompletion {
+  choices?: { message?: { content?: string | null }; delta?: { content?: string | null } }[];
+}
+
 interface ChatCompletion {
   model?: string;
   choices?: { message?: { content?: string | null } }[];
@@ -34,6 +39,7 @@ export class OpenRouterProvider implements LlmProvider {
       max_tokens: request.maxOutputTokens,
       // Pede o custo da chamada na resposta (usage.cost).
       usage: { include: true },
+      ...(request.onText !== undefined && { stream: true }),
       response_format: {
         type: 'json_schema',
         json_schema: { name: request.output.name, strict: true, schema: request.output.schema },
@@ -66,6 +72,10 @@ export class OpenRouterProvider implements LlmProvider {
       throw unavailable();
     }
 
+    if (request.onText !== undefined && res.ok && res.body !== null) {
+      return this.readStream(res, request, request.onText);
+    }
+
     let json: ChatCompletion;
     try {
       json = (await res.json()) as ChatCompletion;
@@ -92,6 +102,82 @@ export class OpenRouterProvider implements LlmProvider {
       inputTokens: json.usage?.prompt_tokens,
       outputTokens: json.usage?.completion_tokens,
       costUsd: typeof json.usage?.cost === 'number' ? json.usage.cost : undefined,
+    };
+  }
+
+  /**
+   * Lê a resposta em streaming (SSE): cada `data:` é um pedaço do JSON, entregue a `onText`;
+   * o último traz o modelo e o uso. As linhas de comentário (`: …`) são só para manter a
+   * ligação viva.
+   */
+  private async readStream(
+    res: Response,
+    request: LlmRequest,
+    onText: (chunk: string) => void,
+  ): Promise<LlmResponse> {
+    let text = '';
+    let model: string | undefined;
+    let usage: ChatCompletion['usage'];
+    const state = { failed: false };
+
+    const handle = (payload: string): void => {
+      if (payload === '[DONE]') return;
+      let chunk: ChatChunk;
+      try {
+        chunk = JSON.parse(payload) as ChatChunk;
+      } catch {
+        state.failed = true;
+        return;
+      }
+      if (chunk.error !== undefined) {
+        // Só o código: a mensagem do fornecedor pode ecoar o pedido.
+        this.log('openrouter stream error', { code: chunk.error.code });
+        state.failed = true;
+        return;
+      }
+      model = chunk.model ?? model;
+      usage = chunk.usage ?? usage;
+      const piece = chunk.choices?.[0]?.delta?.content;
+      if (typeof piece === 'string' && piece !== '') {
+        text += piece;
+        onText(piece);
+      }
+    };
+
+    try {
+      const decoder = new TextDecoder();
+      let pending = '';
+      // `res.body` existe: quem chama já verificou.
+      for await (const part of res.body as unknown as AsyncIterable<Uint8Array>) {
+        pending += decoder.decode(part, { stream: true });
+        const lines = pending.split('\n');
+        pending = lines.pop() ?? '';
+        for (const line of lines) {
+          if (line.startsWith('data:')) handle(line.slice(5).trim());
+        }
+      }
+      pending += decoder.decode();
+      if (pending.startsWith('data:')) handle(pending.slice(5).trim());
+    } catch (err) {
+      if (err instanceof Error && err.name === 'TimeoutError') {
+        throw new EngineError('timeout', 'O modelo de IA demorou demasiado a responder.');
+      }
+      this.log('openrouter stream interrupted', {
+        err: err instanceof Error ? err.name : String(err),
+      });
+      throw unavailable();
+    }
+
+    if (state.failed || text === '') {
+      this.log('openrouter empty response', { stream: true });
+      throw unavailable();
+    }
+    return {
+      text,
+      model: model ?? request.model,
+      inputTokens: usage?.prompt_tokens,
+      outputTokens: usage?.completion_tokens,
+      costUsd: typeof usage?.cost === 'number' ? usage.cost : undefined,
     };
   }
 }

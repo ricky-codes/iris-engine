@@ -1,12 +1,12 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { Type, type TObject } from '@sinclair/typebox';
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
-import type { FastifyRequest } from 'fastify';
+import type { FastifyError, FastifyRequest } from 'fastify';
 import type { Metrics } from '../../engine/metrics.js';
 import type { Engine } from '../../engine/engine.js';
 import type { ToolDefinition } from '../../engine/tool.js';
-import { errorCodeOf } from '../error-handler.js';
-import { AppError } from '../errors.js';
+import { errorCodeOf, resolveError } from '../error-handler.js';
+import { AppError, type ErrorBody } from '../errors.js';
 
 export interface ToolRoutesOptions {
   engine: Engine;
@@ -46,6 +46,8 @@ function bodySchema(tool: ToolDefinition): TObject {
     {
       ...Envelope,
       version: Type.Optional(Type.Literal(tool.version)),
+      // Resposta em streaming (SSE). Só as ferramentas com `stream` a aceitam.
+      stream: Type.Optional(Type.Boolean()),
       ...tool.input.properties,
     },
     { additionalProperties: false },
@@ -66,19 +68,37 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
   >();
   const toolNames = new Set(opts.engine.tools().map((t) => t.name));
 
-  app.addHook('onResponse', async (request, reply) => {
-    if (opts.metrics === undefined || request.method !== 'POST') return;
-    const name = request.routeOptions.url?.replace(/^\/v1\/tools\//, '');
-    if (name === undefined || !toolNames.has(name)) return;
+  // Pedidos em streaming registam as métricas ao terminar a ligação, não no `onResponse`.
+  const recorded = new WeakSet<FastifyRequest>();
+  const record = (
+    request: FastifyRequest,
+    tool: string,
+    errorCode: string | undefined,
+    durationMs: number,
+  ): void => {
+    if (opts.metrics === undefined || recorded.has(request)) return;
+    recorded.add(request);
     const tokens = usage.get(request);
     opts.metrics.record({
-      tool: name,
-      errorCode: reply.statusCode < 400 ? undefined : (errorCodeOf(request) ?? 'internal_error'),
-      durationMs: reply.elapsedTime,
+      tool,
+      errorCode,
+      durationMs,
       inputTokens: tokens?.inputTokens,
       outputTokens: tokens?.outputTokens,
       fallback: tokens?.fallback,
     });
+  };
+
+  app.addHook('onResponse', async (request, reply) => {
+    if (request.method !== 'POST') return;
+    const name = request.routeOptions.url?.replace(/^\/v1\/tools\//, '');
+    if (name === undefined || !toolNames.has(name)) return;
+    record(
+      request,
+      name,
+      reply.statusCode < 400 ? undefined : (errorCodeOf(request) ?? 'internal_error'),
+      reply.elapsedTime,
+    );
   });
 
   app.get('/v1/tools', async () => ({
@@ -86,36 +106,120 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
       name: t.name,
       version: t.version,
       description: t.description,
+      streaming: t.stream !== undefined,
     })),
   }));
 
   for (const tool of opts.engine.tools()) {
-    app.post(`/v1/tools/${tool.name}`, { schema: { body: bodySchema(tool) } }, async (request) => {
-      const body = request.body as Record<string, unknown> & { orgId: string; userId: string };
-      const { orgId, userId } = body;
-      // A entrada da ferramenta é o corpo sem os campos comuns.
-      const input = Object.fromEntries(
-        Object.entries(body).filter(([k]) => k !== 'orgId' && k !== 'userId' && k !== 'version'),
-      );
+    app.post(
+      `/v1/tools/${tool.name}`,
+      { schema: { body: bodySchema(tool) } },
+      async (request, reply) => {
+        const body = request.body as Record<string, unknown> & {
+          orgId: string;
+          userId: string;
+          stream?: boolean;
+        };
+        const { orgId, userId } = body;
+        // A entrada da ferramenta é o corpo sem os campos comuns.
+        const input = Object.fromEntries(
+          Object.entries(body).filter(
+            ([k]) => k !== 'orgId' && k !== 'userId' && k !== 'version' && k !== 'stream',
+          ),
+        );
 
-      const started = performance.now();
-      const { result, meta } = await opts.engine.run(tool.name, {
-        orgId,
-        userId,
-        input,
-        requestId: request.id,
-      });
-      usage.set(request, {
-        ...(meta.inputTokens !== undefined && { inputTokens: meta.inputTokens }),
-        ...(meta.outputTokens !== undefined && { outputTokens: meta.outputTokens }),
-        fallback: meta.fallback,
-      });
-      request.log.info(
-        { tool: tool.name, ...meta, durationMs: Math.round(performance.now() - started) },
-        'tool completed',
-      );
-      return { tool: tool.name, version: tool.version, result };
-    });
+        const started = performance.now();
+
+        if (body.stream === true) {
+          // Os erros anteriores à chamada ao modelo (credencial, validação, acesso, ferramenta
+          // desligada) saem como JSON normal. A partir daí a resposta é SSE e os erros vão num
+          // evento `error`, porque o estado HTTP já seguiu.
+          const raw = reply.raw;
+          const state = { opened: false };
+          const send = (event: string, data: unknown): void => {
+            if (raw.destroyed || raw.writableEnded) return;
+            raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+          };
+          const open = (): void => {
+            if (state.opened) return;
+            state.opened = true;
+            reply.hijack();
+            raw.writeHead(200, {
+              'Content-Type': 'text/event-stream; charset=utf-8',
+              'Cache-Control': 'no-cache, no-transform',
+              Connection: 'keep-alive',
+              // Sem isto, um proxy nginx guarda a resposta e o cliente só a vê no fim.
+              'X-Accel-Buffering': 'no',
+              'X-Request-Id': request.id,
+            });
+            send('start', { tool: tool.name, version: tool.version, requestId: request.id });
+          };
+          try {
+            const { result, meta } = await opts.engine.run(tool.name, {
+              orgId,
+              userId,
+              input,
+              requestId: request.id,
+              stream: {
+                onStart: open,
+                onDelta: (text) => {
+                  send('delta', { text });
+                },
+                onReset: () => {
+                  send('reset', {});
+                },
+              },
+            });
+            open();
+            usage.set(request, {
+              ...(meta.inputTokens !== undefined && { inputTokens: meta.inputTokens }),
+              ...(meta.outputTokens !== undefined && { outputTokens: meta.outputTokens }),
+              fallback: meta.fallback,
+            });
+            send('result', { tool: tool.name, version: tool.version, result });
+            raw.end();
+            const durationMs = Math.round(performance.now() - started);
+            request.log.info(
+              { tool: tool.name, ...meta, stream: true, durationMs },
+              'tool completed',
+            );
+            record(request, tool.name, undefined, durationMs);
+          } catch (err) {
+            if (!state.opened) throw err;
+            const appError = resolveError(err as FastifyError, request);
+            const errorBody: ErrorBody = {
+              error: {
+                code: appError.code,
+                message: appError.message,
+                details: appError.details,
+                requestId: request.id,
+              },
+            };
+            send('error', errorBody);
+            raw.end();
+            record(request, tool.name, appError.code, Math.round(performance.now() - started));
+          }
+          return reply;
+        }
+
+        const { result, meta } = await opts.engine.run(tool.name, {
+          orgId,
+          userId,
+          input,
+          requestId: request.id,
+        });
+        usage.set(request, {
+          ...(meta.inputTokens !== undefined && { inputTokens: meta.inputTokens }),
+          ...(meta.outputTokens !== undefined && { outputTokens: meta.outputTokens }),
+          fallback: meta.fallback,
+        });
+        request.log.info(
+          { tool: tool.name, ...meta, durationMs: Math.round(performance.now() - started) },
+          'tool completed',
+        );
+        return { tool: tool.name, version: tool.version, result };
+      },
+    );
   }
 
   app.post('/v1/tools/:name', async () => {

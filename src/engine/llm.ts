@@ -8,6 +8,11 @@ export interface LlmRequest {
   timeoutMs: number;
   /** Nome do formato de saída (para o fornecedor) e JSON Schema que a resposta tem de cumprir. */
   output: { name: string; schema: Record<string, unknown> };
+  /**
+   * Se existir, o fornecedor pede a resposta em streaming e chama isto com cada pedaço do texto
+   * bruto (JSON) que recebe. A resposta devolvida continua a ser a completa.
+   */
+  onText?: (chunk: string) => void;
 }
 
 export interface LlmResponse {

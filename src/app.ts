@@ -5,7 +5,6 @@ import type { AppConfig } from './config.js';
 import { registerErrorHandling } from './http/error-handler.js';
 import { healthRoutes, type ReadinessCheck } from './http/routes/health.js';
 import { adminRoutes, type AdminRoutesOptions } from './http/routes/admin.js';
-import { compatRoutes } from './http/routes/compat.js';
 import { memoryRoutes, type MemoryRoutesOptions } from './http/routes/memories.js';
 import { toolRoutes, type ToolRoutesOptions } from './http/routes/tools.js';
 
@@ -63,10 +62,7 @@ export async function buildApp({
   registerErrorHandling(app);
 
   await app.register(healthRoutes, { checks: readinessChecks });
-  if (engine !== undefined) {
-    await app.register(toolRoutes, engine);
-    await app.register(compatRoutes, engine);
-  }
+  if (engine !== undefined) await app.register(toolRoutes, engine);
   if (memories !== undefined) await app.register(memoryRoutes, memories);
   if (admin !== undefined) await app.register(adminRoutes, admin);
 

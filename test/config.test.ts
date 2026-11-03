@@ -136,7 +136,7 @@ describe('loadConfig', () => {
 
   it('alertas: webhook com URL e segredo juntos, formato iris ou slack, e intervalos válidos', () => {
     const hook = {
-      ALERT_WEBHOOK_URL: 'https://n8n.exemplo.pt/webhook/iris',
+      ALERT_WEBHOOK_URL: 'https://automacao.exemplo.pt/webhook/iris',
       ALERT_WEBHOOK_SECRET: 's'.repeat(32),
     };
     expect(

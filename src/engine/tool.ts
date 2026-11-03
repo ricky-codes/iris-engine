@@ -25,6 +25,12 @@ export interface ToolDefinition<I extends TObject = TObject, O extends TObject =
   /** Prompt de sistema de origem. Uma versão ativa na base de dados substitui-o. */
   systemPrompt: string;
   defaults: ToolDefaults;
+  /**
+   * Só as ferramentas cuja resposta tem um campo de texto livre podem ir em streaming. `field` é
+   * esse campo (uma propriedade de texto de `output`): chega ao cliente à medida que o modelo o
+   * escreve, e o JSON completo e validado chega no fim. Sem isto, `stream: true` é recusado.
+   */
+  stream?: { field: string };
   /** Constrói a mensagem do utilizador a partir da entrada validada. */
   buildUserMessage: (input: Static<I>) => string;
 }

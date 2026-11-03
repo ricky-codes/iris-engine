@@ -194,7 +194,14 @@ describe('GET /v1/tools', () => {
     expect(anon.statusCode).toBe(401);
     const res = await app.inject({ method: 'GET', url: '/v1/tools', headers: AUTH });
     expect(res.json()).toEqual({
-      tools: [{ name: 'diagnostic', version: 1, description: diagnosticTool.description }],
+      tools: [
+        {
+          name: 'diagnostic',
+          version: 1,
+          description: diagnosticTool.description,
+          streaming: true,
+        },
+      ],
     });
   });
 });
@@ -210,5 +217,88 @@ describe('sem motor', () => {
     });
     expect(res.statusCode).toBe(404);
     expect(res.json()).toMatchObject({ error: { code: 'not_found' } });
+  });
+});
+
+describe('POST /v1/tools/:nome com stream', () => {
+  /** Lê o corpo SSE em eventos `{event, data}`. */
+  const parseSse = (payload: string) =>
+    payload
+      .trim()
+      .split('\n\n')
+      .map((block) => {
+        const [e, d] = block.split('\n');
+        return { event: e?.slice(7), data: JSON.parse(d?.slice(6) ?? 'null') as unknown };
+      });
+
+  it('responde em SSE: start, deltas, result', async () => {
+    const { app } = await start();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/tools/diagnostic',
+      headers: AUTH,
+      payload: { ...BODY, stream: true },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/event-stream');
+    expect(res.headers['x-request-id']).toBeTruthy();
+    const events = parseSse(res.payload);
+    expect(events[0]?.event).toBe('start');
+    const text = events
+      .filter((e) => e.event === 'delta')
+      .map((e) => (e.data as { text: string }).text)
+      .join('');
+    expect(text).toBe('Olá!');
+    expect(events.at(-1)).toEqual({
+      event: 'result',
+      data: { tool: 'diagnostic', version: 1, result: { reply: 'Olá!' } },
+    });
+  });
+
+  it('stream:false é o pedido normal', async () => {
+    const { app } = await start();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/tools/diagnostic',
+      headers: AUTH,
+      payload: { ...BODY, stream: false },
+    });
+    expect(res.headers['content-type']).toContain('application/json');
+    expect(res.json()).toMatchObject({ result: { reply: 'Olá!' } });
+  });
+
+  it('sem acesso, o erro sai como JSON normal (o estado HTTP ainda não seguiu)', async () => {
+    const { app } = await start(fakeAccess(new EngineError('access_denied', 'Sem acesso.')));
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/tools/diagnostic',
+      headers: AUTH,
+      payload: { ...BODY, stream: true },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toMatchObject({ error: { code: 'access_denied' } });
+  });
+
+  it('um erro do modelo depois de começar vai num evento error', async () => {
+    const { app } = await start(
+      fakeAccess(),
+      fakeLlm(new EngineError('provider_unavailable', 'x')),
+    );
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/tools/diagnostic',
+      headers: AUTH,
+      payload: { ...BODY, stream: true },
+    });
+    expect(res.statusCode).toBe(200);
+    const last = parseSse(res.payload).at(-1);
+    expect(last?.event).toBe('error');
+    expect(last?.data).toMatchObject({ error: { code: 'provider_unavailable' } });
+  });
+
+  it('GET /v1/tools indica quais as ferramentas com streaming', async () => {
+    const { app } = await start();
+    const res = await app.inject({ method: 'GET', url: '/v1/tools', headers: AUTH });
+    expect(res.json()).toMatchObject({ tools: [{ name: 'diagnostic', streaming: true }] });
   });
 });

@@ -20,7 +20,7 @@ function runtime(over: Partial<RuntimeFacts> = {}): RuntimeFacts {
     engine: { ready: true, missing: [], defaultModel: 'google/gemini-2.5-flash', maxAttempts: 2 },
     access: 'live',
     openRouter: 'configured',
-    routes: { tools: true, compat: true, memories: true },
+    routes: { tools: true, memories: true },
     checks: {
       database: OK,
       stepAccess: OK,
@@ -126,7 +126,7 @@ describe('buildTopology', () => {
       runtime: runtime({
         access: 'missing',
         engine: { ready: false, missing: ['STEPACCESS_URL'], defaultModel: 'm', maxAttempts: 2 },
-        routes: { tools: false, compat: false, memories: true },
+        routes: { tools: false, memories: true },
       }),
     });
     expect(missing.overall).toBe('error');

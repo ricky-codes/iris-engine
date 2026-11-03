@@ -36,7 +36,7 @@ function runtime(checks: Partial<RuntimeFacts['checks']> = {}): RuntimeFacts {
     engine: { ready: true, missing: [], defaultModel: 'google/gemini-2.5-flash', maxAttempts: 2 },
     access: 'live',
     openRouter: 'configured',
-    routes: { tools: true, compat: true, memories: true },
+    routes: { tools: true, memories: true },
     checks: {
       database: OK,
       stepAccess: OK,

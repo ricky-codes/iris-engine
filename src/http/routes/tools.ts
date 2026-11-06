@@ -4,6 +4,7 @@ import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import type { FastifyError, FastifyRequest } from 'fastify';
 import type { Metrics } from '../../engine/metrics.js';
 import type { Engine } from '../../engine/engine.js';
+import { read, type Live } from '../../engine/live.js';
 import type { ToolDefinition } from '../../engine/tool.js';
 import { errorCodeOf, resolveError } from '../error-handler.js';
 import { AppError, type ErrorBody } from '../errors.js';
@@ -14,10 +15,10 @@ export interface ToolRoutesOptions {
   apiSecret: string;
   /** Contadores agregados (sem conteúdo) para a API de administração. */
   metrics?: Metrics;
-  /** `false` recusa `"stream": true` em todas as ferramentas. Por omissão, `true`. */
-  streamEnabled?: boolean;
-  /** Pedidos por minuto e por org (0 ou ausente = sem limite). */
-  rateLimitPerMinute?: number;
+  /** `false` recusa `"stream": true` em todas as ferramentas. Por omissão, `true`. Lido em cada pedido. */
+  streamEnabled?: Live<boolean>;
+  /** Pedidos por minuto e por org (0 ou ausente = sem limite). Lido em cada pedido. */
+  rateLimitPerMinute?: Live<number>;
 }
 
 const sha256 = (value: string): Buffer => createHash('sha256').update(value).digest();
@@ -72,7 +73,7 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
     { inputTokens?: number; outputTokens?: number; fallback?: boolean }
   >();
   const toolNames = new Set(opts.engine.tools().map((t) => t.name));
-  const streamEnabled = opts.streamEnabled ?? true;
+  const streamEnabled = (): boolean => read(opts.streamEnabled ?? true);
   const limiter = new RateLimiter(opts.rateLimitPerMinute ?? 0);
 
   // Pedidos em streaming registam as métricas ao terminar a ligação, não no `onResponse`.
@@ -113,7 +114,7 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
       name: t.name,
       version: t.version,
       description: t.description,
-      streaming: streamEnabled && t.stream !== undefined,
+      streaming: streamEnabled() && t.stream !== undefined,
     })),
   }));
 
@@ -146,7 +147,7 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
             { 'Retry-After': String(verdict.retryAfterSeconds) },
           );
         }
-        if (body.stream === true && !streamEnabled) {
+        if (body.stream === true && !streamEnabled()) {
           throw new AppError('invalid_request', 422, 'O pedido não é válido.', [
             { path: 'body.stream', issue: 'o streaming está desativado neste servidor' },
           ]);

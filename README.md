@@ -47,6 +47,8 @@ O script confirma primeiro que o `.env` tem tudo o que a produção exige (sem m
 
 Variáveis de ambiente, validadas no arranque (`src/config.ts`). Com configuração inválida, o processo termina com código 1 e a lista de problemas. Ver `.env.example`.
 
+As marcadas com **(definição)** são só o valor inicial: mudam-se sem reiniciar em `PATCH /v1/admin/settings` e o valor gravado na base de dados (`engine_setting`) prevalece. Cada instância volta a ler a tabela a cada 30 s. Os limites das memórias (500 caracteres, 50 por org, 20 por utilizador) também são definições, sem variável de ambiente. Ver [`docs/ADMIN_API.md`](docs/ADMIN_API.md#56-definições).
+
 | Variável                                                  | Omissão                                                                                       |
 | --------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `NODE_ENV`                                                | `development`                                                                                 |
@@ -59,34 +61,34 @@ Variáveis de ambiente, validadas no arranque (`src/config.ts`). Com configuraç
 | `MIGRATIONS_DIR`                                          | `migrations`                                                                                  |
 | `API_SECRET`                                              | _(vazio)_ — segredo partilhado com o Salesforce, ≥ 32 caracteres                              |
 | `STEPACCESS_URL`, `_USER`, `_PASSWORD`, `_COMPONENT_UUID` | _(vazio)_ — todos ou nenhum                                                                   |
-| `STEPACCESS_TIMEOUT_MS`                                   | `3000`                                                                                        |
-| `STEPACCESS_USAGE_TIMEOUT_MS`                             | `10000` — tempo máximo do envio do custo (em segundo plano)                                   |
+| `STEPACCESS_TIMEOUT_MS`                                   | `3000` — (definição) 100 a 30000                                                              |
+| `STEPACCESS_USAGE_TIMEOUT_MS`                             | `10000` — (definição) tempo máximo do envio do custo, em segundo plano (100 a 60000)          |
 | `STEPACCESS_BYPASS`                                       | `false` — proibido em produção                                                                |
 | `ACCESS_MODE`                                             | `stepaccess` — ou `open`: acesso só pelo `API_SECRET`, sem StepAccess (permitido em produção) |
 | `OPENROUTER_API_KEY`                                      | _(vazio)_                                                                                     |
 | `OPENROUTER_BASE_URL`                                     | `https://openrouter.ai/api/v1`                                                                |
-| `LLM_DEFAULT_MODEL`                                       | `google/gemini-2.5-flash`                                                                     |
-| `LLM_FALLBACK_MODELS`                                     | _(vazio)_ — modelos de recurso por omissão, separados por vírgulas (máximo 3)                 |
-| `LLM_TOTAL_TIMEOUT_MS`                                    | `30000` — teto de tempo das chamadas ao modelo de um pedido (2000 a 115000)                   |
-| `LLM_MAX_ATTEMPTS`                                        | `2` — tentativas por modelo até obter uma resposta válida (1 a 5)                             |
-| `LLM_BREAKER_THRESHOLD`, `LLM_BREAKER_OPEN_MS`            | `3` falhas seguidas (1 a 20) e `60000` ms (1000 a 3600000) com o modelo saltado               |
-| `STREAM_ENABLED`                                          | `true` — `false` recusa `"stream": true` em todas as ferramentas                              |
-| `RATE_LIMIT_PER_MINUTE`                                   | `0` — pedidos por minuto e por org, por instância (429 acima disso); 0 = sem limite           |
+| `LLM_DEFAULT_MODEL`                                       | `google/gemini-2.5-flash` — (definição)                                                       |
+| `LLM_FALLBACK_MODELS`                                     | _(vazio)_ — (definição) modelos de recurso por omissão, separados por vírgulas (máximo 3)     |
+| `LLM_TOTAL_TIMEOUT_MS`                                    | `30000` — (definição) teto de tempo das chamadas ao modelo de um pedido (2000 a 115000)       |
+| `LLM_MAX_ATTEMPTS`                                        | `2` — (definição) tentativas por modelo até obter uma resposta válida (1 a 5)                 |
+| `LLM_BREAKER_THRESHOLD`, `LLM_BREAKER_OPEN_MS`            | `3` falhas seguidas (1 a 20) e `60000` ms (1000 a 3600000) com o modelo saltado (definição)   |
+| `STREAM_ENABLED`                                          | `true` — (definição) `false` recusa `"stream": true` em todas as ferramentas                  |
+| `RATE_LIMIT_PER_MINUTE`                                   | `0` — (definição) pedidos por minuto e por org, por instância (429 acima); 0 = sem limite     |
 | `ENABLE_DIAGNOSTIC_TOOL`                                  | `false`                                                                                       |
 | `ADMIN_API_SECRET`                                        | _(vazio)_ — liga a API de administração; ≥ 32 caracteres, diferente do `API_SECRET`           |
 
 ## Endpoints
 
-| Método e caminho           | Função                                                                                                                                                        |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /healthz`             | Processo vivo                                                                                                                                                 |
-| `GET /readyz`              | Dependências acessíveis (200 ou 503, com estado por check)                                                                                                    |
-| `GET /v1/tools`            | Lista as ferramentas disponíveis e se aceitam streaming (precisa de credencial)                                                                               |
-| `POST /v1/tools/<nome>`    | Corre uma ferramenta (precisa de credencial). Com `"stream": true`, responde em SSE (ver [Streaming](#streaming))                                             |
-| `GET /v1/memories`         | Regras da org e memórias do utilizador (`?orgId=…&userId=…`, opcional `&tool=…`). Precisa de credencial; não conta utilização no StepAccess                   |
-| `POST /v1/memories`        | Guarda uma memória do utilizador (`{orgId, userId, content, tools?}`). Precisa de credencial; não conta utilização                                            |
-| `DELETE /v1/memories/<id>` | Apaga uma memória do próprio utilizador (`?orgId=…&userId=…`); as da org e as de colegas dão 404                                                              |
-| `/v1/admin/*`              | API de administração para o StepAccess: estado, métricas, topologia, ferramentas, prompts, memórias, playground. Ver [`docs/ADMIN_API.md`](docs/ADMIN_API.md) |
+| Método e caminho           | Função                                                                                                                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /healthz`             | Processo vivo                                                                                                                                                             |
+| `GET /readyz`              | Dependências acessíveis (200 ou 503, com estado por check)                                                                                                                |
+| `GET /v1/tools`            | Lista as ferramentas disponíveis e se aceitam streaming (precisa de credencial)                                                                                           |
+| `POST /v1/tools/<nome>`    | Corre uma ferramenta (precisa de credencial). Com `"stream": true`, responde em SSE (ver [Streaming](#streaming))                                                         |
+| `GET /v1/memories`         | Regras da org e memórias do utilizador (`?orgId=…&userId=…`, opcional `&tool=…`). Precisa de credencial; não conta utilização no StepAccess                               |
+| `POST /v1/memories`        | Guarda uma memória do utilizador (`{orgId, userId, content, tools?}`). Precisa de credencial; não conta utilização                                                        |
+| `DELETE /v1/memories/<id>` | Apaga uma memória do próprio utilizador (`?orgId=…&userId=…`); as da org e as de colegas dão 404                                                                          |
+| `/v1/admin/*`              | API de administração para o StepAccess: estado, métricas, topologia, definições, ferramentas, prompts, memórias, playground. Ver [`docs/ADMIN_API.md`](docs/ADMIN_API.md) |
 
 Todas as respostas levam `X-Request-Id`. Os erros têm sempre este formato:
 
@@ -238,7 +240,8 @@ src/
                           → run, preview, trial, tools, memories; valida a entrada; emite eventos
     tool.ts               o contrato de uma ferramenta
     run.ts                os passos de um pedido (configuração, acesso, memórias, cadeia de modelos, validação)
-    breaker.ts            disjuntor por modelo, em memória
+    breaker.ts            disjuntor por modelo, em memória (reconfigurável e com fecho à mão)
+    live.ts               Live<T>: um valor fixo ou lido de novo em cada uso
     errors.ts             EngineError: código estável, sem estado HTTP
     access.ts             interface de quem decide o acesso
     llm.ts                interface do fornecedor de modelos
@@ -256,8 +259,11 @@ src/
     openrouter-models.ts  catálogo de modelos do OpenRouter
     postgres-store.ts     configuração das ferramentas; registo do catálogo de ferramentas
     postgres-memory-store.ts  as memórias no Postgres
+    postgres-settings-store.ts  as definições na tabela engine_setting
     health.ts             verificações do StepAccess e do OpenRouter
     fetch.ts              o tipo do fetch que os adaptadores recebem
+  settings/
+    settings.ts           as definições alteráveis sem reiniciar: valores, limites, validação, leitura periódica
   tools/
     index.ts              as ferramentas ativas
     diagnostic.ts         ferramenta de teste de ligação

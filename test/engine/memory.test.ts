@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_MEMORY_CHARS, Memories } from '../../src/engine/memory.js';
+import { DEFAULT_MEMORY_LIMITS, MEMORY_CHARS_CAP, Memories } from '../../src/engine/memory.js';
 import { fakeMemoryStore as memoryStore } from './fakes.js';
 
 const ORG = '00D000000000000AAA';
@@ -26,13 +26,45 @@ describe('memórias no núcleo', () => {
 
   it.each([
     ['vazio', '   '],
-    ['longo demais', 'x'.repeat(MAX_MEMORY_CHARS + 1)],
+    ['longo demais', 'x'.repeat(DEFAULT_MEMORY_LIMITS.chars + 1)],
   ])('recusa texto %s, sem gravar nada', async (_label, content) => {
     const { store, rows } = memoryStore();
     await expect(
-      new Memories(store).remember({ owner: { orgId: ORG }, source: 'admin', content }),
+      new Memories(store, DEFAULT_MEMORY_LIMITS).remember({
+        owner: { orgId: ORG },
+        source: 'admin',
+        content,
+      }),
     ).rejects.toMatchObject({ code: 'invalid_request' });
     expect(rows.size).toBe(0);
+  });
+
+  it('o limite de caracteres é lido em cada pedido; sem limites, só o máximo absoluto', async () => {
+    let chars = 10;
+    const memories = new Memories(memoryStore().store, () => ({
+      ...DEFAULT_MEMORY_LIMITS,
+      chars,
+    }));
+    const remember = (content: string) =>
+      memories.remember({ owner: { orgId: ORG }, source: 'admin', content });
+    await expect(remember('x'.repeat(11))).rejects.toMatchObject({
+      message: 'No máximo 10 caracteres (tem 11).',
+    });
+    chars = 20;
+    await expect(remember('x'.repeat(11))).resolves.toMatchObject({ content: 'x'.repeat(11) });
+    expect(memories.limits().chars).toBe(20);
+
+    const unbounded = new Memories(memoryStore().store);
+    await expect(
+      unbounded.remember({ owner: { orgId: ORG }, source: 'admin', content: 'x'.repeat(600) }),
+    ).resolves.toBeDefined();
+    await expect(
+      unbounded.remember({
+        owner: { orgId: ORG },
+        source: 'admin',
+        content: 'x'.repeat(MEMORY_CHARS_CAP + 1),
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_request' });
   });
 
   it('só altera memórias da org', async () => {

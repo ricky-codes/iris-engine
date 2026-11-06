@@ -38,6 +38,8 @@ describe('loadConfig', () => {
         breaker: { threshold: 3, openMs: 60_000 },
         streamEnabled: true,
         rateLimitPerMinute: 0,
+        stepAccessTimeoutMs: 3000,
+        stepAccessUsageTimeoutMs: 10_000,
         enableDiagnosticTool: false,
       },
     });
@@ -80,8 +82,6 @@ describe('loadConfig', () => {
       user: 'iris',
       password: 'segredo',
       componentUuid: '3f2a9c1e-8b7d-4e6f-9a0b-1c2d3e4f5a6b',
-      timeoutMs: 3000,
-      usageTimeoutMs: 10_000,
     });
   });
 
@@ -177,8 +177,9 @@ describe('loadConfig', () => {
         breaker: { threshold: 5, openMs: 120_000 },
         streamEnabled: false,
         rateLimitPerMinute: 120,
+        stepAccessTimeoutMs: 3000,
+        stepAccessUsageTimeoutMs: 8000,
       });
-      expect(config.engine.stepAccess).toMatchObject({ timeoutMs: 3000, usageTimeoutMs: 8000 });
     });
 
     it.each([
@@ -188,6 +189,8 @@ describe('loadConfig', () => {
       ['LLM_BREAKER_OPEN_MS', '10'],
       ['RATE_LIMIT_PER_MINUTE', '-1'],
       ['STEPACCESS_USAGE_TIMEOUT_MS', '5'],
+      ['STEPACCESS_USAGE_TIMEOUT_MS', '60001'],
+      ['STEPACCESS_TIMEOUT_MS', '30001'],
     ])('recusa %s=%s', (key, value) => {
       expect(() => loadConfig({ [key]: value })).toThrow(ConfigError);
     });

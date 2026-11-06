@@ -27,6 +27,7 @@ Esta API permite à UI do StepAccess:
 5. **Memórias** — listar, criar regras da org, editar, apagar, apagar tudo de quem sai.
 6. **Playground** — testar uma ferramenta e ver o prompt final (com memórias) e a resposta.
 7. **Modelos** — lista de modelos do OpenRouter que servem para as ferramentas.
+8. **Definições** — modelos por omissão, tempos, tentativas, disjuntor, streaming, limite de pedidos, tempos do StepAccess e limites das memórias, sem reiniciar; fechar o disjuntor à mão.
 
 O que **não** está nesta API (de propósito): segredos (chave do OpenRouter, credenciais), criar ferramentas novas (são código), reiniciar/deploy, logs em bruto.
 
@@ -109,7 +110,7 @@ iris.exemplo.pt {
   "error": {
     "code": "invalid_request",
     "message": "O pedido não é válido.",
-    "details": [{ "path": "body.content", "issue": "must NOT have more than 500 characters" }],
+    "details": [{ "path": "body.orgId", "issue": "must match pattern \"^00D[A-Za-z0-9]{15}$\"" }],
     "requestId": "2c002e0d-2208-4fc6-beed-868c43cdf734"
   }
 }
@@ -126,7 +127,7 @@ iris.exemplo.pt {
 | 403  | `access_denied`          | Playground com `countUsage: true` e o StepAccess recusou. `details[0].issue` = razão (`NOT_MEMBER`, …).          |
 | 404  | `not_found`              | Memória ou versão de prompt que não existe; rota inexistente.                                                    |
 | 404  | `unknown_tool`           | Ferramenta que não existe no catálogo (ou, no playground, sem implementação).                                    |
-| 409  | `memory_limit_reached`   | A org já tem 50 memórias (ou o utilizador já tem 20).                                                            |
+| 409  | `memory_limit_reached`   | A org já tem o máximo de memórias (50 por omissão; o utilizador, 20).                                            |
 | 413  | `payload_too_large`      | Corpo acima do limite (1 MB por omissão).                                                                        |
 | 415  | `unsupported_media_type` | `Content-Type` não é JSON.                                                                                       |
 | 422  | `invalid_request`        | Validação falhou (campo em falta, formato errado, `X-Admin-Actor` em falta, ferramenta desconhecida numa lista). |
@@ -153,7 +154,7 @@ Hoje o catálogo tem `diagnostic` (implementada, só existe com `ENABLE_DIAGNOST
 
 | Campo                                                             | Origem                                                                                                                                                       |
 | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `model`, `temperature`, `maxOutputTokens`, `timeoutMs`, `enabled` | Base de dados se houver (`config.source = "database"`); senão os valores do código (`"default"`), com o modelo de `LLM_DEFAULT_MODEL`.                       |
+| `model`, `temperature`, `maxOutputTokens`, `timeoutMs`, `enabled` | Base de dados se houver (`config.source = "database"`); senão os valores do código (`"default"`), com o modelo da definição `defaultModel`.                  |
 | Prompt de sistema                                                 | Versão ativa na base de dados (`prompt.source = "database"`); senão o prompt do código (`"code"`); ferramenta não implementada e sem versão ativa: `"none"`. |
 
 `enabled: false` faz a ferramenta responder **503** aos pedidos do Salesforce (antes de contar utilização). O playground continua a funcionar com ferramentas desligadas.
@@ -176,9 +177,10 @@ Instruções curtas que mudam a forma como a IRIS responde.
 | `source`     | sempre `"admin"`                | `"user"`                                                           |
 | O admin pode | criar, editar, apagar           | **só apagar**                                                      |
 | Vale para    | todos os utilizadores da org    | só esse utilizador                                                 |
-| Limite       | **50** por org                  | **20** por utilizador                                              |
+| Limite       | **50** por org (por omissão)    | **20** por utilizador (por omissão)                                |
 
-- Texto: 1 a **500** caracteres (espaços nas pontas são removidos).
+- Texto: 1 a **500** caracteres por omissão (espaços nas pontas são removidos).
+- Os três limites são definições (`memoryMaxChars`, `memoryPerOrg`, `memoryPerUser`, ver 5.6) e a base de dados também os aplica. Baixar um limite não apaga nada: só impede criar mais (ou gravar textos maiores).
 - `tools`: lista de ferramentas a que se aplica. **Lista vazia = todas as ferramentas.**
 - Em conflito, **a memória da org prevalece** sobre a do utilizador.
 - Orgs e utilizadores **não** têm de existir na IRIS: são só ids. Quem decide se existem é o StepAccess.
@@ -439,6 +441,65 @@ Os cinco adaptadores que ligam o motor ao mundo, para a consola mostrar o que ca
 
 Nunca inclui segredos: o StepAccess aparece só com a origem do URL, e a chave do OpenRouter não aparece.
 
+### 5.6 Definições
+
+As definições que se mudam **sem reiniciar**. Cada uma nasce no `.env` (ou numa constante do código, nas memórias) e pode ser substituída na base de dados (tabela `engine_setting`). O valor gravado prevalece; `null` apaga-o e volta ao inicial. A instância que recebe a alteração aplica-a logo; as outras voltam a ler a tabela a cada `refreshSeconds` (30 s). Os segredos, as ligações (URLs, utilizadores, componente), o `ACCESS_MODE`, o `STEPACCESS_BYPASS` e a ferramenta de diagnóstico **continuam só no `.env`**, de propósito.
+
+| `key`                      | Grupo        | Valor inicial                 | Limites                                     |
+| -------------------------- | ------------ | ----------------------------- | ------------------------------------------- |
+| `defaultModel`             | `models`     | `LLM_DEFAULT_MODEL`           | código OpenRouter com suporte a JSON Schema |
+| `fallbackModels`           | `models`     | `LLM_FALLBACK_MODELS`         | até 3, sem repetidos nem o `defaultModel`   |
+| `totalTimeoutMs`           | `models`     | `LLM_TOTAL_TIMEOUT_MS`        | 2000–115000                                 |
+| `maxAttempts`              | `models`     | `LLM_MAX_ATTEMPTS`            | 1–5                                         |
+| `breakerThreshold`         | `models`     | `LLM_BREAKER_THRESHOLD`       | 1–20                                        |
+| `breakerOpenMs`            | `models`     | `LLM_BREAKER_OPEN_MS`         | 1000–3600000                                |
+| `streamEnabled`            | `requests`   | `STREAM_ENABLED`              | booleano                                    |
+| `rateLimitPerMinute`       | `requests`   | `RATE_LIMIT_PER_MINUTE`       | 0–100000 (0 = sem limite)                   |
+| `stepAccessTimeoutMs`      | `stepAccess` | `STEPACCESS_TIMEOUT_MS`       | 100–30000                                   |
+| `stepAccessUsageTimeoutMs` | `stepAccess` | `STEPACCESS_USAGE_TIMEOUT_MS` | 100–60000                                   |
+| `memoryMaxChars`           | `memories`   | 500 (código)                  | 50–2000                                     |
+| `memoryPerOrg`             | `memories`   | 50 (código)                   | 1–200                                       |
+| `memoryPerUser`            | `memories`   | 20 (código)                   | 1–100                                       |
+
+#### `GET /v1/admin/settings`
+
+```jsonc
+{
+  "refreshSeconds": 30,
+  "settings": [
+    {
+      "key": "maxAttempts",
+      "group": "models", // models | requests | stepAccess | memories
+      "label": "Tentativas por modelo",
+      "description": "…",
+      "value": 3, // em vigor
+      "default": 2, // sem nada gravado
+      "source": "database", // database | env | code
+      "env": "LLM_MAX_ATTEMPTS", // null nas que vêm do código
+      "updatedAt": "2026-11-06T10:00:00.000Z", // null sem nada gravado
+      "updatedBy": "ricardo@stepahead.pt",
+      "constraints": { "type": "integer", "minimum": 1, "maximum": 5 }, // para o formulário
+    },
+  ],
+}
+```
+
+Para a UI: agrupar por `group`, gerar cada campo a partir de `constraints`, mostrar "valor de origem: `default`" e um botão "Repor" quando `source = "database"`.
+
+#### `PATCH /v1/admin/settings`
+
+Altera só as definições enviadas. Exige `X-Admin-Actor`, que fica em `updatedBy`. Tudo ou nada: com um problema, nada é gravado.
+
+```json
+{ "maxAttempts": 3, "fallbackModels": ["openai/gpt-4.1-mini"], "rateLimitPerMinute": null }
+```
+
+Resposta `200`: o mesmo que o `GET`, já com os valores novos. Erros `422`, com um detalhe por definição (`body.maxAttempts`, `body.fallbackModels.0`…): valor fora dos limites, definição desconhecida, modelos repetidos ou iguais ao `defaultModel`, e modelos que não existem no catálogo do OpenRouter ou não suportam JSON Schema (um `defaultModel` errado partiria todas as ferramentas sem configuração).
+
+#### `POST /v1/admin/breakers/reset`
+
+Fecha o disjuntor sem esperar que o tempo aberto acabe: de um modelo com `?model=google%2Fgemini-2.5-flash`, ou de todos sem parâmetro. Sem corpo. Exige `X-Admin-Actor`. Resposta `200`: `{ "closed": ["google/gemini-2.5-flash"] }` (os que estavam abertos; `[]` se nenhum). `503` se o motor não estiver ligado. Os disjuntores abertos aparecem em `adapter.llm` na topologia (`details.openBreakers`). O disjuntor é por instância.
+
 ---
 
 ## 6. Ferramentas e prompts
@@ -479,15 +540,15 @@ Resposta `200`:
 }
 ```
 
-| Campo                   | Significado                                                                                                                       |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `implemented`           | Existe no código deste servidor (pode correr).                                                                                    |
-| `version`               | Versão do contrato de entrada/saída (só implementadas).                                                                           |
-| `enabled`               | `false` = o Salesforce recebe 503 nesta ferramenta.                                                                               |
-| `config`                | Configuração efetiva; `null` = não implementada e sem configuração gravada.                                                       |
-| `config.source`         | `database` (gravada pelo admin) ou `default` (valores do código).                                                                 |
-| `config.fallbackModels` | Modelos de recurso, por ordem. Com `source: "database"`, os gravados (pode ser `[]`); com `default`, os de `LLM_FALLBACK_MODELS`. |
-| `prompt.source`         | `database` (versão ativa), `code` (prompt de origem) ou `none`.                                                                   |
+| Campo                   | Significado                                                                                                                            |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `implemented`           | Existe no código deste servidor (pode correr).                                                                                         |
+| `version`               | Versão do contrato de entrada/saída (só implementadas).                                                                                |
+| `enabled`               | `false` = o Salesforce recebe 503 nesta ferramenta.                                                                                    |
+| `config`                | Configuração efetiva; `null` = não implementada e sem configuração gravada.                                                            |
+| `config.source`         | `database` (gravada pelo admin) ou `default` (valores do código).                                                                      |
+| `config.fallbackModels` | Modelos de recurso, por ordem. Com `source: "database"`, os gravados (pode ser `[]`); com `default`, os da definição `fallbackModels`. |
+| `prompt.source`         | `database` (versão ativa), `code` (prompt de origem) ou `none`.                                                                        |
 
 ### 6.2 `GET /v1/admin/tools/:name`
 
@@ -549,7 +610,7 @@ Resposta `200`: o detalhe da ferramenta (como 6.2), já com `config.source = "da
 
 - fornecedor em baixo (`provider_unavailable`) ou tempo esgotado (`timeout`) → passa logo ao seguinte;
 - resposta que não cumpre o esquema → uma nova tentativa no mesmo modelo e, se falhar outra vez, passa ao seguinte;
-- cada chamada usa o `timeoutMs` da ferramenta, dentro de um teto por pedido (`LLM_TOTAL_TIMEOUT_MS`, 30 s por omissão); não se começa uma tentativa com menos de 1 s;
+- cada chamada usa o `timeoutMs` da ferramenta, dentro de um teto por pedido (definição `totalTimeoutMs`, 30 s por omissão); não se começa uma tentativa com menos de 1 s;
 - **disjuntor**: depois de 3 falhas de fornecedor seguidas, o modelo é saltado durante 60 s (exceto se for o último da cadeia).
 
 Omitir `fallbackModels` grava `[]` (apaga os que existiam). Cada modelo de recurso é validado contra o catálogo do OpenRouter (o mesmo de `/models`, com cache de 15 min): erros `422 invalid_request` com a mensagem "Os modelos de recurso não são válidos." e um `details[]` por modelo, com `path` = `body.fallbackModels.<i>` e `issue` = `repetido`, `é o modelo principal`, `não existe no catálogo de modelos do OpenRouter` ou `não suporta respostas com JSON Schema`. Mais de 3: `422` com `path` = `body.fallbackModels`. Se o OpenRouter não responder ao pedir o catálogo: `502 provider_unavailable` (nada é gravado).
@@ -676,10 +737,10 @@ Resposta `200`: a memória. `404 not_found` se não existir; `422` se o id não 
 | Campo     | Tipo     | Regras                                                                       |
 | --------- | -------- | ---------------------------------------------------------------------------- |
 | `orgId`   | string   | `00D…` 18 car., obrigatório                                                  |
-| `content` | string   | 1–500, obrigatório                                                           |
+| `content` | string   | 1 até `memoryMaxChars` (500 por omissão), obrigatório                        |
 | `tools`   | string[] | opcional; nomes do catálogo, sem repetidos, máx. 20; omitido ou `[]` = todas |
 
-Resposta `201`: a memória criada. Erros: `409 memory_limit_reached` (50 na org), `422` (inclui ferramenta desconhecida: `"Ferramenta desconhecida: x."`).
+Resposta `201`: a memória criada. Erros: `409 memory_limit_reached` (`memoryPerOrg`, 50 por omissão), `422` (inclui ferramenta desconhecida: `"Ferramenta desconhecida: x."`).
 
 Só se criam memórias da **org** por esta API. As de utilizador nascem na IRIS a pedido do próprio utilizador.
 
@@ -689,7 +750,7 @@ Corpo com pelo menos um campo:
 
 | Campo     | Tipo     | Regras                                  |
 | --------- | -------- | --------------------------------------- |
-| `content` | string   | 1–500                                   |
+| `content` | string   | 1 até `memoryMaxChars`                  |
 | `tools`   | string[] | substitui a lista inteira; `[]` = todas |
 
 Resposta `200`: a memória atualizada (`updatedAt` muda). Erros: `403 forbidden` (é memória de utilizador), `404 not_found`, `422`.
@@ -862,6 +923,7 @@ async function iris(req, method, path, body) {
 | Playground (`preview`, `run` sem contar)                             | qualquer                                     |
 | Criar, editar, apagar memórias da org; apagar memórias de utilizador | qualquer                                     |
 | Configuração de ferramentas, versões e ativação de prompts           | **admin**                                    |
+| Definições (`PATCH /settings`) e fechar o disjuntor                  | **admin**                                    |
 | `memories/purge`, playground com `countUsage: true`                  | **admin**                                    |
 
 ### 9.3 Auditoria (`access_audit_log`)
@@ -894,18 +956,19 @@ Uma secção **IRIS** no menu do StepAccess, com:
    - `engine.ready = false` → listar `engine.missing`.
    - Créditos do OpenRouter (`usage` / `limit`).
    - Versão e tempo desde o arranque. Botão "Atualizar" (não fazer polling a menos de 30 s).
-2. **Atividade** — `/metrics`: totais, gráfico por dia (pedidos ok vs falhados), tabela por ferramenta, erros por código. Mostrar "desde <since>" e explicar que recomeça ao reiniciar.
-3. **Ferramentas** — tabela (`name`, implementada, ligada, modelo, origem da config e do prompt).
+2. **Definições** — `/settings`: um formulário por `group`, campos gerados de `constraints`, origem de cada valor e "Repor" para voltar ao valor inicial. Na secção dos modelos, o seletor alimentado por `/models` e, com disjuntores abertos (topologia), o botão "Fechar disjuntor".
+3. **Atividade** — `/metrics`: totais, gráfico por dia (pedidos ok vs falhados), tabela por ferramenta, erros por código. Mostrar "desde <since>" e explicar que recomeça ao reiniciar.
+4. **Ferramentas** — tabela (`name`, implementada, ligada, modelo, origem da config e do prompt).
    - Detalhe: formulário da configuração (seletor de modelo alimentado por `/models`, temperatura 0–2, tokens, tempo limite, ligada); "Repor valores de origem".
    - Separador **Prompt**: versão ativa; histórico; **comparação lado a lado (diff)** entre versões e com o prompt do código; "Nova versão" (editor de texto grande + nota de alteração + "ativar já"); "Ativar esta versão"; "Usar o prompt de origem".
    - Botão "Testar no playground" com o prompt/modelo em edição antes de gravar.
-4. **Memórias**
+5. **Memórias**
    - Filtros: org, utilizador, âmbito, ferramenta, pesquisa; paginação.
    - Na **página da org** que já existe no StepAccess: painel "Memórias da IRIS" com o resumo (`/summary`), a lista da org, criar/editar/apagar, e as memórias de cada utilizador (só apagar).
    - Contador de caracteres (500) e de limite (50/20). Chips de ferramentas ("todas" quando vazio).
    - "Apagar todas as memórias" (purge) com confirmação forte.
    - Ao apagar uma org ou um utilizador no StepAccess, chamar o purge correspondente.
-5. **Playground**
+6. **Playground**
    - Escolher ferramenta implementada, org e utilizador (seletores com as orgs/utilizadores do próprio StepAccess), formulário gerado do `inputSchema`.
    - Botões "Ver prompt" (`preview`, sem custo) e "Executar" (`run`).
    - Mostrar: resultado formatado, prompt de sistema final, mensagem do utilizador, memórias aplicadas, tentativas (texto bruto), tokens, duração.

@@ -5,6 +5,35 @@ import type { ReadinessCheck } from '../src/http/routes/health.js';
 import type { AdminRoutesOptions } from '../src/http/routes/admin.js';
 import type { MemoryRoutesOptions } from '../src/http/routes/memories.js';
 import type { ToolRoutesOptions } from '../src/http/routes/tools.js';
+import { DEFAULT_MEMORY_LIMITS } from '../src/engine/memory.js';
+import {
+  LiveSettings,
+  type RuntimeSettings,
+  type SettingsStore,
+} from '../src/settings/settings.js';
+
+/** Definições com os valores de origem (sem base de dados, salvo `store`). */
+export function testSettings(over: Partial<RuntimeSettings> = {}, store?: SettingsStore) {
+  return new LiveSettings(
+    {
+      defaultModel: 'google/gemini-2.5-flash',
+      fallbackModels: [],
+      totalTimeoutMs: 30_000,
+      maxAttempts: 2,
+      breakerThreshold: 3,
+      breakerOpenMs: 60_000,
+      streamEnabled: true,
+      rateLimitPerMinute: 0,
+      stepAccessTimeoutMs: 3000,
+      stepAccessUsageTimeoutMs: 10_000,
+      memoryMaxChars: DEFAULT_MEMORY_LIMITS.chars,
+      memoryPerOrg: DEFAULT_MEMORY_LIMITS.perOrg,
+      memoryPerUser: DEFAULT_MEMORY_LIMITS.perUser,
+      ...over,
+    },
+    store,
+  );
+}
 
 export interface TestAppOptions {
   env?: NodeJS.ProcessEnv;

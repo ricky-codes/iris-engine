@@ -26,9 +26,25 @@ export class CircuitBreaker {
 
   constructor(
     private readonly now: () => number = () => Date.now(),
-    private readonly threshold = BREAKER_THRESHOLD,
-    private readonly openMs = BREAKER_OPEN_MS,
+    private threshold = BREAKER_THRESHOLD,
+    private openMs = BREAKER_OPEN_MS,
   ) {}
+
+  /** Novos valores: valem a partir da próxima falha (os disjuntores abertos ficam como estão). */
+  configure(threshold: number, openMs: number): void {
+    this.threshold = threshold;
+    this.openMs = openMs;
+  }
+
+  /** Fecha o disjuntor de um modelo, ou de todos. Devolve os modelos que estavam a ser saltados. */
+  reset(model?: string): string[] {
+    const closed = this.open()
+      .map((b) => b.model)
+      .filter((m) => model === undefined || m === model);
+    if (model === undefined) this.states.clear();
+    else this.states.delete(model);
+    return closed;
+  }
 
   /** `true` se o modelo deve ser saltado agora. */
   isOpen(model: string): boolean {

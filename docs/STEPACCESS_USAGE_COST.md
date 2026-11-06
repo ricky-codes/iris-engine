@@ -52,7 +52,7 @@ Content-Type: application/json
 | `401`            | Credenciais erradas      | Não repete; escreve o evento no log |
 | `5xx` / sem rede | Erro do StepAccess       | Repete uma vez após 1 s; depois log |
 
-O corpo da resposta é ignorado. O tempo limite é o mesmo do `GET /v1/access` (`STEPACCESS_TIMEOUT_MS`, 3 s por omissão).
+O corpo da resposta é ignorado. O tempo limite é a definição `stepAccessUsageTimeoutMs` (10 s por omissão, `STEPACCESS_USAGE_TIMEOUT_MS`; muda-se em `PATCH /v1/admin/settings`).
 
 ## Regras
 

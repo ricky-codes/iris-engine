@@ -55,8 +55,12 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('administração das memórias'
     await expect(createOrgMemory(db.pool, { sfOrgRef: '00Dx', content: 'x' })).rejects.toThrow(
       /org-id/,
     );
+    // O limite de caracteres em vigor é aplicado pela base de dados.
     await expect(
       createOrgMemory(db.pool, { sfOrgRef: org, content: 'x'.repeat(501) }),
+    ).rejects.toMatchObject({ code: 'invalid_request', message: 'No máximo 500 caracteres.' });
+    await expect(
+      createOrgMemory(db.pool, { sfOrgRef: org, content: 'x'.repeat(2001) }),
     ).rejects.toBeInstanceOf(AdminError);
     expect(await listMemories(db.pool, { sfOrgRef: org })).toEqual([]);
   });

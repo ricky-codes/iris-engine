@@ -1,4 +1,4 @@
-import { MAX_MEMORY_CHARS } from '../engine/memory.js';
+import { MEMORY_CHARS_CAP } from '../engine/memory.js';
 
 /**
  * Validações dos dados que um administrador escreve. Cada função devolve a mensagem
@@ -21,8 +21,9 @@ export const validateUserRef: Validator = (v) =>
 export const validateMemoryContent: Validator = (v) => {
   const text = v.trim();
   if (text === '') return 'O texto não pode estar vazio.';
-  if (text.length > MAX_MEMORY_CHARS)
-    return `No máximo ${String(MAX_MEMORY_CHARS)} caracteres (tem ${String(text.length)}).`;
+  // O limite em vigor (definição `memoryMaxChars`) é aplicado pela base de dados.
+  if (text.length > MEMORY_CHARS_CAP)
+    return `No máximo ${String(MEMORY_CHARS_CAP)} caracteres (tem ${String(text.length)}).`;
   return undefined;
 };
 

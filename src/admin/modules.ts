@@ -1,3 +1,4 @@
+import type { SettingKey, SettingView } from '../settings/settings.js';
 import type { NodeStatus, Topology } from './topology.js';
 
 /**
@@ -51,22 +52,12 @@ export interface ModuleInfo {
 
 export interface ModulesInput {
   topology: Topology;
-  engine: {
-    defaultModel: string;
-    fallbackModels: string[];
-    maxAttempts: number;
-    totalTimeoutMs: number;
-    breaker: { threshold: number; openMs: number };
-  };
+  /** As definições alteráveis sem reiniciar, como as mostra `GET /v1/admin/settings`. */
+  settings: SettingView[];
   access: 'live' | 'open' | 'bypass' | 'missing';
-  stepAccess: {
-    origin: string | null;
-    timeoutMs: number | null;
-    usageTimeoutMs: number | null;
-    componentUuid: string | null;
-  };
+  stepAccess: { origin: string | null; componentUuid: string | null };
   openRouter: { baseUrl: string | null; configured: boolean };
-  memories: { chars: number; perOrg: number; perUser: number; org: number; user: number };
+  memories: { org: number; user: number };
 }
 
 export interface ModulesReport {
@@ -77,12 +68,28 @@ export interface ModulesReport {
 const ENV = 'env' as const;
 const CODE = 'code' as const;
 const DB = 'database' as const;
+const SETTINGS_PATH = 'PATCH /v1/admin/settings';
 
 export function describeModules(input: ModulesInput): ModulesReport {
   const node = (id: string): NodeStatus =>
     input.topology.nodes.find((n) => n.id === id)?.status ?? 'off';
   const live = input.access === 'live';
-  const { engine, memories } = input;
+  const { memories } = input;
+  const views = new Map(input.settings.map((v) => [v.key, v]));
+  const valueOf = (key: SettingKey): SettingValue =>
+    (views.get(key)?.value ?? null) as SettingValue;
+  /** Uma definição de `/v1/admin/settings`, com o nome que tem neste módulo. */
+  const editable = (key: SettingKey, as: string = key): ModuleSetting => {
+    const v = views.get(key);
+    return {
+      key: as,
+      label: v?.label ?? key,
+      description: v?.description ?? '',
+      value: valueOf(key),
+      source: v?.source ?? ENV,
+      adminPath: SETTINGS_PATH,
+    };
+  };
 
   const pgEngineStore: ModuleInfo = {
     id: 'adapter.pgEngineStore',
@@ -103,15 +110,15 @@ export function describeModules(input: ModulesInput): ModulesReport {
         key: 'tool.model',
         label: 'Modelo principal por ferramenta',
         description: 'Código OpenRouter. Sem valor, usa o modelo por omissão do motor.',
-        value: engine.defaultModel,
+        value: valueOf('defaultModel'),
         source: DB,
         adminPath: 'PUT /v1/admin/tools/:name/config',
       },
       {
         key: 'tool.fallbackModels',
         label: 'Modelos de recurso por ferramenta',
-        description: 'Até 3, por ordem. Sem configuração gravada valem os do `.env`.',
-        value: engine.fallbackModels,
+        description: 'Até 3, por ordem. Sem configuração gravada valem os do motor.',
+        value: valueOf('fallbackModels'),
         source: DB,
         adminPath: 'PUT /v1/admin/tools/:name/config',
       },
@@ -134,7 +141,7 @@ export function describeModules(input: ModulesInput): ModulesReport {
       {
         key: 'tool.timeoutMs',
         label: 'Tempo máximo de cada chamada ao modelo',
-        description: 'Por ferramenta, dentro do teto do pedido (`LLM_TOTAL_TIMEOUT_MS`).',
+        description: 'Por ferramenta, dentro do teto do pedido (`totalTimeoutMs`).',
         value: null,
         source: DB,
         adminPath: 'PUT /v1/admin/tools/:name/config',
@@ -165,13 +172,6 @@ export function describeModules(input: ModulesInput): ModulesReport {
         suggested: '5 s',
       },
       {
-        key: 'defaults',
-        label: 'Modelo e modelos de recurso por omissão na base de dados',
-        description:
-          'Hoje vêm do `.env` (`LLM_DEFAULT_MODEL`, `LLM_FALLBACK_MODELS`) e mudar exige reiniciar.',
-        suggested: 'tabela `engine_setting`',
-      },
-      {
         key: 'tool.streamingEnabled',
         label: 'Permitir streaming por ferramenta',
         description:
@@ -195,30 +195,9 @@ export function describeModules(input: ModulesInput): ModulesReport {
       'dados, mesmo com inserções simultâneas. As memórias são o único dado de clientes que a IRIS guarda.',
     onFailure: 'O pedido falha com 500; as rotas `/v1/memories` e `/v1/admin/memories` também.',
     settings: [
-      {
-        key: 'limits.chars',
-        label: 'Caracteres por memória',
-        description: 'Constante no código e restrição na base de dados.',
-        value: memories.chars,
-        source: CODE,
-        adminPath: null,
-      },
-      {
-        key: 'limits.perOrg',
-        label: 'Memórias por org',
-        description: 'Constante no código e restrição na base de dados.',
-        value: memories.perOrg,
-        source: CODE,
-        adminPath: null,
-      },
-      {
-        key: 'limits.perUser',
-        label: 'Memórias por utilizador',
-        description: 'Constante no código e restrição na base de dados.',
-        value: memories.perUser,
-        source: CODE,
-        adminPath: null,
-      },
+      editable('memoryMaxChars', 'limits.chars'),
+      editable('memoryPerOrg', 'limits.perOrg'),
+      editable('memoryPerUser', 'limits.perUser'),
       {
         key: 'memories.org',
         label: 'Memórias de orgs guardadas',
@@ -238,10 +217,10 @@ export function describeModules(input: ModulesInput): ModulesReport {
     ],
     proposed: [
       {
-        key: 'limits',
-        label: 'Limites editáveis, com exceção por org',
+        key: 'limits.perOrgOverride',
+        label: 'Limites próprios por org',
         description:
-          'Passar os três limites para a base de dados (hoje exigem alterar o código e a migração) e permitir um limite próprio por org.',
+          'Os limites já se mudam em `/v1/admin/settings`, mas valem para todas as orgs. Falta uma exceção por org.',
         suggested: '500 caracteres · 50 por org · 20 por utilizador',
       },
       {
@@ -300,22 +279,9 @@ export function describeModules(input: ModulesInput): ModulesReport {
         source: ENV,
         adminPath: null,
       },
-      {
-        key: 'timeoutMs',
-        label: 'Tempo máximo da chamada',
-        description: 'Passado este tempo conta como StepAccess indisponível.',
-        value: input.stepAccess.timeoutMs,
-        source: ENV,
-        adminPath: null,
-      },
+      editable('stepAccessTimeoutMs', 'timeoutMs'),
     ],
     proposed: [
-      {
-        key: 'timeoutMs',
-        label: 'Tempo máximo editável',
-        description: 'Passar da variável de ambiente para a base de dados, sem reiniciar.',
-        suggested: '3000 ms (100 a 10000)',
-      },
       {
         key: 'test',
         label: 'Testar a ligação',
@@ -372,14 +338,7 @@ export function describeModules(input: ModulesInput): ModulesReport {
         source: CODE,
         adminPath: null,
       },
-      {
-        key: 'timeoutMs',
-        label: 'Tempo máximo de cada envio',
-        description: 'Em segundo plano, por isso mais folgado que o da verificação de acesso.',
-        value: input.stepAccess.usageTimeoutMs,
-        source: ENV,
-        adminPath: null,
-      },
+      editable('stepAccessUsageTimeoutMs', 'timeoutMs'),
     ],
     proposed: [
       {
@@ -388,12 +347,6 @@ export function describeModules(input: ModulesInput): ModulesReport {
         description:
           'Hoje um custo que falha duas vezes só existe no log. Uma tabela `cost_outbox` (só metadados) permitia reenviar sozinho e mostrar quantos estão pendentes. É a lacuna mais séria deste módulo.',
         suggested: 'ligada',
-      },
-      {
-        key: 'timeoutMs',
-        label: 'Tempo máximo do envio editável',
-        description: 'Passar da variável `STEPACCESS_USAGE_TIMEOUT_MS` para a base de dados.',
-        suggested: '10000 ms',
       },
       {
         key: 'retries',
@@ -435,48 +388,12 @@ export function describeModules(input: ModulesInput): ModulesReport {
         source: ENV,
         adminPath: null,
       },
-      {
-        key: 'defaultModel',
-        label: 'Modelo por omissão',
-        description: 'Para ferramentas sem configuração na base de dados.',
-        value: engine.defaultModel,
-        source: ENV,
-        adminPath: null,
-      },
-      {
-        key: 'fallbackModels',
-        label: 'Modelos de recurso por omissão',
-        description: 'Até 3.',
-        value: engine.fallbackModels,
-        source: ENV,
-        adminPath: null,
-      },
-      {
-        key: 'totalTimeoutMs',
-        label: 'Teto de tempo de um pedido',
-        description: 'Soma de todas as chamadas ao modelo (2000 a 115000 ms).',
-        value: engine.totalTimeoutMs,
-        source: ENV,
-        adminPath: null,
-      },
-      {
-        key: 'maxAttempts',
-        label: 'Tentativas por modelo',
-        description:
-          'Quantas vezes se pede uma resposta válida a cada modelo (1 a 5). `LLM_MAX_ATTEMPTS`.',
-        value: engine.maxAttempts,
-        source: ENV,
-        adminPath: null,
-      },
-      {
-        key: 'breaker',
-        label: 'Disjuntor por modelo',
-        description:
-          'Abre após N falhas seguidas do fornecedor e salta o modelo durante algum tempo. `LLM_BREAKER_THRESHOLD`, `LLM_BREAKER_OPEN_MS`.',
-        value: `${String(engine.breaker.threshold)} falhas · ${String(engine.breaker.openMs / 1000)} s`,
-        source: ENV,
-        adminPath: null,
-      },
+      editable('defaultModel'),
+      editable('fallbackModels'),
+      editable('totalTimeoutMs'),
+      editable('maxAttempts'),
+      editable('breakerThreshold'),
+      editable('breakerOpenMs'),
       {
         key: 'dataCollection',
         label: 'Política de dados do fornecedor',
@@ -495,19 +412,6 @@ export function describeModules(input: ModulesInput): ModulesReport {
       },
     ],
     proposed: [
-      {
-        key: 'engine.defaults',
-        label: 'Modelo por omissão, modelos de recurso e teto de tempo na base de dados',
-        description: 'Alteráveis sem reiniciar o serviço.',
-        suggested: 'tabela `engine_setting`',
-      },
-      {
-        key: 'breaker',
-        label: 'Tentativas e disjuntor editáveis sem reiniciar',
-        description:
-          'Tentativas por modelo, falhas seguidas e tempo aberto na base de dados (hoje no `.env`), e um botão para fechar o disjuntor à mão.',
-        suggested: '2 tentativas · 3 falhas · 60 s',
-      },
       {
         key: 'dataCollection',
         label: 'Política de dados',

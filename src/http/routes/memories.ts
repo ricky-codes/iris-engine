@@ -1,11 +1,6 @@
 import { Type } from '@sinclair/typebox';
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
-import {
-  MAX_MEMORY_CHARS,
-  MAX_USER_MEMORIES,
-  type Memories,
-  type Memory,
-} from '../../engine/memory.js';
+import { MEMORY_CHARS_CAP, type Memories, type Memory } from '../../engine/memory.js';
 import { bearerAuth } from './tools.js';
 
 export interface MemoryRoutesOptions {
@@ -62,7 +57,7 @@ export const memoryRoutes: FastifyPluginAsyncTypebox<MemoryRoutesOptions> = asyn
       return {
         org: org.items.map(memoryJson),
         user: user.items.map(memoryJson),
-        limits: { user: { count: mine, limit: MAX_USER_MEMORIES } },
+        limits: { user: { count: mine, limit: opts.memories.limits().perUser } },
       };
     },
   );
@@ -74,7 +69,8 @@ export const memoryRoutes: FastifyPluginAsyncTypebox<MemoryRoutesOptions> = asyn
         body: Type.Object(
           {
             ...Owner,
-            content: Type.String({ minLength: 1, maxLength: MAX_MEMORY_CHARS }),
+            // O limite em vigor (`memoryMaxChars`) é verificado pelas memórias; aqui só o máximo absoluto.
+            content: Type.String({ minLength: 1, maxLength: MEMORY_CHARS_CAP }),
             tools: Type.Optional(Type.Array(ToolName, { maxItems: 20, uniqueItems: true })),
           },
           { additionalProperties: false },

@@ -5,6 +5,7 @@ import type { ToolDefinition } from '../src/engine/tool.js';
 import { EngineError } from '../src/engine/errors.js';
 import { diagnosticTool } from '../src/tools/diagnostic.js';
 import { fakeAccess, fakeEngine, fakeLlm } from './engine/fakes.js';
+import type { Live } from '../src/engine/live.js';
 import { buildTestApp } from './helpers.js';
 
 const SECRET = 's'.repeat(40);
@@ -20,7 +21,7 @@ afterEach(async () => {
 async function start(
   access = fakeAccess(),
   llm = fakeLlm('{"reply":"Olá!"}'),
-  extra: { streamEnabled?: boolean; rateLimitPerMinute?: number } = {},
+  extra: { streamEnabled?: Live<boolean>; rateLimitPerMinute?: Live<number> } = {},
 ) {
   app = await buildTestApp({
     engine: {
@@ -347,5 +348,24 @@ describe('limite de pedidos e interruptor de streaming', () => {
     expect((await post(app, {})).statusCode).toBe(200);
     const list = await app.inject({ method: 'GET', url: '/v1/tools', headers: AUTH });
     expect(list.json()).toMatchObject({ tools: [{ streaming: false }] });
+  });
+
+  it('o streaming e o limite de pedidos seguem as definições em vigor, sem reiniciar', async () => {
+    const live = { stream: true, limit: 0 };
+    const { app } = await start(fakeAccess(), fakeLlm('{"reply":"Olá!"}'), {
+      streamEnabled: () => live.stream,
+      rateLimitPerMinute: () => live.limit,
+    });
+    const tools = () => app.inject({ method: 'GET', url: '/v1/tools', headers: AUTH });
+    expect((await tools()).json()).toMatchObject({ tools: [{ streaming: true }] });
+    live.stream = false;
+    expect((await tools()).json()).toMatchObject({ tools: [{ streaming: false }] });
+    expect((await post(app, { stream: true })).statusCode).toBe(422);
+
+    for (let i = 0; i < 3; i++) expect((await post(app, {})).statusCode).toBe(200);
+    // Sem limite não se conta nada: com limite 1, o primeiro passa e o segundo é recusado.
+    live.limit = 1;
+    expect((await post(app, {})).statusCode).toBe(200);
+    expect((await post(app, {})).statusCode).toBe(429);
   });
 });

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { Memories } from '../src/engine/memory.js';
+import { DEFAULT_MEMORY_LIMITS, Memories } from '../src/engine/memory.js';
 import { fakeMemoryStore } from './engine/fakes.js';
 import { buildTestApp } from './helpers.js';
 
@@ -17,9 +17,10 @@ afterEach(async () => {
   app = undefined;
 });
 
-async function start() {
+async function start(limits = { ...DEFAULT_MEMORY_LIMITS }) {
   const { store, rows } = fakeMemoryStore();
-  const memories = new Memories(store);
+  // Como no servidor: os limites são lidos em cada pedido.
+  const memories = new Memories(store, () => limits);
   app = await buildTestApp({ memories: { memories, apiSecret: SECRET } });
   return { app, memories, rows };
 }
@@ -58,6 +59,7 @@ describe('/v1/memories', () => {
     const { app, rows } = await start();
     for (const payload of [
       { orgId: ORG, userId: ME, content: 'x'.repeat(501) },
+      { orgId: ORG, userId: ME, content: 'x'.repeat(2001) },
       { orgId: 'org', userId: ME, content: 'x' },
       { orgId: ORG, userId: ME, content: 'x', scope: 'org' },
     ]) {
@@ -65,6 +67,25 @@ describe('/v1/memories', () => {
       expect(res.statusCode).toBe(422);
     }
     expect(rows.size).toBe(0);
+  });
+
+  it('o limite de caracteres e o de memórias por utilizador seguem as definições em vigor', async () => {
+    const limits = { ...DEFAULT_MEMORY_LIMITS, chars: 600, perUser: 7 };
+    const { app } = await start(limits);
+    const post = (content: string) =>
+      app.inject({
+        method: 'POST',
+        url: '/v1/memories',
+        headers: AUTH,
+        payload: { orgId: ORG, userId: ME, content },
+      });
+    expect((await post('x'.repeat(550))).statusCode).toBe(201);
+    limits.chars = 100;
+    const res = await post('x'.repeat(101));
+    expect(res.statusCode).toBe(422);
+    expect(res.json()).toMatchObject({ error: { message: 'No máximo 100 caracteres (tem 101).' } });
+    const list = await app.inject({ method: 'GET', url: `/v1/memories?${OWNER}`, headers: AUTH });
+    expect(list.json()).toMatchObject({ limits: { user: { count: 1, limit: 7 } } });
   });
 
   it('mostra as regras da org e as do utilizador, nunca as de um colega', async () => {

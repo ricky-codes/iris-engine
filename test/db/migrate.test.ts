@@ -37,6 +37,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('migrações', () => {
     );
     expect(rows.map((r) => r.table_name)).toEqual([
       'ai_provider',
+      'engine_setting',
       'llm_model',
       'memory',
       'memory_scope',

@@ -3,6 +3,7 @@ import { Value } from '@sinclair/typebox/value';
 import type { AccessChecker } from './access.js';
 import { BREAKER_OPEN_MS, BREAKER_THRESHOLD, CircuitBreaker, type OpenBreaker } from './breaker.js';
 import { EngineError, type EngineErrorCode, type EngineErrorDetail } from './errors.js';
+import { read, type Live } from './live.js';
 import type { LlmProvider } from './llm.js';
 import { Memories, type MemoryStore } from './memory.js';
 import {
@@ -71,7 +72,8 @@ export type EngineEvent =
   | ({ type: 'model_call' } & ModelCall);
 
 export interface EngineOptions {
-  settings: EngineSettings;
+  /** Fixas, ou lidas de novo em cada pedido (as que se mudam pela API de administração). */
+  settings: Live<EngineSettings>;
   /** As ferramentas que o motor expõe. Os nomes têm de ser únicos. */
   tools: ToolDefinition[];
   /** Quem decide se o pedido pode avançar (ex.: StepAccess, ou deixar passar tudo). */
@@ -101,6 +103,7 @@ export interface TrialOverrides {
  * (HTTP, uma fila, um script): quem o usa chama `run` e trata os `EngineError`.
  */
 export interface Engine {
+  /** As definições em vigor agora. */
   readonly settings: Readonly<Required<EngineSettings>>;
   /** As ferramentas disponíveis, pela ordem em que foram registadas. */
   tools(): readonly ToolDefinition[];
@@ -130,6 +133,8 @@ export interface Engine {
   readonly memories: Memories;
   /** Os modelos que o disjuntor está a saltar agora. */
   openBreakers(): OpenBreaker[];
+  /** Fecha o disjuntor de um modelo, ou de todos. Devolve os modelos que estavam abertos. */
+  resetBreakers(model?: string): string[];
 }
 
 const TOOL_NAME = /^[a-z_]+$/;
@@ -205,10 +210,22 @@ function checkInput(tool: ToolDefinition, input: Record<string, unknown>): void 
 }
 
 export function createEngine(options: EngineOptions): Engine {
-  const settings = checkSettings(options.settings);
   const tools = registry(options.tools);
   const now = options.now ?? (() => Date.now());
+  // Validadas no arranque; depois, só quando o objeto muda (as definições vivas mantêm-no igual
+  // enquanto nada muda), para não validar em cada pedido.
+  let raw = read(options.settings);
+  let settings = checkSettings(raw);
   const breaker = new CircuitBreaker(now, settings.breakerThreshold, settings.breakerOpenMs);
+  const current = (): Required<EngineSettings> => {
+    const next = read(options.settings);
+    if (next !== raw) {
+      settings = checkSettings(next);
+      raw = next;
+      breaker.configure(settings.breakerThreshold, settings.breakerOpenMs);
+    }
+    return settings;
+  };
 
   const emit = (event: EngineEvent): void => {
     try {
@@ -218,21 +235,24 @@ export function createEngine(options: EngineOptions): Engine {
     }
   };
 
-  const deps: EngineDeps = {
-    access: options.access,
-    store: options.store,
-    memories: options.memories,
-    llm: options.llm,
-    defaultModel: settings.defaultModel,
-    defaultFallbackModels: settings.fallbackModels,
-    maxAttempts: settings.maxAttempts,
-    totalTimeoutMs: settings.totalTimeoutMs,
-    breaker,
-    now,
-    onModelCall: (call) => {
-      emit({ type: 'model_call', ...call });
-    },
-    ...(options.usage !== undefined && { usage: options.usage }),
+  const deps = (): EngineDeps => {
+    const s = current();
+    return {
+      access: options.access,
+      store: options.store,
+      memories: options.memories,
+      llm: options.llm,
+      defaultModel: s.defaultModel,
+      defaultFallbackModels: s.fallbackModels,
+      maxAttempts: s.maxAttempts,
+      totalTimeoutMs: s.totalTimeoutMs,
+      breaker,
+      now,
+      onModelCall: (call) => {
+        emit({ type: 'model_call', ...call });
+      },
+      ...(options.usage !== undefined && { usage: options.usage }),
+    };
   };
 
   const toolOr404 = (name: string): ToolDefinition => {
@@ -242,9 +262,12 @@ export function createEngine(options: EngineOptions): Engine {
   };
 
   return {
-    settings,
+    get settings() {
+      return current();
+    },
     memories: new Memories(options.memories),
     openBreakers: () => breaker.open(),
+    resetBreakers: (model) => breaker.reset(model),
     tools: () => [...tools.values()],
     tool: (name) => tools.get(name),
 
@@ -264,7 +287,7 @@ export function createEngine(options: EngineOptions): Engine {
         requestId: request.requestId,
       };
       try {
-        const out = await runTool(deps, tool, request);
+        const out = await runTool(deps(), tool, request);
         emit({
           type: 'run_completed',
           ...base,
@@ -287,7 +310,7 @@ export function createEngine(options: EngineOptions): Engine {
     async preview(name, request, overrides = {}) {
       const tool = toolOr404(name);
       checkInput(tool, request.input);
-      return prepareRun(deps, tool, request, {
+      return prepareRun(deps(), tool, request, {
         checkAccess: false,
         requireEnabled: false,
         ...(overrides.systemPrompt !== undefined && {
@@ -303,7 +326,8 @@ export function createEngine(options: EngineOptions): Engine {
     async trial(name, request, opts = {}) {
       const tool = toolOr404(name);
       checkInput(tool, request.input);
-      const prepared = await prepareRun(deps, tool, request, {
+      const d = deps();
+      const prepared = await prepareRun(d, tool, request, {
         checkAccess: opts.checkAccess === true,
         requireEnabled: false,
         ...(opts.systemPrompt !== undefined && { systemPromptOverride: opts.systemPrompt }),
@@ -311,9 +335,9 @@ export function createEngine(options: EngineOptions): Engine {
         ...(opts.fallbackModels !== undefined && { fallbackModelsOverride: opts.fallbackModels }),
       });
       // O playground usa o mesmo disjuntor, mas não entra nas métricas (sem onCall).
-      const { result, attempts, error } = await callModel(deps.llm, tool, prepared, {
-        maxAttempts: settings.maxAttempts,
-        totalTimeoutMs: settings.totalTimeoutMs,
+      const { result, attempts, error } = await callModel(d.llm, tool, prepared, {
+        maxAttempts: d.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+        totalTimeoutMs: d.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS,
         breaker,
         now,
       });

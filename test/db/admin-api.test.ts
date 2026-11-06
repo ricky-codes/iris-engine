@@ -10,7 +10,9 @@ import { PgEngineStore, syncToolCatalog } from '../../src/adapters/postgres-stor
 import type { ToolDefinition } from '../../src/engine/tool.js';
 import { diagnosticTool } from '../../src/tools/diagnostic.js';
 import { fakeAccess, fakeLlm } from '../engine/fakes.js';
-import { buildTestApp } from '../helpers.js';
+import { PgSettingsStore } from '../../src/adapters/postgres-settings-store.js';
+import type { LiveSettings } from '../../src/settings/settings.js';
+import { buildTestApp, testSettings } from '../helpers.js';
 import { TEST_DATABASE_URL, addMemory, createTestDb, sfId, type TestDb } from './helpers.js';
 
 const SECRET = 'a'.repeat(40);
@@ -41,6 +43,8 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
   let app: FastifyInstance | undefined;
   let access: ReturnType<typeof fakeAccess>;
   let llm: ReturnType<typeof fakeLlm>;
+  let settings: LiveSettings;
+  let core: ReturnType<typeof createEngine>;
   const metrics = new Metrics();
 
   beforeAll(async () => {
@@ -55,13 +59,25 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
     await app?.close();
     access = fakeAccess();
     llm = fakeLlm('{"reply":"Olá do playground"}');
+    // Cada teste começa sem definições gravadas.
+    await db.pool.query('DELETE FROM engine_setting');
+    settings = testSettings({}, new PgSettingsStore(db.pool));
+    await settings.refresh();
+    core = createEngine({
+      settings: () => settings.current(),
+      tools: [tool],
+      store: new PgEngineStore(db.pool),
+      memories: new PgMemoryStore(db.pool),
+      llm: llm.llm,
+      access: access.access,
+    });
     app = await buildTestApp({
       admin: {
         secret: SECRET,
         pool: db.pool,
         tools: [tool],
-        defaultModel: 'google/gemini-2.5-flash',
-        defaultFallbackModels: [],
+        settings,
+        breakers: { reset: (m) => core.resetBreakers(m) },
         metrics,
         status: async () => ({ engine: { ready: true } }),
         topology: () =>
@@ -69,8 +85,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
             pool: db.pool,
             runtime: async () => RUNTIME,
             tools: [tool],
-            defaultModel: 'google/gemini-2.5-flash',
-            defaultFallbackModels: [],
+            settings: () => settings.current(),
             metrics,
             breakers: () => [],
           }),
@@ -100,17 +115,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
             ],
           }),
         },
-        playground: {
-          engine: createEngine({
-            settings: { defaultModel: 'google/gemini-2.5-flash' },
-            tools: [tool],
-            store: new PgEngineStore(db.pool),
-            memories: new PgMemoryStore(db.pool),
-            llm: llm.llm,
-            access: access.access,
-          }),
-          countsUsage: true,
-        },
+        playground: { engine: core, countsUsage: true },
       },
     });
   });
@@ -185,6 +190,134 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
         get(url).then((r) => r.json<{ models: { id: string }[] }>().models.map((m) => m.id));
       expect(await ids('/v1/admin/models')).toEqual(['a']);
       expect(await ids('/v1/admin/models?structuredOnly=false')).toEqual(['a', 'b']);
+    });
+  });
+
+  describe('definições', () => {
+    type Settings = {
+      refreshSeconds: number;
+      settings: { key: string; value: unknown; source: string; updatedBy: string | null }[];
+    };
+    const byKey = (body: Settings) => new Map(body.settings.map((v) => [v.key, v]));
+
+    it('lista as treze definições, com o valor em vigor e de onde vem', async () => {
+      const body = (await get('/v1/admin/settings')).json<Settings>();
+      expect(body.refreshSeconds).toBe(30);
+      expect(body.settings).toHaveLength(13);
+      expect(byKey(body).get('defaultModel')).toMatchObject({
+        value: 'google/gemini-2.5-flash',
+        source: 'env',
+        updatedBy: null,
+      });
+      expect(byKey(body).get('memoryPerOrg')).toMatchObject({ value: 50, source: 'code' });
+    });
+
+    it('grava, aplica já ao motor e regista quem mudou; null volta ao valor inicial', async () => {
+      const res = await send('PATCH', '/v1/admin/settings', {
+        defaultModel: 'a',
+        maxAttempts: 4,
+        breakerThreshold: 5,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(byKey(res.json<Settings>()).get('maxAttempts')).toMatchObject({
+        value: 4,
+        source: 'database',
+        updatedBy: 'ricardo@stepahead.pt',
+      });
+      expect(core.settings).toMatchObject({
+        defaultModel: 'a',
+        maxAttempts: 4,
+        breakerThreshold: 5,
+      });
+      // Ferramentas sem configuração passam a mostrar o novo modelo por omissão.
+      expect((await get('/v1/admin/tools/diagnostic')).json()).toMatchObject({
+        defaults: { model: 'a' },
+      });
+      const { rows } = await db.pool.query<{ key: string }>(
+        'SELECT key FROM engine_setting ORDER BY key',
+      );
+      expect(rows.map((r) => r.key)).toEqual(['breakerThreshold', 'defaultModel', 'maxAttempts']);
+
+      const reset = await send('PATCH', '/v1/admin/settings', { maxAttempts: null });
+      expect(byKey(reset.json<Settings>()).get('maxAttempts')).toMatchObject({
+        value: 2,
+        source: 'env',
+      });
+      expect(core.settings.maxAttempts).toBe(2);
+    });
+
+    it('recusa valores inválidos, definições desconhecidas e modelos fora do catálogo, sem gravar nada', async () => {
+      const bad = await send('PATCH', '/v1/admin/settings', {
+        maxAttempts: 9,
+        nope: true,
+        streamEnabled: false,
+      });
+      expect(bad.statusCode).toBe(422);
+      expect(bad.json()).toMatchObject({
+        error: { details: [{ path: 'body.maxAttempts' }, { path: 'body.nope' }] },
+      });
+      const model = await send('PATCH', '/v1/admin/settings', {
+        defaultModel: 'b',
+        fallbackModels: ['zzz'],
+      });
+      expect(model.statusCode).toBe(422);
+      expect(model.json()).toMatchObject({
+        error: {
+          details: [
+            { path: 'body.defaultModel', issue: 'não suporta respostas com JSON Schema' },
+            {
+              path: 'body.fallbackModels.0',
+              issue: 'não existe no catálogo de modelos do OpenRouter',
+            },
+          ],
+        },
+      });
+      expect((await send('PATCH', '/v1/admin/settings', {})).statusCode).toBe(422);
+      const { rows } = await db.pool.query('SELECT 1 FROM engine_setting');
+      expect(rows).toHaveLength(0);
+      expect(core.settings.maxAttempts).toBe(2);
+    });
+
+    it('os limites das memórias valem logo, também na base de dados', async () => {
+      const org = sfId('00D');
+      await send('PATCH', '/v1/admin/settings', { memoryPerOrg: 1, memoryMaxChars: 50 });
+      const create = (content: string) =>
+        send('POST', '/v1/admin/memories', { orgId: org, content });
+      expect((await create('x'.repeat(51))).json()).toMatchObject({
+        error: { code: 'invalid_request', message: 'No máximo 50 caracteres.' },
+      });
+      expect((await create('regra')).statusCode).toBe(201);
+      const second = await create('outra');
+      expect(second.statusCode).toBe(409);
+      expect(second.json()).toMatchObject({
+        error: { message: `A org ${org} já tem 1 memórias. Apague uma antes de criar outra.` },
+      });
+      expect((await get(`/v1/admin/memories/summary?orgId=${org}`)).json()).toMatchObject({
+        org: { count: 1, limit: 1 },
+      });
+    });
+
+    it('fecha o disjuntor à mão: um modelo ou todos', async () => {
+      llm = fakeLlm(new EngineError('provider_unavailable', 'Indisponível.'));
+      core = createEngine({
+        settings: { defaultModel: 'google/gemini-2.5-flash', breakerThreshold: 1 },
+        tools: [tool],
+        store: new PgEngineStore(db.pool),
+        memories: new PgMemoryStore(db.pool),
+        llm: llm.llm,
+        access: access.access,
+      });
+      await core
+        .run('diagnostic', { orgId: sfId('00D'), userId: sfId('005'), input: { message: 'x' } })
+        .catch(() => undefined);
+      expect(core.openBreakers()).toMatchObject([{ model: 'google/gemini-2.5-flash' }]);
+
+      const one = await send('POST', '/v1/admin/breakers/reset?model=outro%2Fmodelo');
+      expect(one.json()).toEqual({ closed: [] });
+      const all = await send('POST', '/v1/admin/breakers/reset');
+      expect(all.statusCode).toBe(200);
+      expect(all.json()).toEqual({ closed: ['google/gemini-2.5-flash'] });
+      expect(core.openBreakers()).toEqual([]);
     });
   });
 
@@ -534,8 +667,8 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
           secret: SECRET,
           pool: db.pool,
           tools: [tool],
-          defaultModel: 'm',
-          defaultFallbackModels: [],
+          settings: testSettings(),
+          breakers: undefined,
           metrics,
           status: async () => ({}),
           topology: async () => {
@@ -582,8 +715,8 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
           secret: SECRET,
           pool: db.pool,
           tools: [tool],
-          defaultModel: 'm',
-          defaultFallbackModels: [],
+          settings: testSettings(),
+          breakers: undefined,
           metrics,
           status: async () => ({}),
           topology: async () => {

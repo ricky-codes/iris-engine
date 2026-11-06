@@ -1,8 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { EngineError } from '../engine/errors.js';
 import {
-  MAX_ORG_MEMORIES,
-  MAX_USER_MEMORIES,
+  DEFAULT_MEMORY_LIMITS,
   type Memory,
   type MemoryFilter,
   type MemoryOwner,
@@ -79,19 +78,26 @@ const params = (f: MemoryFilter): (string | null)[] => [
 const SCOPE_ID: Record<MemoryScope, number> = { org: 2, user: 3 };
 const SOURCE_ID: Record<MemorySource, number> = { user: 1, admin: 2 };
 
-const isMemoryLimit = (err: unknown): boolean =>
-  err instanceof Error && err.message.startsWith('memory_limit:');
-
-function limitReached(owner: MemoryOwner): EngineError {
-  return owner.userId === undefined
-    ? new EngineError(
-        'memory_limit_reached',
-        `A org ${owner.orgId} já tem ${String(MAX_ORG_MEMORIES)} memórias. Apague uma antes de criar outra.`,
-      )
-    : new EngineError(
-        'memory_limit_reached',
-        `O utilizador ${owner.userId} já tem ${String(MAX_USER_MEMORIES)} memórias. Apague uma antes de criar outra.`,
-      );
+/** Os erros dos limites que a base de dados aplica (migração 0011), com o limite no DETAIL. */
+function limitError(err: unknown, owner?: MemoryOwner): EngineError | undefined {
+  if (!(err instanceof Error)) return undefined;
+  const detail = (err as { detail?: unknown }).detail;
+  const limit = typeof detail === 'string' ? detail : '?';
+  if (err.message.startsWith('memory_too_long:')) {
+    return new EngineError('invalid_request', `No máximo ${limit} caracteres.`);
+  }
+  if (err.message.startsWith('memory_limit:') && owner !== undefined) {
+    return owner.userId === undefined
+      ? new EngineError(
+          'memory_limit_reached',
+          `A org ${owner.orgId} já tem ${limit} memórias. Apague uma antes de criar outra.`,
+        )
+      : new EngineError(
+          'memory_limit_reached',
+          `O utilizador ${owner.userId} já tem ${limit} memórias. Apague uma antes de criar outra.`,
+        );
+  }
+  return undefined;
 }
 
 /** As memórias no Postgres. Os limites por dono são aplicados pela própria base de dados. */
@@ -158,7 +164,7 @@ export class PgMemoryStore implements MemoryStore {
   }): Promise<string> {
     const { owner } = input;
     const scope: MemoryScope = owner.userId === undefined ? 'org' : 'user';
-    return this.transaction(async (client) => {
+    return this.transaction(owner, async (client) => {
       const toolIds = await resolveTools(client, input.tools);
       const { rows } = await client.query<{ memory_id: string }>(
         `INSERT INTO memory (memory_scope_id, memory_source_id, content)
@@ -166,20 +172,16 @@ export class PgMemoryStore implements MemoryStore {
         [SCOPE_ID[scope], SOURCE_ID[input.source], input.content],
       );
       const id = rows[0]?.memory_id ?? '';
-      try {
-        if (owner.userId === undefined) {
-          await client.query('INSERT INTO org_memory (memory_id, sf_org_ref) VALUES ($1, $2)', [
-            id,
-            owner.orgId,
-          ]);
-        } else {
-          await client.query(
-            'INSERT INTO user_memory (memory_id, sf_org_ref, sf_user_ref) VALUES ($1, $2, $3)',
-            [id, owner.orgId, owner.userId],
-          );
-        }
-      } catch (err) {
-        throw isMemoryLimit(err) ? limitReached(owner) : err;
+      if (owner.userId === undefined) {
+        await client.query('INSERT INTO org_memory (memory_id, sf_org_ref) VALUES ($1, $2)', [
+          id,
+          owner.orgId,
+        ]);
+      } else {
+        await client.query(
+          'INSERT INTO user_memory (memory_id, sf_org_ref, sf_user_ref) VALUES ($1, $2, $3)',
+          [id, owner.orgId, owner.userId],
+        );
       }
       await setMemoryTools(client, id, toolIds);
       return id;
@@ -187,7 +189,7 @@ export class PgMemoryStore implements MemoryStore {
   }
 
   async update(id: string, change: { content?: string; tools?: string[] }): Promise<void> {
-    await this.transaction(async (client) => {
+    await this.transaction(undefined, async (client) => {
       if (change.content !== undefined) {
         await client.query(
           'UPDATE memory SET content = $2, updated_at = now() WHERE memory_id = $1',
@@ -224,9 +226,12 @@ export class PgMemoryStore implements MemoryStore {
 
   async summary(orgId: string): Promise<MemorySummary> {
     const [org, users] = await Promise.all([
-      this.pool.query<{ n: number }>(
-        'SELECT count(*)::int AS n FROM org_memory WHERE sf_org_ref = $1',
-        [orgId],
+      // Os limites em vigor vêm da mesma tabela que a base de dados usa para os aplicar.
+      this.pool.query<{ n: number; per_org: number; per_user: number }>(
+        `SELECT (SELECT count(*)::int FROM org_memory WHERE sf_org_ref = $1) AS n,
+                engine_setting_int('memoryPerOrg', $2) AS per_org,
+                engine_setting_int('memoryPerUser', $3) AS per_user`,
+        [orgId, DEFAULT_MEMORY_LIMITS.perOrg, DEFAULT_MEMORY_LIMITS.perUser],
       ),
       this.pool.query<{ sf_user_ref: string; n: number }>(
         `SELECT sf_user_ref, count(*)::int AS n FROM user_memory WHERE sf_org_ref = $1
@@ -234,18 +239,20 @@ export class PgMemoryStore implements MemoryStore {
         [orgId],
       ),
     ]);
+    const row = org.rows[0];
+    const perUser = row?.per_user ?? DEFAULT_MEMORY_LIMITS.perUser;
     return {
       orgId,
-      org: { count: org.rows[0]?.n ?? 0, limit: MAX_ORG_MEMORIES },
-      users: users.rows.map((u) => ({
-        userId: u.sf_user_ref,
-        count: u.n,
-        limit: MAX_USER_MEMORIES,
-      })),
+      org: { count: row?.n ?? 0, limit: row?.per_org ?? DEFAULT_MEMORY_LIMITS.perOrg },
+      users: users.rows.map((u) => ({ userId: u.sf_user_ref, count: u.n, limit: perUser })),
     };
   }
 
-  private async transaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  /** Numa transação; os limites que a base de dados recusa saem como `EngineError`. */
+  private async transaction<T>(
+    owner: MemoryOwner | undefined,
+    fn: (client: PoolClient) => Promise<T>,
+  ): Promise<T> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -254,7 +261,7 @@ export class PgMemoryStore implements MemoryStore {
       return result;
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
-      throw err;
+      throw limitError(err, owner) ?? err;
     } finally {
       client.release();
     }

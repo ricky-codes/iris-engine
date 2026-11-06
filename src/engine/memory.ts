@@ -1,12 +1,21 @@
 import { EngineError } from './errors.js';
+import { read, type Live } from './live.js';
 
 /**
- * Limites das memórias. A base de dados aplica os mesmos valores (migração 0009):
- * aqui servem para recusar antes de a base de dados o fazer.
+ * Limites das memórias. Mudam-se pela API de administração (`engine_setting`) e a base de dados
+ * aplica-os também (migração 0011): aqui servem para recusar antes de a base de dados o fazer.
  */
-export const MAX_MEMORY_CHARS = 500;
-export const MAX_ORG_MEMORIES = 50;
-export const MAX_USER_MEMORIES = 20;
+export interface MemoryLimits {
+  chars: number;
+  perOrg: number;
+  perUser: number;
+}
+
+/** Sem nada gravado. A migração 0011 usa os mesmos valores. */
+export const DEFAULT_MEMORY_LIMITS: MemoryLimits = { chars: 500, perOrg: 50, perUser: 20 };
+
+/** O máximo que a base de dados aceita em qualquer caso, seja qual for o limite em vigor. */
+export const MEMORY_CHARS_CAP = 2000;
 
 /** `org`: regra da empresa, para todos os utilizadores · `user`: preferência de um utilizador. */
 export type MemoryScope = 'org' | 'user';
@@ -83,13 +92,13 @@ export interface MemoryStore {
 
 const notFound = (): EngineError => new EngineError('not_found', 'A memória já não existe.');
 
-function cleanContent(content: string): string {
+function cleanContent(content: string, maxChars: number): string {
   const text = content.trim();
   if (text === '') throw new EngineError('invalid_request', 'O texto não pode estar vazio.');
-  if (text.length > MAX_MEMORY_CHARS) {
+  if (text.length > maxChars) {
     throw new EngineError(
       'invalid_request',
-      `No máximo ${String(MAX_MEMORY_CHARS)} caracteres (tem ${String(text.length)}).`,
+      `No máximo ${String(maxChars)} caracteres (tem ${String(text.length)}).`,
     );
   }
   return text;
@@ -103,7 +112,23 @@ const ownedBy = (m: Memory, owner: MemoryOwner): boolean =>
  * Nada aqui é automático: cada memória é criada ou apagada por um pedido explícito.
  */
 export class Memories {
-  constructor(private readonly store: MemoryStore) {}
+  /**
+   * Sem `limits`, o texto só se verifica contra o máximo absoluto e o limite em vigor fica para a
+   * base de dados (é o caso do CLI, que não lê as definições).
+   */
+  constructor(
+    private readonly store: MemoryStore,
+    private readonly currentLimits?: Live<MemoryLimits>,
+  ) {}
+
+  /** Os limites em vigor (os de origem, sem `limits`). */
+  limits(): MemoryLimits {
+    return this.currentLimits === undefined ? DEFAULT_MEMORY_LIMITS : read(this.currentLimits);
+  }
+
+  private maxChars(): number {
+    return this.currentLimits === undefined ? MEMORY_CHARS_CAP : this.limits().chars;
+  }
 
   /** As memórias que valem para um pedido a uma ferramenta. */
   forRequest(request: { orgId: string; userId: string; tool: string }): Promise<RequestMemories> {
@@ -151,7 +176,7 @@ export class Memories {
     const id = await this.store.create({
       owner: input.owner,
       source: input.source,
-      content: cleanContent(input.content),
+      content: cleanContent(input.content, this.maxChars()),
       tools: [...new Set(input.tools ?? [])],
     });
     return this.mustGet(id);
@@ -170,7 +195,9 @@ export class Memories {
       );
     }
     await this.store.update(id, {
-      ...(change.content !== undefined && { content: cleanContent(change.content) }),
+      ...(change.content !== undefined && {
+        content: cleanContent(change.content, this.maxChars()),
+      }),
       ...(change.tools !== undefined && { tools: [...new Set(change.tools)] }),
     });
     return this.mustGet(id);

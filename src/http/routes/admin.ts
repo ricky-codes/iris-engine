@@ -26,8 +26,15 @@ import type { ModulesReport } from '../../admin/modules.js';
 import type { Topology } from '../../admin/topology.js';
 import type { ModelInfo } from '../../adapters/openrouter-models.js';
 import type { Engine } from '../../engine/engine.js';
+import { MEMORY_CHARS_CAP } from '../../engine/memory.js';
 import { fallbackChain } from '../../engine/store.js';
 import type { ToolDefinition } from '../../engine/tool.js';
+import {
+  SETTINGS_REFRESH_MS,
+  type RuntimeSettings,
+  type SettingIssue,
+  type SettingView,
+} from '../../settings/settings.js';
 import { AppError, type ErrorDetail } from '../errors.js';
 
 /** O que a página de estado mostra. Montado no arranque (ver src/server.ts). */
@@ -38,9 +45,15 @@ export interface AdminRoutesOptions {
   pool: Pool;
   /** Ferramentas implementadas e ativas neste servidor. */
   tools: ToolDefinition[];
-  defaultModel: string;
-  /** Modelos de recurso das ferramentas sem configuração gravada (`LLM_FALLBACK_MODELS`). */
-  defaultFallbackModels: string[];
+  /** As definições alteráveis sem reiniciar (ver src/settings/settings.ts). */
+  settings: {
+    current(): RuntimeSettings;
+    describe(): SettingView[];
+    validate(changes: Record<string, unknown>): SettingIssue[];
+    update(changes: Record<string, unknown>, actor: string): Promise<void>;
+  };
+  /** O disjuntor do motor; sem motor não há o que fechar. */
+  breakers: { reset(model?: string): string[] } | undefined;
   metrics: Metrics;
   status: () => Promise<StatusReport>;
   /** Os módulos e o estado de cada um (ver src/admin/topology-source.ts). */
@@ -101,7 +114,8 @@ const MemoryId = Type.String({
 });
 const ToolName = Type.String({ pattern: '^[a-z_]+$', maxLength: 64 });
 const ToolCodes = Type.Array(ToolName, { maxItems: 20, uniqueItems: true });
-const MemoryContent = Type.String({ minLength: 1, maxLength: 500 });
+// O limite em vigor (`memoryMaxChars`) é verificado pelas memórias; aqui só o máximo absoluto.
+const MemoryContent = Type.String({ minLength: 1, maxLength: MEMORY_CHARS_CAP });
 
 const PlaygroundBody = Type.Object(
   {
@@ -208,12 +222,78 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
     },
   );
 
+  // ---------- definições ----------
+
+  const settingsJson = () => ({
+    refreshSeconds: SETTINGS_REFRESH_MS / 1000,
+    settings: opts.settings.describe(),
+  });
+
+  app.get('/v1/admin/settings', async () => settingsJson());
+
+  // Altera só as definições enviadas; `null` volta ao valor do `.env` (ou do código).
+  app.patch(
+    '/v1/admin/settings',
+    {
+      schema: {
+        body: Type.Record(Type.String({ maxLength: 64 }), Type.Unknown(), { minProperties: 1 }),
+      },
+    },
+    async (request) => {
+      const body = request.body;
+      const invalid = (details: ErrorDetail[]): AppError =>
+        new AppError('invalid_request', 422, 'As definições não são válidas.', details);
+      const issues = opts.settings.validate(body);
+      if (issues.length > 0) {
+        throw invalid(issues.map((i) => ({ path: `body.${i.key}`, issue: i.issue })));
+      }
+      // Os modelos novos têm de existir no OpenRouter: um modelo por omissão errado partia
+      // todas as ferramentas sem configuração.
+      const models = [
+        ...(typeof body['defaultModel'] === 'string'
+          ? [{ path: 'body.defaultModel', code: body['defaultModel'] }]
+          : []),
+        ...(Array.isArray(body['fallbackModels'])
+          ? (body['fallbackModels'] as string[]).map((code, i) => ({
+              path: `body.fallbackModels.${String(i)}`,
+              code,
+            }))
+          : []),
+      ];
+      const unknown = await catalogIssues(models);
+      if (unknown.length > 0) throw invalid(unknown);
+      await opts.settings.update(body, actorOf(request) ?? '');
+      return settingsJson();
+    },
+  );
+
+  // Fecha o disjuntor de um modelo (`?model=…`) ou de todos, sem esperar que o tempo aberto
+  // acabe. Sem corpo: os códigos dos modelos têm barras, por isso vão na query string.
+  app.post(
+    '/v1/admin/breakers/reset',
+    {
+      schema: {
+        querystring: Type.Object(
+          { model: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })) },
+          { additionalProperties: false },
+        ),
+      },
+    },
+    async (request) => {
+      if (opts.breakers === undefined) {
+        throw new AppError('service_unavailable', 503, 'O motor não está ligado.');
+      }
+      return { closed: opts.breakers.reset(request.query.model) };
+    },
+  );
+
   // ---------- ferramentas ----------
 
   const toolJson = (row: ToolCatalogRow) => {
     const code = registered.get(row.name);
+    const engine = opts.settings.current();
     const defaults =
-      code === undefined ? null : { model: opts.defaultModel, ...code.defaults, enabled: true };
+      code === undefined ? null : { model: engine.defaultModel, ...code.defaults, enabled: true };
     return {
       name: row.name,
       implemented: code !== undefined,
@@ -237,7 +317,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
                 temperature: defaults.temperature,
                 maxOutputTokens: defaults.maxOutputTokens,
                 timeoutMs: defaults.timeoutMs,
-                fallbackModels: fallbackChain(defaults.model, opts.defaultFallbackModels),
+                fallbackModels: fallbackChain(defaults.model, engine.fallbackModels),
                 source: 'default' as const,
               },
       prompt: {
@@ -253,25 +333,32 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
     };
   };
 
-  /**
-   * Os modelos de recurso: sem repetidos, nenhum igual ao principal, e todos no catálogo do
-   * OpenRouter com suporte para JSON Schema (sem isso, cada chamada falharia).
-   */
-  async function checkFallbackModels(model: string, fallbackModels: string[]): Promise<void> {
-    if (fallbackModels.length === 0) return;
+  /** Cada modelo tem de existir no catálogo do OpenRouter e suportar respostas com JSON Schema. */
+  async function catalogIssues(entries: { path: string; code: string }[]): Promise<ErrorDetail[]> {
+    if (entries.length === 0) return [];
     const { models } = await opts.models.list();
     const known = new Map(models.map((m) => [m.id, m]));
+    return entries.flatMap(({ path, code }) => {
+      const info = known.get(code);
+      if (info === undefined)
+        return [{ path, issue: 'não existe no catálogo de modelos do OpenRouter' }];
+      if (!info.supportsStructuredOutput)
+        return [{ path, issue: 'não suporta respostas com JSON Schema' }];
+      return [];
+    });
+  }
+
+  /** Os modelos de recurso: sem repetidos, nenhum igual ao principal, e todos no catálogo. */
+  async function checkFallbackModels(model: string, fallbackModels: string[]): Promise<void> {
     const details: ErrorDetail[] = [];
+    const toCheck: { path: string; code: string }[] = [];
     fallbackModels.forEach((code, i) => {
       const path = `body.fallbackModels.${String(i)}`;
-      const info = known.get(code);
       if (code === model) details.push({ path, issue: 'é o modelo principal' });
       else if (fallbackModels.indexOf(code) !== i) details.push({ path, issue: 'repetido' });
-      else if (info === undefined)
-        details.push({ path, issue: 'não existe no catálogo de modelos do OpenRouter' });
-      else if (!info.supportsStructuredOutput)
-        details.push({ path, issue: 'não suporta respostas com JSON Schema' });
+      else toCheck.push({ path, code });
     });
+    details.push(...(await catalogIssues(toCheck)));
     if (details.length > 0) {
       throw new AppError('invalid_request', 422, 'Os modelos de recurso não são válidos.', details);
     }
@@ -286,14 +373,15 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
   async function toolDetail(name: string) {
     const row = await catalogRow(name);
     const code = registered.get(name);
+    const engine = opts.settings.current();
     return {
       ...toolJson(row),
       defaults:
         code === undefined
           ? null
           : {
-              model: opts.defaultModel,
-              fallbackModels: fallbackChain(opts.defaultModel, opts.defaultFallbackModels),
+              model: engine.defaultModel,
+              fallbackModels: fallbackChain(engine.defaultModel, engine.fallbackModels),
               ...code.defaults,
             },
       codePrompt: code?.systemPrompt ?? null,

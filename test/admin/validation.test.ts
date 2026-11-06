@@ -15,8 +15,9 @@ describe('validações de administração', () => {
     [validateUserRef, '00DgL00000O7vLVUAZ', false],
     [validateUserRef, '005gL00000GpOQT', false],
     [validateMemoryContent, 'Tratar sempre o cliente por você.', true],
-    [validateMemoryContent, 'x'.repeat(500), true],
-    [validateMemoryContent, 'x'.repeat(501), false],
+    // O limite em vigor fica para a base de dados; aqui só o máximo absoluto.
+    [validateMemoryContent, 'x'.repeat(2000), true],
+    [validateMemoryContent, 'x'.repeat(2001), false],
     [validateMemoryContent, '   ', false],
     [validateMemoryId, '3f2a9c1e-8b7d-4e6f-9a0b-1c2d3e4f5a6b', true],
     [validateMemoryId, 'm-1', false],
@@ -26,6 +27,6 @@ describe('validações de administração', () => {
 
   it('devolve uma mensagem legível quando é inválido', () => {
     expect(validateOrgRef('x')).toMatch(/00D/);
-    expect(validateMemoryContent('x'.repeat(501))).toMatch(/500/);
+    expect(validateMemoryContent('x'.repeat(2001))).toMatch(/2000/);
   });
 });

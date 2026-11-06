@@ -1,3 +1,4 @@
+import { read } from '../engine/live.js';
 import type { CostEvent, UsageReporter } from '../engine/usage.js';
 import type { FetchLike } from './fetch.js';
 import type { StepAccessConnection } from './stepaccess-access.js';
@@ -40,7 +41,7 @@ export class StepAccessUsageReporter implements UsageReporter {
           method: 'POST',
           headers: { Authorization: `Basic ${basic}`, 'Content-Type': 'application/json' },
           body,
-          signal: AbortSignal.timeout(this.config.timeoutMs),
+          signal: AbortSignal.timeout(read(this.config.timeoutMs)),
         });
         // 409: já registado (repetido). Conta como entregue.
         if (res.ok || res.status === 409) return true;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CircuitBreaker } from '../../src/engine/breaker.js';
-import { createEngine } from '../../src/engine/engine.js';
+import { createEngine, type EngineSettings } from '../../src/engine/engine.js';
 import { EngineError } from '../../src/engine/errors.js';
 import type { LlmProvider, LlmRequest } from '../../src/engine/llm.js';
 import { callModel, runTool, type PreparedRun } from '../../src/engine/run.js';
@@ -285,6 +285,41 @@ describe('motor com modelos de recurso', () => {
     ]);
     // O playground não entra nas métricas.
     expect(events.filter((e) => e.type === 'model_call')).toHaveLength(6);
+  });
+
+  it('lê as definições em cada pedido: modelo, cadeia, tentativas e disjuntor mudam sem recriar o motor', async () => {
+    const clock = { now: 0 };
+    const f = scripted({ m: [down], n: [BAD, OK], r: [OK] }, clock, 10);
+    let settings: EngineSettings = {
+      defaultModel: 'm',
+      fallbackModels: ['r'],
+      breakerThreshold: 1,
+    };
+    const engine = createEngine({
+      settings: () => settings,
+      tools: [tool],
+      access: fakeAccess().access,
+      llm: f.llm,
+      ...fakeStore(),
+      now: () => clock.now,
+    });
+    const run = () =>
+      engine.run('diagnostic', { orgId: 'o', userId: 'u', input: { message: 'x' } });
+
+    expect((await run()).meta).toMatchObject({ model: 'r-servido', fallback: true });
+    expect(engine.openBreakers()).toMatchObject([{ model: 'm' }]);
+    // Fechar à mão: devolve o que estava aberto.
+    expect(engine.resetBreakers('outro')).toEqual([]);
+    expect(engine.resetBreakers()).toEqual(['m']);
+    expect(engine.openBreakers()).toEqual([]);
+
+    // Outro modelo por omissão e uma só tentativa: a resposta inválida passa logo ao recurso.
+    settings = { defaultModel: 'n', fallbackModels: ['r'], maxAttempts: 1 };
+    expect(engine.settings).toMatchObject({ defaultModel: 'n', maxAttempts: 1 });
+    expect((await run()).meta).toMatchObject({ model: 'r-servido', attempts: 2 });
+    // Sem modelos de recurso, responde o próprio modelo por omissão.
+    settings = { defaultModel: 'n', fallbackModels: [], maxAttempts: 2 };
+    expect((await run()).meta).toMatchObject({ model: 'n-servido', fallback: false });
   });
 
   it('recusa arrancar com mais de 3 modelos de recurso ou um teto de tempo fora dos limites', () => {

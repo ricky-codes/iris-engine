@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { describeModules, type ModulesInput } from '../../src/admin/modules.js';
 import { buildTopology, type RuntimeFacts } from '../../src/admin/topology.js';
 import { Metrics } from '../../src/engine/metrics.js';
-import { buildTestApp } from '../helpers.js';
+import { buildTestApp, testSettings } from '../helpers.js';
 
 const OK = { status: 'ok' as const, latencyMs: 5 };
 const runtime: RuntimeFacts = {
@@ -29,22 +29,14 @@ function input(over: Partial<ModulesInput> = {}): ModulesInput {
       breakers: [],
       memories: { org: 1, user: 2, limits: { chars: 500, perOrg: 50, perUser: 20 } },
     }),
-    engine: {
-      defaultModel: 'google/gemini-2.5-flash',
-      fallbackModels: ['openai/gpt-4.1-mini'],
-      maxAttempts: 2,
-      totalTimeoutMs: 30_000,
-      breaker: { threshold: 3, openMs: 60_000 },
-    },
+    settings: testSettings({ fallbackModels: ['openai/gpt-4.1-mini'] }).describe(),
     access: 'live',
     stepAccess: {
       origin: 'https://access.exemplo.pt',
-      timeoutMs: 3000,
-      usageTimeoutMs: 10_000,
       componentUuid: '11111111-2222-4333-8444-555555555555',
     },
     openRouter: { baseUrl: 'https://openrouter.ai/api/v1', configured: true },
-    memories: { chars: 500, perOrg: 50, perUser: 20, org: 1, user: 2 },
+    memories: { org: 1, user: 2 },
     ...over,
   };
 }
@@ -75,14 +67,36 @@ describe('describeModules', () => {
     }
   });
 
-  it('as definições da configuração das ferramentas mudam-se pela API; as do StepAccess só no .env', () => {
+  it('diz onde se muda cada definição: as das ferramentas e as alteráveis pela API; as ligações só no .env', () => {
     const byClass = new Map(describeModules(input()).modules.map((m) => [m.className, m]));
     const store = byClass.get('PgEngineStore');
     expect(store?.settings.every((s) => s.source === 'database' && s.adminPath !== null)).toBe(
       true,
     );
     const access = byClass.get('StepAccessClient');
-    expect(access?.settings.every((s) => s.source === 'env' && s.adminPath === null)).toBe(true);
+    expect(access?.settings.map((s) => [s.key, s.source, s.adminPath])).toEqual([
+      ['accessMode', 'env', null],
+      ['url', 'env', null],
+      ['componentUuid', 'env', null],
+      ['timeoutMs', 'env', 'PATCH /v1/admin/settings'],
+    ]);
+    const llm = byClass.get('OpenRouterProvider');
+    expect(
+      llm?.settings.filter((s) => s.adminPath === 'PATCH /v1/admin/settings').map((s) => s.key),
+    ).toEqual([
+      'defaultModel',
+      'fallbackModels',
+      'totalTimeoutMs',
+      'maxAttempts',
+      'breakerThreshold',
+      'breakerOpenMs',
+    ]);
+    const memories = byClass.get('PgMemoryStore');
+    expect(memories?.settings.find((s) => s.key === 'limits.perOrg')).toMatchObject({
+      value: 50,
+      source: 'code',
+      adminPath: 'PATCH /v1/admin/settings',
+    });
   });
 
   it('mostra os valores em vigor e nunca segredos', () => {
@@ -96,7 +110,7 @@ describe('describeModules', () => {
     const modules = describeModules(
       input({
         access: 'open',
-        stepAccess: { origin: null, timeoutMs: null, usageTimeoutMs: null, componentUuid: null },
+        stepAccess: { origin: null, componentUuid: null },
       }),
     ).modules;
     const active = Object.fromEntries(modules.map((m) => [m.className, m.active]));
@@ -117,8 +131,8 @@ describe('GET /v1/admin/modules', () => {
         // Esta rota não toca na base de dados.
         pool: {} as Pool,
         tools: [],
-        defaultModel: 'm',
-        defaultFallbackModels: [],
+        settings: testSettings(),
+        breakers: undefined,
         metrics: new Metrics(),
         status: async () => ({}),
         topology: async () => input().topology,

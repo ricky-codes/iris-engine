@@ -10,6 +10,7 @@ import { ModelCatalog } from './adapters/openrouter-models.js';
 import { OpenRouterProvider } from './adapters/openrouter.js';
 import { PgMemoryStore } from './adapters/postgres-memory-store.js';
 import { PgEngineStore, syncToolCatalog } from './adapters/postgres-store.js';
+import { PgSettingsStore } from './adapters/postgres-settings-store.js';
 import { StepAccessClient } from './adapters/stepaccess-access.js';
 import { StepAccessUsageReporter } from './adapters/stepaccess-usage.js';
 import type { AccessChecker } from './engine/access.js';
@@ -18,18 +19,13 @@ import { statusReport } from './admin/status.js';
 import { collectTopology } from './admin/topology-source.js';
 import type { RuntimeFacts, Topology } from './admin/topology.js';
 import { createEngine, type Engine } from './engine/engine.js';
-import { DEFAULT_MAX_ATTEMPTS } from './engine/run.js';
 import { EngineError } from './engine/errors.js';
-import {
-  MAX_MEMORY_CHARS,
-  MAX_ORG_MEMORIES,
-  MAX_USER_MEMORIES,
-  Memories,
-} from './engine/memory.js';
+import { DEFAULT_MEMORY_LIMITS, Memories } from './engine/memory.js';
 import { Metrics } from './engine/metrics.js';
 import type { ToolDefinition } from './engine/tool.js';
 import type { AdminRoutesOptions, StatusReport } from './http/routes/admin.js';
 import { enabledTools } from './tools/index.js';
+import { LiveSettings, memoryLimitsOf, type RuntimeSettings } from './settings/settings.js';
 
 // Os clientes externos registam avisos no logger da app, que só existe depois de criada.
 let logger: FastifyBaseLogger | undefined;
@@ -46,12 +42,36 @@ function readVersion(): string {
   }
 }
 
-function accessChecker(config: AppConfig): AccessChecker | undefined {
+/** Os valores iniciais das definições alteráveis: os do `.env` e, nas memórias, os do código. */
+function settingsDefaults(config: AppConfig): RuntimeSettings {
+  const { engine: cfg } = config;
+  return {
+    defaultModel: cfg.defaultModel,
+    fallbackModels: cfg.fallbackModels,
+    totalTimeoutMs: cfg.totalTimeoutMs,
+    maxAttempts: cfg.maxAttempts,
+    breakerThreshold: cfg.breaker.threshold,
+    breakerOpenMs: cfg.breaker.openMs,
+    streamEnabled: cfg.streamEnabled,
+    rateLimitPerMinute: cfg.rateLimitPerMinute,
+    stepAccessTimeoutMs: cfg.stepAccessTimeoutMs,
+    stepAccessUsageTimeoutMs: cfg.stepAccessUsageTimeoutMs,
+    memoryMaxChars: DEFAULT_MEMORY_LIMITS.chars,
+    memoryPerOrg: DEFAULT_MEMORY_LIMITS.perOrg,
+    memoryPerUser: DEFAULT_MEMORY_LIMITS.perUser,
+  };
+}
+
+function accessChecker(config: AppConfig, settings: LiveSettings): AccessChecker | undefined {
   const sa = config.engine.stepAccess;
   if (sa === undefined) return undefined;
   return sa === 'open' || sa === 'bypass'
     ? new OpenAccessChecker()
-    : new StepAccessClient(sa, fetch, warn);
+    : new StepAccessClient(
+        { ...sa, timeoutMs: () => settings.current().stepAccessTimeoutMs },
+        fetch,
+        warn,
+      );
 }
 
 /** Sem StepAccess configurado: recusa tudo o que precise de verificar acesso. */
@@ -71,18 +91,13 @@ function buildEngine(
   tools: ToolDefinition[],
   access: AccessChecker | undefined,
   metrics: Metrics,
+  settings: LiveSettings,
 ): Engine | undefined {
   const { engine: cfg } = config;
   if (pool === undefined || cfg.openRouter === undefined) return undefined;
   return createEngine({
-    settings: {
-      defaultModel: cfg.defaultModel,
-      fallbackModels: cfg.fallbackModels,
-      totalTimeoutMs: cfg.totalTimeoutMs,
-      maxAttempts: cfg.maxAttempts,
-      breakerThreshold: cfg.breaker.threshold,
-      breakerOpenMs: cfg.breaker.openMs,
-    },
+    // Lidas em cada pedido: o mesmo objeto enquanto nada muda na base de dados.
+    settings: () => settings.current(),
     tools,
     access: access ?? noAccess,
     store: new PgEngineStore(pool),
@@ -101,7 +116,7 @@ function buildEngine(
     ...(cfg.stepAccess !== undefined &&
       typeof cfg.stepAccess === 'object' && {
         usage: new StepAccessUsageReporter(
-          { ...cfg.stepAccess, timeoutMs: cfg.stepAccess.usageTimeoutMs },
+          { ...cfg.stepAccess, timeoutMs: () => settings.current().stepAccessUsageTimeoutMs },
           fetch,
           warn,
         ),
@@ -116,6 +131,7 @@ function runtimeFacts(
   engine: { ready: boolean; missing: string[] },
   core: Engine | undefined,
   memoriesOn: boolean,
+  settings: LiveSettings,
 ): () => Promise<RuntimeFacts> {
   const { engine: cfg } = config;
   const startedAt = new Date();
@@ -153,8 +169,8 @@ function runtimeFacts(
       engine: {
         ready: engine.ready,
         missing: engine.missing,
-        defaultModel: cfg.defaultModel,
-        maxAttempts: core?.settings.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+        defaultModel: settings.current().defaultModel,
+        maxAttempts: core?.settings.maxAttempts ?? settings.current().maxAttempts,
       },
       access: sa === undefined ? 'missing' : typeof sa === 'string' ? sa : 'live',
       openRouter: cfg.openRouter === undefined ? 'missing' : 'configured',
@@ -173,6 +189,7 @@ function buildAdmin(
   topology: () => Promise<Topology>,
   playground: Engine | undefined,
   countsUsage: boolean,
+  settings: LiveSettings,
 ): AdminRoutesOptions | undefined {
   if (config.adminApiSecret === undefined || pool === undefined) return undefined;
   const { engine: cfg } = config;
@@ -181,7 +198,7 @@ function buildAdmin(
     statusReport({
       runtime: await runtime(),
       tools: tools.map((t) => t.name),
-      defaultModel: cfg.defaultModel,
+      defaultModel: settings.current().defaultModel,
       diagnosticTool: cfg.enableDiagnosticTool,
     });
 
@@ -189,8 +206,8 @@ function buildAdmin(
     secret: config.adminApiSecret,
     pool,
     tools,
-    defaultModel: cfg.defaultModel,
-    defaultFallbackModels: cfg.fallbackModels,
+    settings,
+    breakers: playground === undefined ? undefined : { reset: (m) => playground.resetBreakers(m) },
     metrics,
     status,
     topology,
@@ -200,31 +217,17 @@ function buildAdmin(
       const mem = t.nodes.find((n) => n.id === 'core.memories')?.details;
       return describeModules({
         topology: t,
-        engine: {
-          defaultModel: cfg.defaultModel,
-          fallbackModels: cfg.fallbackModels,
-          maxAttempts: playground?.settings.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
-          totalTimeoutMs: cfg.totalTimeoutMs,
-          breaker: cfg.breaker,
-        },
+        settings: settings.describe(),
         access: sa === undefined ? 'missing' : typeof sa === 'string' ? sa : 'live',
         stepAccess:
           typeof sa === 'object'
-            ? {
-                origin: new URL(sa.url).origin,
-                timeoutMs: sa.timeoutMs,
-                usageTimeoutMs: sa.usageTimeoutMs,
-                componentUuid: sa.componentUuid,
-              }
-            : { origin: null, timeoutMs: null, usageTimeoutMs: null, componentUuid: null },
+            ? { origin: new URL(sa.url).origin, componentUuid: sa.componentUuid }
+            : { origin: null, componentUuid: null },
         openRouter: {
           baseUrl: cfg.openRouter?.baseUrl ?? null,
           configured: cfg.openRouter !== undefined,
         },
         memories: {
-          chars: MAX_MEMORY_CHARS,
-          perOrg: MAX_ORG_MEMORIES,
-          perUser: MAX_USER_MEMORIES,
           org: typeof mem?.['org'] === 'number' ? mem['org'] : 0,
           user: typeof mem?.['user'] === 'number' ? mem['user'] : 0,
         },
@@ -257,9 +260,18 @@ async function main(): Promise<void> {
     );
   }
 
+  // Definições alteráveis sem reiniciar: as do `.env` por omissão, as da base de dados por cima.
+  const settings = new LiveSettings(
+    settingsDefaults(config),
+    pool === undefined ? undefined : new PgSettingsStore(pool),
+    warn,
+  );
+  await settings.refresh();
+  settings.start();
+
   const metrics = new Metrics();
-  const access = accessChecker(config);
-  const core = buildEngine(config, pool, tools, access, metrics);
+  const access = accessChecker(config, settings);
+  const core = buildEngine(config, pool, tools, access, metrics, settings);
   const missing = missingEngineConfig(config.engine, pool !== undefined);
   // As rotas das ferramentas só se ligam com a configuração completa (incluindo o acesso).
   const engine =
@@ -269,25 +281,27 @@ async function main(): Promise<void> {
           engine: core,
           apiSecret: config.engine.apiSecret,
           metrics,
-          streamEnabled: config.engine.streamEnabled,
-          rateLimitPerMinute: config.engine.rateLimitPerMinute,
+          streamEnabled: () => settings.current().streamEnabled,
+          rateLimitPerMinute: () => settings.current().rateLimitPerMinute,
         };
   // As memórias só precisam da base de dados e do segredo do Salesforce, não do StepAccess.
   const memories =
     pool === undefined || config.engine.apiSecret === undefined
       ? undefined
-      : { memories: new Memories(new PgMemoryStore(pool)), apiSecret: config.engine.apiSecret };
+      : {
+          memories: new Memories(new PgMemoryStore(pool), () => memoryLimitsOf(settings.current())),
+          apiSecret: config.engine.apiSecret,
+        };
 
   const engineState = { ready: engine !== undefined, missing };
-  const runtime = runtimeFacts(config, pool, engineState, core, memories !== undefined);
+  const runtime = runtimeFacts(config, pool, engineState, core, memories !== undefined, settings);
 
   const topology = (): Promise<Topology> =>
     collectTopology({
       pool,
       runtime,
       tools,
-      defaultModel: config.engine.defaultModel,
-      defaultFallbackModels: config.engine.fallbackModels,
+      settings: () => settings.current(),
       metrics,
       breakers: () => core?.openBreakers() ?? [],
     });
@@ -302,6 +316,7 @@ async function main(): Promise<void> {
     core,
     // Só o StepAccess conta utilização; no modo aberto ou em bypass não há o que contar.
     typeof config.engine.stepAccess === 'object',
+    settings,
   );
 
   const app = await buildApp({
@@ -320,6 +335,9 @@ async function main(): Promise<void> {
               },
             },
           ],
+  });
+  app.addHook('onClose', async () => {
+    settings.stop();
   });
   if (pool !== undefined) app.addHook('onClose', async () => pool.end());
   logger = app.log;

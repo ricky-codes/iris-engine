@@ -1,5 +1,6 @@
 import type { AccessChecker, AccessRequest } from '../engine/access.js';
 import { EngineError } from '../engine/errors.js';
+import { read, type Live } from '../engine/live.js';
 import type { FetchLike } from './fetch.js';
 
 /** Onde e como falar com o StepAccess. */
@@ -8,7 +9,8 @@ export interface StepAccessConnection {
   user: string;
   password: string;
   componentUuid: string;
-  timeoutMs: number;
+  /** Lido em cada chamada (muda-se pela API de administração). */
+  timeoutMs: Live<number>;
 }
 
 interface StepAccessResponse {
@@ -42,7 +44,7 @@ export class StepAccessClient implements AccessChecker {
     try {
       res = await this.fetchFn(url, {
         headers: { Authorization: `Basic ${basic}`, Accept: 'application/json' },
-        signal: AbortSignal.timeout(this.config.timeoutMs),
+        signal: AbortSignal.timeout(read(this.config.timeoutMs)),
       });
     } catch (err) {
       this.log('stepaccess unreachable', { err: err instanceof Error ? err.name : String(err) });

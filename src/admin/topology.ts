@@ -297,7 +297,7 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
         ? `Pronto · ${String(tools.filter((t) => t.implemented).length)} ferramenta(s)`
         : `Desligado: falta ${rt.engine.missing.join(', ')}`,
       details: { defaultModel: rt.engine.defaultModel, maxAttempts: rt.engine.maxAttempts },
-      configure: { where: 'env', keys: ['LLM_DEFAULT_MODEL'] },
+      configure: { where: 'admin_api', path: '/v1/admin/settings' },
     },
     {
       id: 'core.memories',

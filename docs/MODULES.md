@@ -22,9 +22,9 @@ Legenda das definições: **API** = muda-se pela API de administração sem rein
 | -------------------------------------------------------------- | ------------------------------------------------------- |
 | Modelo, modelos de recurso, temperatura, tokens, tempo, ligada | **API** `PUT /v1/admin/tools/:name/config`              |
 | Versões do prompt e versão ativa                               | **API** `POST …/prompt-versions`, `PUT …/active-prompt` |
-| Modelo e modelos de recurso por omissão                        | env `LLM_DEFAULT_MODEL`, `LLM_FALLBACK_MODELS`          |
+| Modelo e modelos de recurso por omissão                        | **API** `PATCH /v1/admin/settings`                      |
 
-**Falta controlar pela API:** cache da configuração (hoje há uma consulta ao Postgres por pedido), modelo e recursos por omissão na base de dados, interruptor de streaming por ferramenta.
+**Falta controlar pela API:** cache da configuração (hoje há uma consulta ao Postgres por pedido), interruptor de streaming por ferramenta.
 
 ## PgMemoryStore
 
@@ -32,12 +32,12 @@ Legenda das definições: **API** = muda-se pela API de administração sem rein
 
 **Se falhar:** o pedido dá 500, tal como `/v1/memories` e `/v1/admin/memories`.
 
-| Definição                                              | Hoje                                           |
-| ------------------------------------------------------ | ---------------------------------------------- |
-| Criar, editar, apagar e purgar memórias da org         | **API** `/v1/admin/memories`                   |
-| Limites: 500 caracteres, 50 por org, 20 por utilizador | **código** (`src/engine/memory.ts`) e migração |
+| Definição                                              | Hoje                                                                     |
+| ------------------------------------------------------ | ------------------------------------------------------------------------ |
+| Criar, editar, apagar e purgar memórias da org         | **API** `/v1/admin/memories`                                             |
+| Limites: 500 caracteres, 50 por org, 20 por utilizador | **API** `PATCH /v1/admin/settings` (aplicados também pela base de dados) |
 
-**Falta controlar pela API:** limites editáveis e por org, desligar memórias pessoais por org, validade das memórias de utilizador.
+**Falta controlar pela API:** limites próprios por org, desligar memórias pessoais por org, validade das memórias de utilizador.
 
 ## StepAccessClient
 
@@ -45,13 +45,13 @@ Legenda das definições: **API** = muda-se pela API de administração sem rein
 
 **Se falhar:** 503 `service_unavailable` (sem resposta ou resposta inesperada), 403 `access_denied`, 429 `quota_exceeded`.
 
-| Definição                                  | Hoje                                       |
-| ------------------------------------------ | ------------------------------------------ |
-| Modo de acesso                             | env `ACCESS_MODE`                          |
-| URL, utilizador, palavra-passe, componente | env `STEPACCESS_*` (segredos nunca na API) |
-| Tempo máximo                               | env `STEPACCESS_TIMEOUT_MS`                |
+| Definição                                  | Hoje                                                       |
+| ------------------------------------------ | ---------------------------------------------------------- |
+| Modo de acesso                             | env `ACCESS_MODE`                                          |
+| URL, utilizador, palavra-passe, componente | env `STEPACCESS_*` (segredos nunca na API)                 |
+| Tempo máximo                               | **API** `PATCH /v1/admin/settings` (`stepAccessTimeoutMs`) |
 
-**Falta controlar pela API:** tempo máximo editável; ação de **testar a ligação** (sem contar utilização); cache curta de decisões positivas (só com acordo do StepAccess, porque ele conta cada chamada).
+**Falta controlar pela API:** ação de **testar a ligação** (sem contar utilização); cache curta de decisões positivas (só com acordo do StepAccess, porque ele conta cada chamada).
 
 ## StepAccessUsageReporter
 
@@ -59,11 +59,11 @@ Legenda das definições: **API** = muda-se pela API de administração sem rein
 
 **Se falhar:** o pedido não é afetado, mas **o custo perde-se do StepAccess**: não há fila para reenviar.
 
-| Definição                         | Hoje                                   |
-| --------------------------------- | -------------------------------------- |
-| Ligado                            | só existe com `ACCESS_MODE=stepaccess` |
-| Tentativas (2) e espera (1000 ms) | **código**                             |
-| Tempo máximo                      | env `STEPACCESS_USAGE_TIMEOUT_MS`      |
+| Definição                         | Hoje                                                            |
+| --------------------------------- | --------------------------------------------------------------- |
+| Ligado                            | só existe com `ACCESS_MODE=stepaccess`                          |
+| Tentativas (2) e espera (1000 ms) | **código**                                                      |
+| Tempo máximo                      | **API** `PATCH /v1/admin/settings` (`stepAccessUsageTimeoutMs`) |
 
 **Falta controlar pela API:** uma fila persistente (`cost_outbox`, só metadados) com reenvio automático, o número de pendentes no `/status` e um aviso na topologia quando cresce. É a lacuna mais séria dos cinco módulos.
 
@@ -73,14 +73,14 @@ Legenda das definições: **API** = muda-se pela API de administração sem rein
 
 **Se falhar:** 502 `provider_unavailable` (depois de tentar os modelos de recurso) ou 504 `timeout`.
 
-| Definição                                              | Hoje                                                                   |
-| ------------------------------------------------------ | ---------------------------------------------------------------------- |
-| Modelo e modelos de recurso **por ferramenta**         | **API** `PUT /v1/admin/tools/:name/config`                             |
-| Catálogo de modelos para escolher                      | **API** `GET /v1/admin/models`                                         |
-| Chave e URL base                                       | env `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`                        |
-| Modelo e recursos por omissão, teto de tempo do pedido | env `LLM_DEFAULT_MODEL`, `LLM_FALLBACK_MODELS`, `LLM_TOTAL_TIMEOUT_MS` |
-| Tentativas por modelo (2)                              | env `LLM_MAX_ATTEMPTS`                                                 |
-| Disjuntor (3 falhas, 60 s)                             | env `LLM_BREAKER_THRESHOLD`, `LLM_BREAKER_OPEN_MS`                     |
-| Política de dados (`deny`)                             | **código**                                                             |
+| Definição                                              | Hoje                                                                                      |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| Modelo e modelos de recurso **por ferramenta**         | **API** `PUT /v1/admin/tools/:name/config`                                                |
+| Catálogo de modelos para escolher                      | **API** `GET /v1/admin/models`                                                            |
+| Chave e URL base                                       | env `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`                                           |
+| Modelo e recursos por omissão, teto de tempo do pedido | **API** `PATCH /v1/admin/settings`                                                        |
+| Tentativas por modelo (2)                              | **API** `PATCH /v1/admin/settings`                                                        |
+| Disjuntor (3 falhas, 60 s)                             | **API** `PATCH /v1/admin/settings`; fechar à mão: **API** `POST /v1/admin/breakers/reset` |
+| Política de dados (`deny`)                             | **código**                                                                                |
 
-**Falta controlar pela API:** valores por omissão e teto de tempo na base de dados; tentativas e disjuntor editáveis (com botão para fechar o disjuntor); política de dados por ferramenta, com auditoria; ordem e lista de fornecedores; limiar do aviso de créditos na topologia (hoje 90%); estado da rotação da chave (só leitura, últimos 4 caracteres).
+**Falta controlar pela API:** política de dados por ferramenta, com auditoria; ordem e lista de fornecedores; limiar do aviso de créditos na topologia (hoje 90%); estado da rotação da chave (só leitura, últimos 4 caracteres).

@@ -1,9 +1,14 @@
 import { Type, type Static } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
+import { RANGES } from './settings/settings.js';
 
 /**
  * Único ponto do código que lê `process.env`.
  * O processo não arranca com configuração inválida.
+ *
+ * Os tempos, os modelos por omissão, as tentativas, o disjuntor, o streaming e o limite de
+ * pedidos são só o valor inicial das definições: mudam-se sem reiniciar pela API de
+ * administração (ver src/settings/settings.ts), e o valor gravado prevalece.
  */
 const EnvSchema = Type.Object({
   NODE_ENV: Type.Union(
@@ -43,9 +48,12 @@ const EnvSchema = Type.Object({
       pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
     }),
   ),
-  STEPACCESS_TIMEOUT_MS: Type.Integer({ minimum: 100, default: 3000 }),
+  STEPACCESS_TIMEOUT_MS: Type.Integer({ ...RANGES.stepAccessTimeoutMs, default: 3000 }),
   // O envio do custo corre em segundo plano, por isso aguenta mais do que a verificação de acesso.
-  STEPACCESS_USAGE_TIMEOUT_MS: Type.Integer({ minimum: 100, default: 10_000 }),
+  STEPACCESS_USAGE_TIMEOUT_MS: Type.Integer({
+    ...RANGES.stepAccessUsageTimeoutMs,
+    default: 10_000,
+  }),
   // Só fora de produção: deixa passar todos os pedidos sem perguntar ao StepAccess.
   STEPACCESS_BYPASS: Type.Boolean({ default: false }),
   // Quem controla o acesso às ferramentas. `stepaccess`: licenças e utilização no StepAccess.
@@ -66,17 +74,17 @@ const EnvSchema = Type.Object({
   LLM_FALLBACK_MODELS: Type.Optional(Type.String()),
   // Teto de tempo para todas as chamadas ao modelo de um pedido. Fica abaixo do limite de
   // callout do Apex (120 s), com margem para o resto do pedido.
-  LLM_TOTAL_TIMEOUT_MS: Type.Integer({ minimum: 2000, maximum: 115_000, default: 30_000 }),
+  LLM_TOTAL_TIMEOUT_MS: Type.Integer({ ...RANGES.totalTimeoutMs, default: 30_000 }),
   // Quantas vezes se pede a cada modelo uma resposta válida antes de passar ao seguinte.
-  LLM_MAX_ATTEMPTS: Type.Integer({ minimum: 1, maximum: 5, default: 2 }),
+  LLM_MAX_ATTEMPTS: Type.Integer({ ...RANGES.maxAttempts, default: 2 }),
   // Disjuntor por modelo: falhas seguidas do fornecedor para o saltar, e durante quanto tempo.
-  LLM_BREAKER_THRESHOLD: Type.Integer({ minimum: 1, maximum: 20, default: 3 }),
-  LLM_BREAKER_OPEN_MS: Type.Integer({ minimum: 1000, maximum: 3_600_000, default: 60_000 }),
+  LLM_BREAKER_THRESHOLD: Type.Integer({ ...RANGES.breakerThreshold, default: 3 }),
+  LLM_BREAKER_OPEN_MS: Type.Integer({ ...RANGES.breakerOpenMs, default: 60_000 }),
 
   // Interruptor geral do streaming: `false` recusa `"stream": true` em todas as ferramentas.
   STREAM_ENABLED: Type.Boolean({ default: true }),
   // Pedidos por minuto, por org, nas rotas de ferramentas (por instância). 0 = sem limite.
-  RATE_LIMIT_PER_MINUTE: Type.Integer({ minimum: 0, maximum: 100_000, default: 0 }),
+  RATE_LIMIT_PER_MINUTE: Type.Integer({ ...RANGES.rateLimitPerMinute, default: 0 }),
 
   // Ferramenta de diagnóstico, para testar a ligação ponta a ponta.
   ENABLE_DIAGNOSTIC_TOOL: Type.Boolean({ default: false }),
@@ -104,9 +112,6 @@ export interface StepAccessConfig {
   user: string;
   password: string;
   componentUuid: string;
-  timeoutMs: number;
-  /** Tempo máximo do envio do custo (`POST /v1/usage/cost`). */
-  usageTimeoutMs: number;
 }
 
 export interface EngineConfig {
@@ -126,6 +131,9 @@ export interface EngineConfig {
   streamEnabled: boolean;
   /** Pedidos por minuto e por org; 0 = sem limite. */
   rateLimitPerMinute: number;
+  /** Tempo máximo da verificação de acesso e do envio do custo ao StepAccess. */
+  stepAccessTimeoutMs: number;
+  stepAccessUsageTimeoutMs: number;
   enableDiagnosticTool: boolean;
 }
 
@@ -237,8 +245,6 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
                 user: converted.STEPACCESS_USER,
                 password: converted.STEPACCESS_PASSWORD,
                 componentUuid: converted.STEPACCESS_COMPONENT_UUID,
-                timeoutMs: converted.STEPACCESS_TIMEOUT_MS,
-                usageTimeoutMs: converted.STEPACCESS_USAGE_TIMEOUT_MS,
               }
             : undefined,
     openRouter:
@@ -255,6 +261,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     breaker: { threshold: converted.LLM_BREAKER_THRESHOLD, openMs: converted.LLM_BREAKER_OPEN_MS },
     streamEnabled: converted.STREAM_ENABLED,
     rateLimitPerMinute: converted.RATE_LIMIT_PER_MINUTE,
+    stepAccessTimeoutMs: converted.STEPACCESS_TIMEOUT_MS,
+    stepAccessUsageTimeoutMs: converted.STEPACCESS_USAGE_TIMEOUT_MS,
     enableDiagnosticTool: converted.ENABLE_DIAGNOSTIC_TOOL,
   };
 

@@ -278,7 +278,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
   }
 
   async function catalogRow(name: string): Promise<ToolCatalogRow> {
-    const row = (await listToolCatalog(opts.pool)).find((r) => r.name === name);
+    const [row] = await listToolCatalog(opts.pool, name);
     if (row === undefined) throw new AppError('unknown_tool', 404, 'Ferramenta desconhecida.');
     return row;
   }

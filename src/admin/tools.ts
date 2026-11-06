@@ -36,8 +36,11 @@ export interface ToolCatalogRow {
   promptVersionCount: number;
 }
 
-/** Todas as ferramentas do catálogo, com a configuração e a versão ativa do prompt, se houver. */
-export async function listToolCatalog(pool: Pool): Promise<ToolCatalogRow[]> {
+/**
+ * As ferramentas do catálogo (ou só `name`), com a configuração e a versão ativa do prompt, se
+ * houver. Uma só query: os modelos de recurso e as versões são agregados de uma vez, por junção.
+ */
+export async function listToolCatalog(pool: Pool, name?: string): Promise<ToolCatalogRow[]> {
   const { rows } = await pool.query<{
     code: string;
     model: string | null;
@@ -46,22 +49,28 @@ export async function listToolCatalog(pool: Pool): Promise<ToolCatalogRow[]> {
     timeout_ms: number | null;
     is_enabled: boolean | null;
     active_version: number | null;
-    version_count: number;
-    fallbacks: string[];
+    version_count: number | null;
+    fallbacks: string[] | null;
   }>(
     `SELECT t.code, lm.code AS model, tc.temperature, tc.max_output_tokens, tc.timeout_ms,
-            tc.is_enabled,
-            ARRAY(SELECT fm.code FROM tool_config_fallback f
-                  JOIN llm_model fm ON fm.llm_model_id = f.llm_model_id
-                  WHERE f.tool_id = t.tool_id ORDER BY f.position) AS fallbacks,
-            (SELECT pv.version FROM prompt p JOIN prompt_version pv ON pv.prompt_id = p.prompt_id
-              WHERE p.tool_id = t.tool_id AND pv.is_active) AS active_version,
-            (SELECT count(*)::int FROM prompt p JOIN prompt_version pv ON pv.prompt_id = p.prompt_id
-              WHERE p.tool_id = t.tool_id) AS version_count
+            tc.is_enabled, fb.fallbacks, pr.active_version, pr.version_count
      FROM tool t
      LEFT JOIN tool_config tc ON tc.tool_id = t.tool_id
      LEFT JOIN llm_model lm   ON lm.llm_model_id = tc.llm_model_id
+     LEFT JOIN (
+       SELECT f.tool_id, array_agg(fm.code ORDER BY f.position) AS fallbacks
+       FROM tool_config_fallback f JOIN llm_model fm ON fm.llm_model_id = f.llm_model_id
+       GROUP BY f.tool_id
+     ) fb ON fb.tool_id = t.tool_id
+     LEFT JOIN (
+       SELECT p.tool_id, max(pv.version) FILTER (WHERE pv.is_active) AS active_version,
+              count(*)::int AS version_count
+       FROM prompt p JOIN prompt_version pv ON pv.prompt_id = p.prompt_id
+       GROUP BY p.tool_id
+     ) pr ON pr.tool_id = t.tool_id
+     WHERE $1::text IS NULL OR t.code = $1
      ORDER BY t.code`,
+    [name ?? null],
   );
   return rows.map((r) => ({
     name: r.code,
@@ -78,11 +87,11 @@ export async function listToolCatalog(pool: Pool): Promise<ToolCatalogRow[]> {
             maxOutputTokens: r.max_output_tokens,
             timeoutMs: r.timeout_ms,
             enabled: r.is_enabled,
-            fallbackModels: r.fallbacks,
+            fallbackModels: r.fallbacks ?? [],
             source: 'database',
           },
     activePromptVersion: r.active_version,
-    promptVersionCount: r.version_count,
+    promptVersionCount: r.version_count ?? 0,
   }));
 }
 
@@ -105,20 +114,20 @@ export async function saveToolConfig(
   try {
     await client.query('BEGIN');
     const id = await toolId(client, name);
-    const modelId = async (code: string): Promise<number | undefined> => {
-      await client.query(
-        `INSERT INTO llm_model (ai_provider_id, code)
-         SELECT ai_provider_id, $1 FROM ai_provider WHERE code = 'openrouter'
-         ON CONFLICT (ai_provider_id, code) DO NOTHING`,
-        [code],
-      );
-      const { rows } = await client.query<{ llm_model_id: number }>(
-        `SELECT lm.llm_model_id FROM llm_model lm JOIN ai_provider ap USING (ai_provider_id)
-         WHERE ap.code = 'openrouter' AND lm.code = $1`,
-        [code],
-      );
-      return rows[0]?.llm_model_id;
-    };
+    // Todos os modelos (principal e de recurso) entram no catálogo de uma vez.
+    const codes = [input.model, ...input.fallbackModels];
+    await client.query(
+      `INSERT INTO llm_model (ai_provider_id, code)
+       SELECT ai_provider_id, unnest($1::text[]) FROM ai_provider WHERE code = 'openrouter'
+       ON CONFLICT (ai_provider_id, code) DO NOTHING`,
+      [codes],
+    );
+    const { rows } = await client.query<{ llm_model_id: number; code: string }>(
+      `SELECT lm.llm_model_id, lm.code FROM llm_model lm JOIN ai_provider ap USING (ai_provider_id)
+       WHERE ap.code = 'openrouter' AND lm.code = ANY($1::text[])`,
+      [codes],
+    );
+    const modelId = new Map(rows.map((r) => [r.code, r.llm_model_id]));
     await client.query(
       `INSERT INTO tool_config (tool_id, llm_model_id, temperature, max_output_tokens, timeout_ms, is_enabled)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -128,19 +137,21 @@ export async function saveToolConfig(
          is_enabled = EXCLUDED.is_enabled`,
       [
         id,
-        await modelId(input.model),
+        modelId.get(input.model) ?? null,
         input.temperature,
         input.maxOutputTokens,
         input.timeoutMs,
         input.enabled,
       ],
     );
-    // Os modelos de recurso substituem-se por inteiro, pela ordem recebida.
+    // Os modelos de recurso substituem-se por inteiro, pela ordem recebida, numa só escrita.
     await client.query('DELETE FROM tool_config_fallback WHERE tool_id = $1', [id]);
-    for (const [index, code] of input.fallbackModels.entries()) {
+    if (input.fallbackModels.length > 0) {
       await client.query(
-        'INSERT INTO tool_config_fallback (tool_id, position, llm_model_id) VALUES ($1, $2, $3)',
-        [id, index + 1, await modelId(code)],
+        `INSERT INTO tool_config_fallback (tool_id, position, llm_model_id)
+         SELECT $1, f.position, f.llm_model_id
+         FROM unnest($2::int[]) WITH ORDINALITY AS f(llm_model_id, position)`,
+        [id, input.fallbackModels.map((code) => modelId.get(code) ?? null)],
       );
     }
     await client.query('COMMIT');

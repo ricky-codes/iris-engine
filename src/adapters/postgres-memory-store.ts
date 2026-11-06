@@ -13,17 +13,20 @@ import {
   type RequestMemories,
 } from '../engine/memory.js';
 
+const FROM = `
+  FROM memory m
+  JOIN memory_scope sc  ON sc.memory_scope_id = m.memory_scope_id
+  JOIN memory_source so ON so.memory_source_id = m.memory_source_id
+  LEFT JOIN org_memory om  ON om.memory_id = m.memory_id
+  LEFT JOIN user_memory um ON um.memory_id = m.memory_id`;
+
 const SELECT = `
   SELECT m.memory_id, sc.code AS scope, so.code AS source,
          COALESCE(om.sf_org_ref, um.sf_org_ref) AS sf_org_ref, um.sf_user_ref,
          m.content, m.created_at, m.updated_at,
          ARRAY(SELECT t.code FROM memory_tool mt JOIN tool t ON t.tool_id = mt.tool_id
                WHERE mt.memory_id = m.memory_id ORDER BY t.code) AS tools
-  FROM memory m
-  JOIN memory_scope sc  ON sc.memory_scope_id = m.memory_scope_id
-  JOIN memory_source so ON so.memory_source_id = m.memory_source_id
-  LEFT JOIN org_memory om  ON om.memory_id = m.memory_id
-  LEFT JOIN user_memory um ON um.memory_id = m.memory_id`;
+  ${FROM}`;
 
 const WHERE = `
   WHERE ($1::text IS NULL OR COALESCE(om.sf_org_ref, um.sf_org_ref) = $1)
@@ -134,7 +137,8 @@ export class PgMemoryStore implements MemoryStore {
 
   async count(filter: MemoryFilter): Promise<number> {
     const { rows } = await this.pool.query<{ n: number }>(
-      `SELECT count(*)::int AS n FROM (${SELECT} ${WHERE}) x`,
+      // Só conta: sem a lista de ferramentas de cada memória.
+      `SELECT count(*)::int AS n ${FROM} ${WHERE}`,
       params(filter),
     );
     return rows[0]?.n ?? 0;
@@ -219,15 +223,17 @@ export class PgMemoryStore implements MemoryStore {
   }
 
   async summary(orgId: string): Promise<MemorySummary> {
-    const org = await this.pool.query<{ n: number }>(
-      'SELECT count(*)::int AS n FROM org_memory WHERE sf_org_ref = $1',
-      [orgId],
-    );
-    const users = await this.pool.query<{ sf_user_ref: string; n: number }>(
-      `SELECT sf_user_ref, count(*)::int AS n FROM user_memory WHERE sf_org_ref = $1
-       GROUP BY sf_user_ref ORDER BY sf_user_ref`,
-      [orgId],
-    );
+    const [org, users] = await Promise.all([
+      this.pool.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM org_memory WHERE sf_org_ref = $1',
+        [orgId],
+      ),
+      this.pool.query<{ sf_user_ref: string; n: number }>(
+        `SELECT sf_user_ref, count(*)::int AS n FROM user_memory WHERE sf_org_ref = $1
+         GROUP BY sf_user_ref ORDER BY sf_user_ref`,
+        [orgId],
+      ),
+    ]);
     return {
       orgId,
       org: { count: org.rows[0]?.n ?? 0, limit: MAX_ORG_MEMORIES },
@@ -268,11 +274,11 @@ async function resolveTools(client: PoolClient, codes: string[]): Promise<number
   return known.rows.map((r) => r.tool_id);
 }
 
+/** As ferramentas da memória, numa só escrita. */
 async function setMemoryTools(client: PoolClient, memoryId: string, toolIds: number[]) {
-  for (const toolId of toolIds) {
-    await client.query('INSERT INTO memory_tool (memory_id, tool_id) VALUES ($1, $2)', [
-      memoryId,
-      toolId,
-    ]);
-  }
+  if (toolIds.length === 0) return;
+  await client.query('INSERT INTO memory_tool (memory_id, tool_id) SELECT $1, unnest($2::int[])', [
+    memoryId,
+    toolIds,
+  ]);
 }

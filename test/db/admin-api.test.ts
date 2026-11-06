@@ -77,7 +77,8 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
         pool: db.pool,
         tools: [tool],
         settings,
-        breakers: { reset: (m) => core.resetBreakers(m) },
+        breakers: { status: () => core.breakers(), reset: (m) => core.resetBreakers(m) },
+        instanceId: 'teste:1',
         metrics,
         status: async () => ({ engine: { ready: true } }),
         topology: () =>
@@ -132,6 +133,16 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
       headers: WRITE,
       ...(payload !== undefined && { payload: payload as object }),
     });
+
+  describe('alertas (removidos)', () => {
+    it('as rotas já não existem e nada fala de alertas nem de webhook', async () => {
+      expect((await get('/v1/admin/alerts')).statusCode).toBe(404);
+      expect((await send('POST', '/v1/admin/alerts/test')).statusCode).toBe(404);
+      for (const url of ['/v1/admin/topology', '/v1/admin/settings']) {
+        expect((await get(url)).payload).not.toMatch(/alert|webhook/i);
+      }
+    });
+  });
 
   describe('autenticação', () => {
     it('sem credencial: 401', async () => {
@@ -475,6 +486,213 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
     });
   });
 
+  describe('valores por ferramenta, pipeline e disjuntores', () => {
+    const config = {
+      model: 'a',
+      temperature: 0.2,
+      maxOutputTokens: 300,
+      timeoutMs: 15000,
+      enabled: true,
+    };
+    type Overrides = Record<string, { value: unknown; source: string }>;
+
+    it('grava, mostra a origem de cada valor, aplica no motor e null volta à global', async () => {
+      const saved = await send('PUT', '/v1/admin/tools/diagnostic/config', {
+        ...config,
+        maxAttempts: 4,
+        rateLimitPerMinute: 0,
+        streamEnabled: null,
+      });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json<{ config: { overrides: Overrides } }>().config.overrides).toEqual({
+        maxAttempts: { value: 4, source: 'tool' },
+        totalTimeoutMs: { value: 30_000, source: 'engine' },
+        rateLimitPerMinute: { value: 0, source: 'tool' },
+        streamEnabled: { value: true, source: 'engine' },
+      });
+      const listed = (await get('/v1/admin/tools')).json<{
+        tools: { name: string; config: { overrides: Overrides } | null }[];
+      }>();
+      expect(
+        listed.tools.find((t) => t.name === 'diagnostic')?.config?.overrides.maxAttempts,
+      ).toEqual({
+        value: 4,
+        source: 'tool',
+      });
+      // O playground mostra os valores em vigor para esta ferramenta.
+      const run = await send('POST', '/v1/admin/playground/diagnostic/preview', {
+        orgId: sfId('00D'),
+        userId: sfId('005'),
+        input: { message: 'olá' },
+      });
+      expect(run.json()).toMatchObject({
+        settings: {
+          maxAttempts: 4,
+          rateLimitPerMinute: 0,
+          streamEnabled: true,
+          overrides: { maxAttempts: 4, totalTimeoutMs: null, streamEnabled: null },
+        },
+      });
+
+      // Sem os campos, voltam à definição global.
+      const cleared = await send('PUT', '/v1/admin/tools/diagnostic/config', config);
+      expect(
+        cleared.json<{ config: { overrides: Overrides } }>().config.overrides.maxAttempts,
+      ).toEqual({
+        value: 2,
+        source: 'engine',
+      });
+      await send('DELETE', '/v1/admin/tools/diagnostic/config');
+    });
+
+    it('recusa valores fora dos limites com as mensagens de PATCH /settings, e campos a mais', async () => {
+      const bad = await send('PUT', '/v1/admin/tools/diagnostic/config', {
+        ...config,
+        maxAttempts: 9,
+        totalTimeoutMs: 1000,
+        rateLimitPerMinute: -1,
+        streamEnabled: 'sim',
+      });
+      expect(bad.statusCode).toBe(422);
+      const details = bad.json<{ error: { details: { path: string; issue: string }[] } }>().error
+        .details;
+      expect(details.map((d) => d.path)).toEqual([
+        'body.maxAttempts',
+        'body.totalTimeoutMs',
+        'body.rateLimitPerMinute',
+        'body.streamEnabled',
+      ]);
+      const viaSettings = await send('PATCH', '/v1/admin/settings', { maxAttempts: 9 });
+      expect(details[0]?.issue).toBe(
+        viaSettings.json<{ error: { details: { issue: string }[] } }>().error.details[0]?.issue,
+      );
+      const extra = await send('PUT', '/v1/admin/tools/diagnostic/config', { ...config, nope: 1 });
+      expect(extra.statusCode).toBe(422);
+      expect((await get('/v1/admin/tools/diagnostic')).json()).toMatchObject({
+        config: { source: 'default' },
+      });
+    });
+
+    it('pipeline: os passos pela ordem do código, o que controla cada um e a cadeia de modelos', async () => {
+      const saved = await send('PUT', '/v1/admin/tools/diagnostic/config', {
+        ...config,
+        model: 'outro/modelo',
+        fallbackModels: ['a'],
+        rateLimitPerMinute: 7,
+      });
+      expect(saved.statusCode).toBe(200);
+      const res = await get('/v1/admin/tools/diagnostic/pipeline');
+      expect(res.statusCode).toBe(200);
+      const p = res.json<{
+        tool: string;
+        since: string;
+        stages: {
+          id: string;
+          status: string;
+          counts: { passed: number; stopped: number };
+          toolConfig: string[];
+          settings: string[];
+          overrides: string[];
+          env: string[];
+          details: Record<string, unknown>;
+        }[];
+        models: { model: string; role: string; breaker: { state: string } }[];
+      }>();
+      expect(p.tool).toBe('diagnostic');
+      expect(p.since).toBe(metrics.since);
+      expect(p.stages.map((x) => x.id)).toEqual([
+        'request',
+        'gate',
+        'rate',
+        'access',
+        'memories',
+        'prompt',
+        'models',
+        'validate',
+        'response',
+      ]);
+      const stage = (id: string) => p.stages.find((x) => x.id === id);
+      expect(stage('gate')).toMatchObject({ status: 'ok', toolConfig: ['enabled'] });
+      expect(stage('rate')).toMatchObject({
+        settings: ['rateLimitPerMinute'],
+        overrides: ['rateLimitPerMinute'],
+        details: { limitPerMinute: 7, source: 'tool' },
+      });
+      expect(stage('access')).toMatchObject({ details: { mode: 'open', latencyMs: null } });
+      expect(stage('access')?.env).toContain('STEPACCESS_PASSWORD');
+      expect(stage('prompt')).toMatchObject({ details: { source: 'code', activeVersion: null } });
+      expect(stage('validate')).toMatchObject({
+        details: { maxAttempts: 2, maxAttemptsSource: 'engine' },
+      });
+      expect(p.models.map((m) => [m.model, m.role, m.breaker.state])).toEqual([
+        ['outro/modelo', 'primary', 'closed'],
+        ['a', 'fallback', 'closed'],
+      ]);
+      // Nunca valores do .env, segredos nem ids.
+      expect(res.payload).not.toMatch(/00D[A-Za-z0-9]{15}|Bearer|sk-or/);
+      await send('DELETE', '/v1/admin/tools/diagnostic/config');
+    });
+
+    it('pipeline de uma ferramenta sem implementação: passos off e sem modelos; desconhecida: 404', async () => {
+      const p = (await get('/v1/admin/tools/sentiment/pipeline')).json<{
+        stages: { status: string; summary: string }[];
+        models: unknown[];
+      }>();
+      expect(new Set(p.stages.map((x) => x.status))).toEqual(new Set(['off']));
+      expect(p.stages[0]?.summary).toBe('Sem implementação neste servidor');
+      expect(p.models).toEqual([]);
+      const missing = await get('/v1/admin/tools/nao_existe/pipeline');
+      expect(missing.statusCode).toBe(404);
+      expect(missing.json()).toMatchObject({ error: { code: 'unknown_tool' } });
+    });
+
+    it('disjuntores: estado completo de cada modelo chamado, por instância', async () => {
+      expect((await get('/v1/admin/breakers')).json()).toEqual({
+        instanceId: 'teste:1',
+        breakers: [],
+      });
+      llm = fakeLlm(new EngineError('provider_unavailable', 'Indisponível.'));
+      core = createEngine({
+        settings: { defaultModel: 'google/gemini-2.5-flash', breakerThreshold: 1 },
+        tools: [tool],
+        store: new PgEngineStore(db.pool),
+        memories: new PgMemoryStore(db.pool),
+        llm: llm.llm,
+        access: access.access,
+      });
+      await core
+        .run('diagnostic', { orgId: sfId('00D'), userId: sfId('005'), input: { message: 'x' } })
+        .catch(() => undefined);
+      const body = (await get('/v1/admin/breakers')).json<{
+        breakers: Record<string, unknown>[];
+      }>();
+      expect(body.breakers).toHaveLength(1);
+      expect(body.breakers[0]).toMatchObject({
+        model: 'google/gemini-2.5-flash',
+        state: 'open',
+        consecutiveFailures: 1,
+        lastError: { reason: 'provider_unavailable' },
+      });
+      expect(Object.keys(body.breakers[0] ?? {}).sort()).toEqual([
+        'consecutiveFailures',
+        'lastError',
+        'model',
+        'openUntil',
+        'openedAt',
+        'state',
+      ]);
+      expect(typeof body.breakers[0]?.['openUntil']).toBe('string');
+      await send('POST', '/v1/admin/breakers/reset');
+      expect((await get('/v1/admin/breakers')).json()).toMatchObject({
+        breakers: [{ state: 'closed', consecutiveFailures: 0, openedAt: null, openUntil: null }],
+      });
+      // O pipeline mostra o disjuntor da cadeia.
+      expect((await get('/v1/admin/tools/diagnostic/pipeline')).json()).toMatchObject({
+        models: [{ model: 'google/gemini-2.5-flash', breaker: { state: 'closed' } }],
+      });
+    });
+  });
+
   describe('prompts', () => {
     it('cria versões, escolhe a ativa e volta ao prompt do código', async () => {
       const url = '/v1/admin/tools/reply/prompt-versions';
@@ -635,7 +853,8 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
         ok: true,
         result: { reply: 'Olá do playground' },
         countedUsage: false,
-        settings: { model: 'outro/modelo' },
+        settings: { model: 'outro/modelo', maxAttempts: 2, streamEnabled: true },
+        timings: { access: 0 },
         prompt: { system: 'Prompt de teste.' },
         attempts: [
           {
@@ -649,6 +868,17 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
       });
       expect(llm.requests[0]?.model).toBe('outro/modelo');
       expect(access.calls).toHaveLength(0);
+    });
+
+    it('a execução devolve o tempo de cada passo', async () => {
+      const res = await send(
+        'POST',
+        '/v1/admin/playground/diagnostic/run',
+        body(sfId('00D'), sfId('005')),
+      );
+      const timings = res.json<{ timings: Record<string, number> }>().timings;
+      expect(Object.keys(timings)).toEqual(['access', 'memories', 'prompt', 'models', 'validate']);
+      expect(Object.values(timings).every((v) => Number.isInteger(v) && v >= 0)).toBe(true);
     });
 
     it('countUsage conta no StepAccess', async () => {
@@ -669,6 +899,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
           tools: [tool],
           settings: testSettings(),
           breakers: undefined,
+          instanceId: 'teste:1',
           metrics,
           status: async () => ({}),
           topology: async () => {
@@ -717,6 +948,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
           tools: [tool],
           settings: testSettings(),
           breakers: undefined,
+          instanceId: 'teste:1',
           metrics,
           status: async () => ({}),
           topology: async () => {

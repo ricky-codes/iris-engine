@@ -26,6 +26,8 @@ describe('createEngine', () => {
       totalTimeoutMs: 30_000,
       breakerThreshold: 3,
       breakerOpenMs: 60_000,
+      streamEnabled: true,
+      rateLimitPerMinute: 0,
     });
   });
 
@@ -158,7 +160,7 @@ describe('Engine.preview e Engine.trial', () => {
       ...fakeStore(undefined, { enabled: false }),
     });
     await expect(engine.run('diagnostic', REQ)).rejects.toMatchObject({
-      code: 'service_unavailable',
+      code: 'tool_disabled',
     });
     await expect(engine.trial('diagnostic', REQ, { model: 'outro' })).resolves.toMatchObject({
       result: { reply: 'Olá!' },

@@ -105,15 +105,17 @@ Todas as respostas levam `X-Request-Id`. Os erros têm sempre este formato:
 
 ## Motor
 
-Um pedido `POST /v1/tools/<nome>` passa sempre por estes passos, por esta ordem:
+Um pedido `POST /v1/tools/<nome>` passa sempre por estes passos, por esta ordem (os mesmos ids de `src/engine/pipeline.ts`, que a consola mostra em `GET /v1/admin/tools/:name/pipeline`):
 
-1. **Credencial:** `Authorization: Bearer <API_SECRET>`, comparada em tempo constante. Falha: **401**, antes de olhar para o corpo.
-2. **Validação:** `orgId` (`00D…`, 18 caracteres), `userId` (`005…`, 18 caracteres), `version` opcional e os campos da ferramenta. Campos a mais são recusados. Falha: **422**, sem gastar utilização.
-3. **Configuração da ferramenta:** modelo, temperatura, limites e prompt. A base de dados (`tool_config`, versão ativa em `prompt_version`) substitui os valores do código. Ferramenta desativada: **503**.
-4. **StepAccess:** `GET /v1/access` com org, utilizador e o componente IRIS. Conta utilização. Sem acesso: **403** `access_denied`; limite atingido: **429** `quota_exceeded`; StepAccess indisponível ou resposta inesperada: **503** (falha fechada).
-5. **Memórias:** as da org (regras da empresa, prevalecem) e as do utilizador, que valham para esta ferramenta. Entram no prompt numa secção própria, uma por linha.
-6. **Modelo (OpenRouter):** resposta em JSON com o esquema da ferramenta, só em fornecedores que não guardam nem treinam com os dados (`data_collection: deny`). Indisponível: **502** `provider_unavailable`; tempo esgotado: **504** `timeout`.
-7. **Validação da resposta:** se não cumprir o esquema, tenta uma segunda vez; à segunda falha: **502** `invalid_model_output`.
+1. **Pedido** (`request`): `Authorization: Bearer <API_SECRET>`, comparada em tempo constante (falha: **401**, antes de olhar para o corpo); depois `orgId` (`00D…`, 18 caracteres), `userId` (`005…`, 18 caracteres), `version` opcional e os campos da ferramenta. Campos a mais são recusados. Falha: **422**, sem gastar utilização.
+2. **Ligada** (`gate`): modelo, temperatura, limites e prompt. A base de dados (`tool_config`, versão ativa em `prompt_version`) substitui os valores do código. Ferramenta desativada: **503** `tool_disabled`. `stream: true` com o streaming desligado (na ferramenta ou em geral): **422**.
+3. **Limite de pedidos** (`rate`): pedidos por minuto e por org, por instância. Com um limite próprio da ferramenta, conta à parte (por org e ferramenta). Acima: **429** `rate_limited`, com `Retry-After`.
+4. **Acesso** (`access`): `GET /v1/access` ao StepAccess com org, utilizador e o componente IRIS. Conta utilização. Sem acesso: **403** `access_denied`; limite atingido: **429** `quota_exceeded`; StepAccess indisponível ou resposta inesperada: **503** `service_unavailable` (falha fechada).
+5. **Memórias** (`memories`): as da org (regras da empresa, prevalecem) e as do utilizador, que valham para esta ferramenta.
+6. **Prompt** (`prompt`): as memórias entram no prompt numa secção própria, uma por linha.
+7. **Cadeia de modelos** (`models`, OpenRouter): resposta em JSON com o esquema da ferramenta, só em fornecedores que não guardam nem treinam com os dados (`data_collection: deny`); modelos de recurso e disjuntor por modelo. Indisponível: **502** `provider_unavailable`; tempo esgotado: **504** `timeout`.
+8. **Validação** (`validate`): se a resposta não cumprir o esquema, tenta de novo no mesmo modelo (`maxAttempts`, 2 por omissão) e depois passa ao seguinte; no fim: **502** `invalid_model_output`.
+9. **Resposta** (`response`): JSON ou SSE; o custo vai para o StepAccess em segundo plano.
 
 Resposta: `{ "tool": "<nome>", "version": <n>, "result": { … } }`. Nada é guardado: dos pedidos ficam só linhas de log com id, ferramenta, modelo, tokens, número de memórias e duração.
 
@@ -121,7 +123,7 @@ Uma ferramenta é um módulo em `src/tools/` (ver `src/tools/diagnostic.ts`): no
 
 ### Streaming
 
-Algumas ferramentas têm um campo de texto livre na resposta (declaram `stream: { field }` em `src/tools/`). O pedido escolhe se quer a resposta em streaming, com `"stream": true` no corpo; sem isso, ou com `false`, a resposta é o JSON de sempre. `GET /v1/tools` diz quais as ferramentas que o aceitam (`streaming: true`); noutras, `stream: true` dá **422**. Hoje só a `diagnostic`.
+Algumas ferramentas têm um campo de texto livre na resposta (declaram `stream: { field }` em `src/tools/`). O pedido escolhe se quer a resposta em streaming, com `"stream": true` no corpo; sem isso, ou com `false`, a resposta é o JSON de sempre. `GET /v1/tools` diz quais as ferramentas que o aceitam (`streaming: true`); noutras, `stream: true` dá **422**. Hoje só a `diagnostic`. O streaming desliga-se em geral (`streamEnabled`) ou só numa ferramenta (`PUT /v1/admin/tools/:name/config`).
 
 ```bash
 curl -N -X POST localhost:8080/v1/tools/diagnostic \
@@ -139,7 +141,7 @@ A resposta é `text/event-stream`, com estes eventos (`data` é sempre JSON):
 | `result` | O fim: o JSON completo e validado, igual ao do pedido sem streaming                           | `{tool, version, result}`                      |
 | `error`  | Falhou depois de começar. Mesmo formato dos erros normais                                     | `{error: {code, message, details, requestId}}` |
 
-- Os erros **anteriores** ao `start` (credencial, validação, sem acesso, ferramenta desligada) saem como JSON normal, com o estado HTTP de sempre (401, 422, 403…). Depois do `start` o estado já seguiu (200) e os erros vão no evento `error`.
+- Os erros **anteriores** ao `start` (credencial, validação, ferramenta desligada, limite de pedidos, sem acesso) saem como JSON normal, com o estado HTTP de sempre (401, 422, 403…). Depois do `start` o estado já seguiu (200) e os erros vão no evento `error`.
 - O texto dos `delta` é provisório: só o `result` está validado. Se chegar `reset` ou `error`, o cliente deve descartar o que mostrou.
 - Utilização, custo e métricas contam exatamente como num pedido normal.
 
@@ -240,7 +242,9 @@ src/
                           → run, preview, trial, tools, memories; valida a entrada; emite eventos
     tool.ts               o contrato de uma ferramenta
     run.ts                os passos de um pedido (configuração, acesso, memórias, cadeia de modelos, validação)
-    breaker.ts            disjuntor por modelo, em memória (reconfigurável e com fecho à mão)
+    breaker.ts            disjuntor por modelo, em memória (estado completo, reconfigurável, fecho à mão)
+    pipeline.ts           os passos de um pedido, a marca do passo em cada erro e os tempos por passo
+    rate-limit.ts         limite de pedidos por chave e minuto, com o limite de cada pedido
     live.ts               Live<T>: um valor fixo ou lido de novo em cada uso
     errors.ts             EngineError: código estável, sem estado HTTP
     access.ts             interface de quem decide o acesso
@@ -273,6 +277,7 @@ src/
     queries.ts            listar memórias e ferramentas
     topology.ts           os módulos, ligações e estado (função pura)
     modules.ts            os cinco adaptadores descritos: função, definições e o que falta controlar
+    pipeline.ts           o caminho de um pedido a uma ferramenta, para o diagrama da consola (função pura)
     topology-source.ts    junta o que está a correr numa topologia
     status.ts             o que o /v1/admin/status mostra
     validation.ts         validações dos dados que o administrador escreve

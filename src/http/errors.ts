@@ -21,6 +21,7 @@ export const ERROR_CODES = [
   'timeout',
   'internal_error',
   'service_unavailable',
+  'tool_disabled',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -57,11 +58,19 @@ const ENGINE_HTTP_STATUS: Record<EngineErrorCode, number> = {
   forbidden: 403,
   memory_limit_reached: 409,
   unknown_tool: 404,
+  tool_disabled: 503,
+  rate_limited: 429,
 };
 
 /** Um erro do motor no formato da API. O código e a mensagem passam tal como estão. */
 export function fromEngineError(err: EngineError): AppError {
-  return new AppError(err.code, ENGINE_HTTP_STATUS[err.code], err.message, err.details);
+  return new AppError(
+    err.code,
+    ENGINE_HTTP_STATUS[err.code],
+    err.message,
+    err.details,
+    err.retryAfterSeconds === undefined ? {} : { 'Retry-After': String(err.retryAfterSeconds) },
+  );
 }
 
 export interface ErrorBody {

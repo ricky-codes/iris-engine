@@ -63,6 +63,12 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('o que o motor lê da base de d
       fallbackModels: ['openai/gpt-4.1-mini'],
       enabled: true,
       systemPrompt: undefined,
+      overrides: {
+        maxAttempts: null,
+        totalTimeoutMs: null,
+        rateLimitPerMinute: null,
+        streamEnabled: null,
+      },
     });
   });
 
@@ -97,6 +103,12 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('o que o motor lê da base de d
       timeoutMs: 9000,
       enabled: false,
       systemPrompt: 'ativo',
+      overrides: {
+        maxAttempts: null,
+        totalTimeoutMs: null,
+        rateLimitPerMinute: null,
+        streamEnabled: null,
+      },
     });
     const { rows } = await db.pool.query("SELECT 1 FROM tool WHERE code = 'diagnostic'");
     expect(rows).toHaveLength(1);

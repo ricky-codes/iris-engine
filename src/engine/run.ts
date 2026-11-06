@@ -6,7 +6,15 @@ import type { LlmProvider } from './llm.js';
 import { buildSystemPrompt } from './prompt.js';
 import { StringFieldStream, type StreamHandlers } from './stream.js';
 import type { MemoryStore, RequestMemories } from './memory.js';
-import { fallbackChain, type EngineStore, type ToolSettings } from './store.js';
+import { atStage, emptyTimings, markStage, type StageTimings } from './pipeline.js';
+import type { RateLimiter } from './rate-limit.js';
+import {
+  fallbackChain,
+  noOverrides,
+  resolveOverrides,
+  type EngineStore,
+  type ToolSettings,
+} from './store.js';
 import type { ToolDefinition } from './tool.js';
 import type { UsageReporter } from './usage.js';
 
@@ -23,6 +31,12 @@ export interface EngineDeps {
   maxAttempts?: number;
   /** Teto de tempo para todas as chamadas ao modelo de um pedido. Por omissão, 30 s. */
   totalTimeoutMs?: number;
+  /** Pedidos por minuto e por org (0 = sem limite). Por omissão, sem limite. */
+  rateLimitPerMinute?: number;
+  /** `false` recusa o streaming em todas as ferramentas. Por omissão, `true`. */
+  streamEnabled?: boolean;
+  /** Conta os pedidos para o limite por minuto. Sem ele, não há limite. */
+  rateLimiter?: RateLimiter;
   /** Salta modelos que estão a falhar. Sem ele, todos os modelos são sempre experimentados. */
   breaker?: CircuitBreaker;
   /** Relógio em milissegundos (os testes passam um falso). */
@@ -51,6 +65,8 @@ export interface PreparedRun {
   user: string;
   /** JSON Schema da resposta (sem os símbolos internos do TypeBox). */
   schema: Record<string, unknown>;
+  /** Quanto demorou cada passo até aqui (acesso, memórias, prompt), em ms. */
+  timings: StageTimings;
 }
 
 /**
@@ -81,8 +97,11 @@ export interface ModelAttempt {
 export interface ModelCall {
   tool: string;
   model: string;
-  reason: Exclude<AttemptReason, 'skipped_breaker'>;
+  /** `skipped_breaker`: o modelo foi saltado, sem chamada (não conta como chamada). */
+  reason: AttemptReason;
   fallback: boolean;
+  /** Tentativa neste modelo, a começar em 1 (acima de 1: nova tentativa após resposta inválida). */
+  attempt: number;
   durationMs: number;
 }
 
@@ -102,6 +121,8 @@ export interface RunResult {
     costUsd: number | undefined;
     orgMemories: number;
     userMemories: number;
+    /** Quanto demorou cada passo do motor, em ms. */
+    timings: StageTimings;
   };
 }
 
@@ -120,57 +141,130 @@ export function parseModelJson(text: string): unknown {
   }
 }
 
+const elapsed = (started: number): number => Math.round(performance.now() - started);
+
 /**
- * Lê a configuração, (opcionalmente) verifica o acesso e monta o prompt com as memórias.
- * O playground de admin usa isto sem verificar acesso nem se a ferramenta está ligada.
+ * Os passos antes do modelo, pela ordem do pipeline (`src/engine/pipeline.ts`): configuração
+ * (ligada, streaming), limite de pedidos, acesso, memórias e prompt. Cada erro sai marcado com o
+ * passo em que parou. O playground de admin usa isto sem limite, sem verificar acesso nem se a
+ * ferramenta está ligada.
  */
 export async function prepareRun(
   deps: Pick<
     EngineDeps,
-    'access' | 'store' | 'memories' | 'defaultModel' | 'defaultFallbackModels'
+    | 'access'
+    | 'store'
+    | 'memories'
+    | 'defaultModel'
+    | 'defaultFallbackModels'
+    | 'maxAttempts'
+    | 'totalTimeoutMs'
+    | 'rateLimitPerMinute'
+    | 'streamEnabled'
+    | 'rateLimiter'
   >,
   tool: ToolDefinition,
   request: RunRequest,
   opts: {
     checkAccess: boolean;
     requireEnabled: boolean;
+    /** Conta o pedido no limite por minuto (só os pedidos reais). */
+    checkRateLimit?: boolean;
     systemPromptOverride?: string;
     modelOverride?: string;
     fallbackModelsOverride?: string[];
   },
 ): Promise<PreparedRun> {
-  const stored = await deps.store.settingsFor(tool.name, tool.defaults, {
-    model: deps.defaultModel,
-    fallbackModels: deps.defaultFallbackModels ?? [],
+  const timings = emptyTimings();
+  const settings = await atStage('gate', async () => {
+    const stored = await deps.store.settingsFor(tool.name, tool.defaults, {
+      model: deps.defaultModel,
+      fallbackModels: deps.defaultFallbackModels ?? [],
+    });
+    const model = opts.modelOverride ?? stored.model;
+    const overrides = { ...noOverrides(), ...stored.overrides };
+    const resolved = resolveOverrides(overrides, {
+      maxAttempts: deps.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+      totalTimeoutMs: deps.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS,
+      rateLimitPerMinute: deps.rateLimitPerMinute ?? 0,
+      streamEnabled: deps.streamEnabled ?? true,
+    });
+    const s: ToolSettings = {
+      ...stored,
+      model,
+      fallbackModels: fallbackChain(model, opts.fallbackModelsOverride ?? stored.fallbackModels),
+      overrides,
+      maxAttempts: resolved.maxAttempts.value,
+      totalTimeoutMs: resolved.totalTimeoutMs.value,
+      rateLimitPerMinute: resolved.rateLimitPerMinute.value,
+      streamEnabled: resolved.streamEnabled.value,
+    };
+    if (opts.requireEnabled && !s.enabled) {
+      throw new EngineError('tool_disabled', 'Esta ferramenta está desativada.');
+    }
+    if (request.stream !== undefined && !s.streamEnabled) {
+      throw new EngineError('invalid_request', 'O pedido não é válido.', [
+        { path: 'body.stream', issue: 'o streaming está desativado para esta ferramenta' },
+      ]);
+    }
+    return s;
   });
-  const model = opts.modelOverride ?? stored.model;
-  const settings: ToolSettings = {
-    ...stored,
-    model,
-    fallbackModels: fallbackChain(model, opts.fallbackModelsOverride ?? stored.fallbackModels),
-  };
-  if (opts.requireEnabled && !settings.enabled) {
-    throw new EngineError('service_unavailable', 'Esta ferramenta está desativada.');
+
+  // Antes de gastar utilização no StepAccess ou de chamar o modelo. Com um limite próprio, a
+  // ferramenta conta à parte (por org e ferramenta); sem ele, as ferramentas partilham o da org.
+  if (opts.checkRateLimit === true && deps.rateLimiter !== undefined) {
+    const own = settings.overrides.rateLimitPerMinute !== null;
+    const key = own ? `${request.orgId}\u0000${tool.name}` : request.orgId;
+    const verdict = deps.rateLimiter.hit(key, settings.rateLimitPerMinute);
+    if (!verdict.allowed) {
+      throw markStage(
+        new EngineError(
+          'rate_limited',
+          'Demasiados pedidos. Tente de novo em breve.',
+          [],
+          undefined,
+          verdict.retryAfterSeconds,
+        ),
+        'rate',
+      );
+    }
   }
 
-  if (opts.checkAccess) await deps.access.check({ orgId: request.orgId, userId: request.userId });
+  if (opts.checkAccess) {
+    const started = performance.now();
+    try {
+      await atStage('access', () =>
+        deps.access.check({ orgId: request.orgId, userId: request.userId }),
+      );
+    } finally {
+      timings.access = elapsed(started);
+    }
+  }
 
-  const memories = await deps.memories.forRequest({
-    orgId: request.orgId,
-    userId: request.userId,
-    tool: tool.name,
+  let started = performance.now();
+  const memories = await atStage('memories', () =>
+    deps.memories.forRequest({ orgId: request.orgId, userId: request.userId, tool: tool.name }),
+  );
+  timings.memories = elapsed(started);
+
+  started = performance.now();
+  const prepared = await atStage('prompt', () => {
+    const base = opts.systemPromptOverride ?? settings.systemPrompt ?? tool.systemPrompt;
+    return {
+      settings,
+      memories,
+      system: buildSystemPrompt(base, memories),
+      user: tool.buildUserMessage(request.input),
+      schema: JSON.parse(JSON.stringify(tool.output)) as Record<string, unknown>,
+      timings,
+    };
   });
-  const base = opts.systemPromptOverride ?? settings.systemPrompt ?? tool.systemPrompt;
-  return {
-    settings,
-    memories,
-    system: buildSystemPrompt(base, memories),
-    user: tool.buildUserMessage(request.input),
-    schema: JSON.parse(JSON.stringify(tool.output)) as Record<string, unknown>,
-  };
+  timings.prompt = elapsed(started);
+  return prepared;
 }
 
 export interface CallModelOptions {
+  /** Por omissão, os da configuração em vigor (`prepared.settings`). */
   maxAttempts?: number;
   totalTimeoutMs?: number;
   breaker?: CircuitBreaker | undefined;
@@ -206,8 +300,9 @@ export async function callModel(
   opts: CallModelOptions = {},
 ): Promise<CallModelResult> {
   const now = opts.now ?? (() => Date.now());
-  const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
-  const deadline = now() + (opts.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS);
+  const maxAttempts = opts.maxAttempts ?? prepared.settings.maxAttempts;
+  const deadline = now() + (opts.totalTimeoutMs ?? prepared.settings.totalTimeoutMs);
+  const { timings } = prepared;
   const chain = [prepared.settings.model, ...prepared.settings.fallbackModels];
   const attempts: ModelAttempt[] = [];
   let error: EngineError | undefined;
@@ -234,6 +329,14 @@ export async function callModel(
         inputTokens: undefined,
         outputTokens: undefined,
         costUsd: undefined,
+      });
+      opts.onCall?.({
+        tool: tool.name,
+        model,
+        reason: 'skipped_breaker',
+        fallback,
+        attempt: 1,
+        durationMs: 0,
       });
       continue;
     }
@@ -262,6 +365,7 @@ export async function callModel(
           }
         };
       }
+      const callStarted = performance.now();
       try {
         const response = await llm.complete({
           model,
@@ -273,9 +377,12 @@ export async function callModel(
           output: { name: `${tool.name}_result`, schema: prepared.schema },
           ...(onText !== undefined && { onText }),
         });
+        timings.models += elapsed(callStarted);
         opts.breaker?.recordSuccess(model);
+        const validated = performance.now();
         const parsed = parseModelJson(response.text);
         const valid = parsed !== undefined && Value.Check(tool.output, parsed);
+        timings.validate += elapsed(validated);
         attempt = {
           text: response.text,
           valid,
@@ -294,6 +401,7 @@ export async function callModel(
           model,
           reason: attempt.reason === 'ok' ? 'ok' : 'invalid_output',
           fallback,
+          attempt: i,
           durationMs: attempt.durationMs,
         });
         if (valid) return { result: parsed, attempts, error: undefined };
@@ -302,9 +410,10 @@ export async function callModel(
           'O modelo de IA devolveu uma resposta inválida. Tente de novo.',
         );
       } catch (err) {
+        timings.models += elapsed(callStarted);
         if (!isProviderFailure(err)) throw err;
-        opts.breaker?.recordFailure(model);
         const reason = err.code === 'timeout' ? 'timeout' : 'provider_unavailable';
+        opts.breaker?.recordFailure(model, reason);
         attempts.push({
           text: null,
           valid: false,
@@ -322,6 +431,7 @@ export async function callModel(
           model,
           reason,
           fallback,
+          attempt: i,
           durationMs: Math.round(now() - started),
         });
         error = err;
@@ -351,16 +461,17 @@ export async function runTool(
   const prepared = await prepareRun(deps, tool, request, {
     checkAccess: true,
     requireEnabled: true,
+    checkRateLimit: true,
   });
   request.stream?.onStart?.();
-  const { result, attempts, error } = await callModel(deps.llm, tool, prepared, {
-    ...(request.stream !== undefined && { stream: request.stream }),
-    ...(deps.maxAttempts !== undefined && { maxAttempts: deps.maxAttempts }),
-    ...(deps.totalTimeoutMs !== undefined && { totalTimeoutMs: deps.totalTimeoutMs }),
-    ...(deps.now !== undefined && { now: deps.now }),
-    breaker: deps.breaker,
-    onCall: deps.onModelCall,
-  });
+  const { result, attempts, error } = await atStage('models', () =>
+    callModel(deps.llm, tool, prepared, {
+      ...(request.stream !== undefined && { stream: request.stream }),
+      ...(deps.now !== undefined && { now: deps.now }),
+      breaker: deps.breaker,
+      onCall: deps.onModelCall,
+    }),
+  );
   const called = attempts.filter((a) => a.reason !== 'skipped_breaker');
   // Só as tentativas com resposta foram pagas; o custo vai para o StepAccess só nesse caso.
   const answered = called.filter((a) => a.text !== null);
@@ -387,7 +498,11 @@ export async function runTool(
     // As tentativas falhadas também custam: o custo vai no erro, para o log.
     const last =
       error ?? new EngineError('timeout', 'O modelo de IA demorou demasiado a responder.');
-    throw new EngineError(last.code, last.message, last.details, costUsd);
+    // Resposta inválida: parou na validação; o resto (fornecedor, tempo): na cadeia de modelos.
+    throw markStage(
+      new EngineError(last.code, last.message, last.details, costUsd),
+      last.code === 'invalid_model_output' ? 'validate' : 'models',
+    );
   }
   return {
     result,
@@ -400,6 +515,7 @@ export async function runTool(
       costUsd,
       orgMemories: prepared.memories.org.length,
       userMemories: prepared.memories.user.length,
+      timings: prepared.timings,
     },
   };
 }

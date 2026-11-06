@@ -75,7 +75,12 @@ export type Layer = 'client' | 'http' | 'core' | 'port' | 'adapter' | 'external'
 export type NodeStatus = 'ok' | 'warning' | 'error' | 'off';
 
 /** Onde se muda a configuração de um nó: pela API de administração ou só no `.env` do servidor. */
-export type ConfigureAt = { where: 'admin_api'; path: string } | { where: 'env'; keys: string[] };
+/**
+ * Onde se muda um nó. Com `path: '/v1/admin/settings'`, `keys` diz que definições lhe dizem
+ * respeito; com `where: 'env'`, `keys` são as variáveis de ambiente.
+ */
+export type ConfigureAt =
+  { where: 'admin_api'; path: string; keys?: string[] } | { where: 'env'; keys: string[] };
 
 export interface TopologyNode {
   id: string;
@@ -297,7 +302,20 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
         ? `Pronto · ${String(tools.filter((t) => t.implemented).length)} ferramenta(s)`
         : `Desligado: falta ${rt.engine.missing.join(', ')}`,
       details: { defaultModel: rt.engine.defaultModel, maxAttempts: rt.engine.maxAttempts },
-      configure: { where: 'admin_api', path: '/v1/admin/settings' },
+      configure: {
+        where: 'admin_api',
+        path: '/v1/admin/settings',
+        keys: [
+          'defaultModel',
+          'fallbackModels',
+          'totalTimeoutMs',
+          'maxAttempts',
+          'breakerThreshold',
+          'breakerOpenMs',
+          'streamEnabled',
+          'rateLimitPerMinute',
+        ],
+      },
     },
     {
       id: 'core.memories',
@@ -415,7 +433,8 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
       details: {
         chain: chains.length === 0 ? null : chains.length === 1 ? (chains[0] ?? null) : 'várias',
         fallbacks: llmFallbacks,
-        openBreakers: breakers.length === 0 ? null : breakers.map((b) => b.model).join(', '),
+        // Quantos modelos estão a ser saltados; o estado de cada um está em GET /v1/admin/breakers.
+        openBreakers: breakers.length,
       },
       configure: ENV_OPENROUTER,
     },

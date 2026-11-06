@@ -4,7 +4,9 @@ import { Metrics } from '../src/engine/metrics.js';
 import type { ToolDefinition } from '../src/engine/tool.js';
 import { EngineError } from '../src/engine/errors.js';
 import { diagnosticTool } from '../src/tools/diagnostic.js';
-import { fakeAccess, fakeEngine, fakeLlm } from './engine/fakes.js';
+import type { EngineSettings } from '../src/engine/engine.js';
+import type { ToolOverrides } from '../src/engine/store.js';
+import { fakeAccess, fakeEngine, fakeLlm, fakeStore } from './engine/fakes.js';
 import type { Live } from '../src/engine/live.js';
 import { buildTestApp } from './helpers.js';
 
@@ -21,16 +23,20 @@ afterEach(async () => {
 async function start(
   access = fakeAccess(),
   llm = fakeLlm('{"reply":"Olá!"}'),
-  extra: { streamEnabled?: Live<boolean>; rateLimitPerMinute?: Live<number> } = {},
+  extra: { settings?: Live<EngineSettings>; overrides?: Partial<ToolOverrides> } = {},
 ) {
   app = await buildTestApp({
     engine: {
       engine: fakeEngine([diagnosticTool as unknown as ToolDefinition], {
         access: access.access,
         llm: llm.llm,
+        ...(extra.settings !== undefined && { settings: extra.settings }),
+        ...fakeStore(
+          undefined,
+          extra.overrides === undefined ? {} : { overrides: extra.overrides },
+        ),
       }),
       apiSecret: SECRET,
-      ...extra,
     },
   });
   return { app, access, llm };
@@ -320,7 +326,7 @@ describe('limite de pedidos e interruptor de streaming', () => {
 
   it('429 rate_limited acima do limite da org, antes de gastar utilização', async () => {
     const { app, access } = await start(fakeAccess(), fakeLlm('{"reply":"Olá!"}'), {
-      rateLimitPerMinute: 2,
+      settings: { defaultModel: 'm', rateLimitPerMinute: 2 },
     });
     expect((await post(app, {})).statusCode).toBe(200);
     expect((await post(app, {})).statusCode).toBe(200);
@@ -340,10 +346,11 @@ describe('limite de pedidos e interruptor de streaming', () => {
 
   it('STREAM_ENABLED=false: stream:true dá 422 e a lista diz streaming:false', async () => {
     const { app, access } = await start(fakeAccess(), fakeLlm('{"reply":"Olá!"}'), {
-      streamEnabled: false,
+      settings: { defaultModel: 'm', streamEnabled: false },
     });
     const res = await post(app, { stream: true });
     expect(res.statusCode).toBe(422);
+    expect(res.json()).toMatchObject({ error: { details: [{ path: 'body.stream' }] } });
     expect(access.calls).toHaveLength(0);
     expect((await post(app, {})).statusCode).toBe(200);
     const list = await app.inject({ method: 'GET', url: '/v1/tools', headers: AUTH });
@@ -352,20 +359,69 @@ describe('limite de pedidos e interruptor de streaming', () => {
 
   it('o streaming e o limite de pedidos seguem as definições em vigor, sem reiniciar', async () => {
     const live = { stream: true, limit: 0 };
+    // Como no servidor: um objeto novo só quando as definições mudam.
+    let settings: EngineSettings = { defaultModel: 'm' };
+    const set = () => {
+      settings = { defaultModel: 'm', streamEnabled: live.stream, rateLimitPerMinute: live.limit };
+    };
     const { app } = await start(fakeAccess(), fakeLlm('{"reply":"Olá!"}'), {
-      streamEnabled: () => live.stream,
-      rateLimitPerMinute: () => live.limit,
+      settings: () => settings,
     });
     const tools = () => app.inject({ method: 'GET', url: '/v1/tools', headers: AUTH });
     expect((await tools()).json()).toMatchObject({ tools: [{ streaming: true }] });
     live.stream = false;
+    set();
     expect((await tools()).json()).toMatchObject({ tools: [{ streaming: false }] });
     expect((await post(app, { stream: true })).statusCode).toBe(422);
 
     for (let i = 0; i < 3; i++) expect((await post(app, {})).statusCode).toBe(200);
     // Sem limite não se conta nada: com limite 1, o primeiro passa e o segundo é recusado.
     live.limit = 1;
+    set();
     expect((await post(app, {})).statusCode).toBe(200);
     expect((await post(app, {})).statusCode).toBe(429);
+  });
+
+  it('valores da ferramenta: limite próprio por org e ferramenta, streaming desligado só nela', async () => {
+    const { app, access } = await start(fakeAccess(), fakeLlm('{"reply":"Olá!"}'), {
+      settings: { defaultModel: 'm', rateLimitPerMinute: 100 },
+      overrides: { rateLimitPerMinute: 1, streamEnabled: false },
+    });
+    expect((await post(app, {})).statusCode).toBe(200);
+    const limited = await post(app, {});
+    expect(limited.statusCode).toBe(429);
+    expect(access.calls).toHaveLength(1);
+    // Outra org tem a sua própria contagem.
+    expect((await post(app, {}, '00DBBBBBBBBBBBBBBB')).statusCode).toBe(200);
+    const list = await app.inject({ method: 'GET', url: '/v1/tools', headers: AUTH });
+    expect(list.json()).toMatchObject({ tools: [{ name: 'diagnostic', streaming: false }] });
+    const streamed = await post(app, { stream: true }, '00DCCCCCCCCCCCCCCC');
+    expect(streamed.json()).toMatchObject({
+      error: { details: [{ issue: 'o streaming está desativado para esta ferramenta' }] },
+    });
+  });
+
+  it('as métricas guardam o passo em que cada pedido parou', async () => {
+    const metrics = new Metrics();
+    app = await buildTestApp({
+      engine: {
+        engine: fakeEngine([diagnosticTool as unknown as ToolDefinition], {
+          access: fakeAccess().access,
+          llm: fakeLlm('{"reply":"Olá!"}').llm,
+          settings: { defaultModel: 'm', rateLimitPerMinute: 1 },
+          ...fakeStore(),
+        }),
+        apiSecret: SECRET,
+        metrics,
+      },
+    });
+    expect((await post(app, {})).statusCode).toBe(200);
+    expect((await post(app, {})).statusCode).toBe(429);
+    expect((await post(app, { message: 5 })).statusCode).toBe(422);
+    await app.inject({ method: 'POST', url: '/v1/tools/diagnostic', payload: BODY });
+    expect(metrics.pipeline('diagnostic').stops).toMatchObject({
+      request: { invalid_request: 1, unauthorized: 1 },
+      rate: { rate_limited: 1 },
+    });
   });
 });

@@ -155,6 +155,14 @@ export function describeModules(input: ModulesInput): ModulesReport {
         adminPath: 'PUT /v1/admin/tools/:name/config',
       },
       {
+        key: 'tool.overrides',
+        label: 'Tentativas, teto de tempo, limite de pedidos e streaming por ferramenta',
+        description: 'Substituem as definições globais só nesta ferramenta; `null` segue a global.',
+        value: null,
+        source: DB,
+        adminPath: 'PUT /v1/admin/tools/:name/config',
+      },
+      {
         key: 'tool.prompt',
         label: 'Versões do prompt e versão ativa',
         description: 'As versões publicadas nunca mudam; ativa-se uma.',
@@ -170,13 +178,6 @@ export function describeModules(input: ModulesInput): ModulesReport {
         description:
           'Hoje há uma consulta ao Postgres em todos os pedidos. Uma cache curta tira-a do caminho crítico; a API de administração invalida-a ao gravar.',
         suggested: '5 s',
-      },
-      {
-        key: 'tool.streamingEnabled',
-        label: 'Permitir streaming por ferramenta',
-        description:
-          'Hoje o streaming depende só do pedido e de a ferramenta o declarar. Um interruptor por ferramenta deixa o admin proibi-lo.',
-        suggested: 'true',
       },
     ],
   };

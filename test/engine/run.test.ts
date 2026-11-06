@@ -110,7 +110,7 @@ describe('runTool', () => {
         tool,
         REQ,
       ),
-    ).rejects.toMatchObject({ code: 'service_unavailable' });
+    ).rejects.toMatchObject({ code: 'tool_disabled' });
     expect(a.calls).toHaveLength(0);
   });
 

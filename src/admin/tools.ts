@@ -1,4 +1,6 @@
 import type { Pool, PoolClient } from 'pg';
+import { toOverrides } from '../adapters/postgres-store.js';
+import type { ToolOverrides } from '../engine/store.js';
 import { AdminError } from './commands.js';
 
 /**
@@ -15,6 +17,8 @@ export interface ToolConfigInput {
   enabled: boolean;
   /** Modelos de recurso, por ordem (máximo 3). Vazio: nenhum. */
   fallbackModels: string[];
+  /** As definições globais que esta ferramenta substitui (`null`: segue a global). */
+  overrides: ToolOverrides;
 }
 
 export interface StoredToolConfig extends ToolConfigInput {
@@ -51,9 +55,14 @@ export async function listToolCatalog(pool: Pool, name?: string): Promise<ToolCa
     active_version: number | null;
     version_count: number | null;
     fallbacks: string[] | null;
+    max_attempts: number | null;
+    total_timeout_ms: number | null;
+    rate_limit_per_minute: number | null;
+    stream_enabled: boolean | null;
   }>(
     `SELECT t.code, lm.code AS model, tc.temperature, tc.max_output_tokens, tc.timeout_ms,
-            tc.is_enabled, fb.fallbacks, pr.active_version, pr.version_count
+            tc.is_enabled, fb.fallbacks, pr.active_version, pr.version_count,
+            tc.max_attempts, tc.total_timeout_ms, tc.rate_limit_per_minute, tc.stream_enabled
      FROM tool t
      LEFT JOIN tool_config tc ON tc.tool_id = t.tool_id
      LEFT JOIN llm_model lm   ON lm.llm_model_id = tc.llm_model_id
@@ -88,6 +97,7 @@ export async function listToolCatalog(pool: Pool, name?: string): Promise<ToolCa
             timeoutMs: r.timeout_ms,
             enabled: r.is_enabled,
             fallbackModels: r.fallbacks ?? [],
+            overrides: toOverrides(r),
             source: 'database',
           },
     activePromptVersion: r.active_version,
@@ -129,12 +139,17 @@ export async function saveToolConfig(
     );
     const modelId = new Map(rows.map((r) => [r.code, r.llm_model_id]));
     await client.query(
-      `INSERT INTO tool_config (tool_id, llm_model_id, temperature, max_output_tokens, timeout_ms, is_enabled)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO tool_config (tool_id, llm_model_id, temperature, max_output_tokens, timeout_ms,
+                                is_enabled, max_attempts, total_timeout_ms, rate_limit_per_minute,
+                                stream_enabled)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (tool_id) DO UPDATE SET
          llm_model_id = EXCLUDED.llm_model_id, temperature = EXCLUDED.temperature,
          max_output_tokens = EXCLUDED.max_output_tokens, timeout_ms = EXCLUDED.timeout_ms,
-         is_enabled = EXCLUDED.is_enabled`,
+         is_enabled = EXCLUDED.is_enabled, max_attempts = EXCLUDED.max_attempts,
+         total_timeout_ms = EXCLUDED.total_timeout_ms,
+         rate_limit_per_minute = EXCLUDED.rate_limit_per_minute,
+         stream_enabled = EXCLUDED.stream_enabled`,
       [
         id,
         modelId.get(input.model) ?? null,
@@ -142,6 +157,10 @@ export async function saveToolConfig(
         input.maxOutputTokens,
         input.timeoutMs,
         input.enabled,
+        input.overrides.maxAttempts,
+        input.overrides.totalTimeoutMs,
+        input.overrides.rateLimitPerMinute,
+        input.overrides.streamEnabled,
       ],
     );
     // Os modelos de recurso substituem-se por inteiro, pela ordem recebida, numa só escrita.

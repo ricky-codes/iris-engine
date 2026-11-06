@@ -1,12 +1,21 @@
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { EngineError } from '../engine/errors.js';
+import { stageOf, type PipelineStage } from '../engine/pipeline.js';
 import { AppError, fromEngineError, type ErrorBody, type ErrorDetail } from './errors.js';
 
-/** O código de erro com que cada pedido terminou (para as métricas). Some com o pedido. */
-const errorCodes = new WeakMap<FastifyRequest, string>();
+/** O código de erro com que cada pedido terminou e o passo do motor em que parou (para as métricas). */
+const errorCodes = new WeakMap<
+  FastifyRequest,
+  { code: string; stage: PipelineStage | undefined }
+>();
 
 export function errorCodeOf(request: FastifyRequest): string | undefined {
-  return errorCodes.get(request);
+  return errorCodes.get(request)?.code;
+}
+
+/** O passo do pipeline em que o pedido parou, se o motor o marcou. */
+export function errorStageOf(request: FastifyRequest): PipelineStage | undefined {
+  return errorCodes.get(request)?.stage;
 }
 
 export function toAppError(err: FastifyError): AppError {
@@ -44,7 +53,7 @@ export function toAppError(err: FastifyError): AppError {
 /** Converte o erro, regista-o no log e guarda o código para as métricas. */
 export function resolveError(err: FastifyError, request: FastifyRequest): AppError {
   const appError = toAppError(err);
-  errorCodes.set(request, appError.code);
+  errorCodes.set(request, { code: appError.code, stage: stageOf(err) });
   if (appError.httpStatus >= 500) {
     request.log.error({ err }, 'request failed');
   } else {

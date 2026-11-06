@@ -18,13 +18,14 @@ Legenda das definições: **API** = muda-se pela API de administração sem rein
 
 **Se falhar:** o pedido dá 500.
 
-| Definição                                                      | Hoje                                                    |
-| -------------------------------------------------------------- | ------------------------------------------------------- |
-| Modelo, modelos de recurso, temperatura, tokens, tempo, ligada | **API** `PUT /v1/admin/tools/:name/config`              |
-| Versões do prompt e versão ativa                               | **API** `POST …/prompt-versions`, `PUT …/active-prompt` |
-| Modelo e modelos de recurso por omissão                        | **API** `PATCH /v1/admin/settings`                      |
+| Definição                                                      | Hoje                                                                               |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Modelo, modelos de recurso, temperatura, tokens, tempo, ligada | **API** `PUT /v1/admin/tools/:name/config`                                         |
+| Versões do prompt e versão ativa                               | **API** `POST …/prompt-versions`, `PUT …/active-prompt`                            |
+| Tentativas, teto de tempo, limite de pedidos e streaming       | **API** `PUT /v1/admin/tools/:name/config` (por ferramenta; `null` segue a global) |
+| Modelo e modelos de recurso por omissão                        | **API** `PATCH /v1/admin/settings`                                                 |
 
-**Falta controlar pela API:** cache da configuração (hoje há uma consulta ao Postgres por pedido), interruptor de streaming por ferramenta.
+**Falta controlar pela API:** cache da configuração (hoje há uma consulta ao Postgres por pedido).
 
 ## PgMemoryStore
 

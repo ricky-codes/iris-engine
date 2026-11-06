@@ -23,13 +23,21 @@ import {
 } from '../../admin/tools.js';
 import type { Metrics } from '../../engine/metrics.js';
 import type { ModulesReport } from '../../admin/modules.js';
+import { buildPipeline } from '../../admin/pipeline.js';
 import type { Topology } from '../../admin/topology.js';
 import type { ModelInfo } from '../../adapters/openrouter-models.js';
+import type { BreakerStatus } from '../../engine/breaker.js';
 import type { Engine } from '../../engine/engine.js';
 import { MEMORY_CHARS_CAP } from '../../engine/memory.js';
-import { fallbackChain } from '../../engine/store.js';
+import {
+  fallbackChain,
+  noOverrides,
+  resolveOverrides,
+  type ToolOverrides,
+} from '../../engine/store.js';
 import type { ToolDefinition } from '../../engine/tool.js';
 import {
+  overrideIssues,
   SETTINGS_REFRESH_MS,
   type RuntimeSettings,
   type SettingIssue,
@@ -52,8 +60,10 @@ export interface AdminRoutesOptions {
     validate(changes: Record<string, unknown>): SettingIssue[];
     update(changes: Record<string, unknown>, actor: string): Promise<void>;
   };
-  /** O disjuntor do motor; sem motor não há o que fechar. */
-  breakers: { reset(model?: string): string[] } | undefined;
+  /** O disjuntor do motor; sem motor não há o que mostrar nem fechar. */
+  breakers: { status(): BreakerStatus[]; reset(model?: string): string[] } | undefined;
+  /** Identifica esta instância: o disjuntor e as métricas são por instância. */
+  instanceId: string;
   metrics: Metrics;
   status: () => Promise<StatusReport>;
   /** Os módulos e o estado de cada um (ver src/admin/topology-source.ts). */
@@ -267,6 +277,12 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
     },
   );
 
+  // O disjuntor de cada modelo chamado desde o arranque, nesta instância.
+  app.get('/v1/admin/breakers', async () => ({
+    instanceId: opts.instanceId,
+    breakers: opts.breakers?.status() ?? [],
+  }));
+
   // Fecha o disjuntor de um modelo (`?model=…`) ou de todos, sem esperar que o tempo aberto
   // acabe. Sem corpo: os códigos dos modelos têm barras, por isso vão na query string.
   app.post(
@@ -308,6 +324,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
               maxOutputTokens: row.config.maxOutputTokens,
               timeoutMs: row.config.timeoutMs,
               fallbackModels: row.config.fallbackModels,
+              overrides: resolveOverrides(row.config.overrides, engine),
               source: 'database' as const,
             }
           : defaults === null
@@ -318,6 +335,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
                 maxOutputTokens: defaults.maxOutputTokens,
                 timeoutMs: defaults.timeoutMs,
                 fallbackModels: fallbackChain(defaults.model, engine.fallbackModels),
+                overrides: resolveOverrides(noOverrides(), engine),
                 source: 'default' as const,
               },
       prompt: {
@@ -401,6 +419,37 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
     toolDetail(request.params.name),
   );
 
+  // O caminho de um pedido a esta ferramenta, passo a passo, para o diagrama da consola.
+  app.get('/v1/admin/tools/:name/pipeline', { schema: { params: NameParams } }, async (request) => {
+    const { name } = request.params;
+    const row = await catalogRow(name);
+    const code = registered.get(name);
+    const engine = opts.settings.current();
+    const model = row.config?.model ?? (code === undefined ? null : engine.defaultModel);
+    const topology = await opts.topology();
+    return buildPipeline({
+      tool: name,
+      implemented: code !== undefined,
+      enabled: row.config?.enabled ?? true,
+      streamSupported: code?.stream !== undefined,
+      model,
+      fallbackModels:
+        model === null
+          ? []
+          : (row.config?.fallbackModels ?? fallbackChain(model, engine.fallbackModels)),
+      prompt: {
+        source:
+          row.activePromptVersion !== null ? 'database' : code !== undefined ? 'code' : 'none',
+        activeVersion: row.activePromptVersion,
+      },
+      overrides: resolveOverrides(row.config?.overrides, engine),
+      since: opts.metrics.since,
+      metrics: opts.metrics.pipeline(name),
+      breakers: opts.breakers?.status() ?? [],
+      topology,
+    });
+  });
+
   app.put(
     '/v1/admin/tools/:name/config',
     {
@@ -416,6 +465,12 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
             fallbackModels: Type.Optional(
               Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 3 }),
             ),
+            // Substituições das definições globais: validadas abaixo com as mesmas regras (e
+            // mensagens) de PATCH /v1/admin/settings. `null` ou ausente: segue a global.
+            maxAttempts: Type.Optional(Type.Unknown()),
+            totalTimeoutMs: Type.Optional(Type.Unknown()),
+            rateLimitPerMinute: Type.Optional(Type.Unknown()),
+            streamEnabled: Type.Optional(Type.Unknown()),
           },
           { additionalProperties: false },
         ),
@@ -423,10 +478,26 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
     },
     async (request) => {
       await catalogRow(request.params.name);
-      const fallbackModels = request.body.fallbackModels ?? [];
-      await checkFallbackModels(request.body.model, fallbackModels);
+      const { maxAttempts, totalTimeoutMs, rateLimitPerMinute, streamEnabled, ...config } =
+        request.body;
+      const raw = { maxAttempts, totalTimeoutMs, rateLimitPerMinute, streamEnabled };
+      const issues = overrideIssues(raw);
+      if (issues.length > 0) {
+        throw new AppError(
+          'invalid_request',
+          422,
+          'As definições não são válidas.',
+          issues.map((i) => ({ path: `body.${i.key}`, issue: i.issue })),
+        );
+      }
+      // Validadas acima: só ficam valores dentro dos limites ou `null`.
+      const overrides = Object.fromEntries(
+        Object.entries(raw).map(([k, v]) => [k, v ?? null]),
+      ) as unknown as ToolOverrides;
+      const fallbackModels = config.fallbackModels ?? [];
+      await checkFallbackModels(config.model, fallbackModels);
       await guard(() =>
-        saveToolConfig(opts.pool, request.params.name, { ...request.body, fallbackModels }),
+        saveToolConfig(opts.pool, request.params.name, { ...config, fallbackModels, overrides }),
       );
       return toolDetail(request.params.name);
     },
@@ -738,7 +809,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
       }
 
       const started = performance.now();
-      const { prepared, result, attempts, error } = await deps.engine.trial(
+      const { prepared, result, attempts, error, timings } = await deps.engine.trial(
         tool.name,
         { orgId, userId, input },
         {
@@ -759,6 +830,8 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
             : { code: error.code, message: error.message },
         countedUsage: countUsage === true,
         durationMs: Math.round(performance.now() - started),
+        // Tempo real de cada passo, para a consola animar a simulação (`access` é 0 sem contar).
+        timings,
         settings: prepared.settings,
         memories: prepared.memories,
         prompt: { system: prepared.system, user: prepared.user },

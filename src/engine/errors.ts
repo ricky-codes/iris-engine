@@ -14,6 +14,8 @@ export const ENGINE_ERROR_CODES = [
   'forbidden',
   'memory_limit_reached',
   'unknown_tool',
+  'tool_disabled',
+  'rate_limited',
 ] as const;
 
 export type EngineErrorCode = (typeof ENGINE_ERROR_CODES)[number];
@@ -30,6 +32,8 @@ export class EngineError extends Error {
     public readonly details: EngineErrorDetail[] = [],
     /** O que o pedido já custou antes de falhar (as tentativas falhadas também se pagam). */
     public readonly costUsd?: number,
+    /** Só em `rate_limited`: quantos segundos esperar (cabeçalho `Retry-After`). */
+    public readonly retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = 'EngineError';

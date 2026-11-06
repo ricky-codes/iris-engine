@@ -1,7 +1,7 @@
 import type { AccessChecker } from '../../src/engine/access.js';
 import type { LlmProvider, LlmRequest, LlmResponse } from '../../src/engine/llm.js';
 import type { Memory, MemoryStore, RequestMemories } from '../../src/engine/memory.js';
-import type { EngineStore, ModelDefaults, ToolSettings } from '../../src/engine/store.js';
+import type { EngineStore, ModelDefaults, StoredToolSettings } from '../../src/engine/store.js';
 import { createEngine, type EngineOptions } from '../../src/engine/engine.js';
 import type { ToolDefaults, ToolDefinition } from '../../src/engine/tool.js';
 import { EngineError } from '../../src/engine/errors.js';
@@ -36,7 +36,7 @@ export function fakeAccess(outcome: 'allow' | EngineError = 'allow') {
 /** A configuração e as memórias que o motor lê, para espalhar nas dependências (`...fakeStore()`). */
 export function fakeStore(
   memories: RequestMemories = { org: [], user: [] },
-  overrides: Partial<ToolSettings> = {},
+  overrides: Partial<StoredToolSettings> = {},
 ) {
   const store: EngineStore = {
     settingsFor: async (_tool: string, defaults: ToolDefaults, models: ModelDefaults) => ({
@@ -124,7 +124,7 @@ export function fakeMemoryStore() {
 /** Um motor com ferramentas reais e dependências falsas. */
 export function fakeEngine(
   tools: ToolDefinition[],
-  deps: Partial<Omit<EngineOptions, 'tools' | 'settings'>> = {},
+  deps: Partial<Omit<EngineOptions, 'tools'>> = {},
 ) {
   return createEngine({
     settings: { defaultModel: 'm' },

@@ -1,7 +1,8 @@
 import { Type, type TSchema } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import { MEMORY_CHARS_CAP, type MemoryLimits } from '../engine/memory.js';
-import { fallbackChain } from '../engine/store.js';
+import type { PipelineStage } from '../engine/pipeline.js';
+import { fallbackChain, OVERRIDE_KEYS, type ToolOverrides } from '../engine/store.js';
 
 /**
  * As definições que se mudam sem reiniciar. Cada uma nasce no `.env` (ou numa constante do
@@ -54,6 +55,8 @@ interface Definition {
   schema: TSchema;
   /** A variável de ambiente que dá o valor inicial; `null` quando é uma constante do código. */
   env: string | null;
+  /** O passo do pedido que esta definição governa (`GET /v1/admin/tools/:name/pipeline`). */
+  stage: PipelineStage;
 }
 
 export const DEFINITIONS: Record<SettingKey, Definition> = {
@@ -63,6 +66,7 @@ export const DEFINITIONS: Record<SettingKey, Definition> = {
     description: 'Para as ferramentas sem modelo configurado. Tem de existir no OpenRouter.',
     schema: ModelCode,
     env: 'LLM_DEFAULT_MODEL',
+    stage: 'models',
   },
   fallbackModels: {
     group: 'models',
@@ -70,6 +74,7 @@ export const DEFINITIONS: Record<SettingKey, Definition> = {
     description: 'Até 3, por ordem, sem repetidos e sem o modelo por omissão.',
     schema: Type.Array(ModelCode, { maxItems: 3 }),
     env: 'LLM_FALLBACK_MODELS',
+    stage: 'models',
   },
   totalTimeoutMs: {
     group: 'models',
@@ -77,6 +82,7 @@ export const DEFINITIONS: Record<SettingKey, Definition> = {
     description: 'Soma de todas as chamadas ao modelo, abaixo do limite de callout do Apex.',
     schema: int('totalTimeoutMs'),
     env: 'LLM_TOTAL_TIMEOUT_MS',
+    stage: 'models',
   },
   maxAttempts: {
     group: 'models',
@@ -84,6 +90,7 @@ export const DEFINITIONS: Record<SettingKey, Definition> = {
     description: 'Quantas vezes se pede uma resposta válida a cada modelo antes do seguinte.',
     schema: int('maxAttempts'),
     env: 'LLM_MAX_ATTEMPTS',
+    stage: 'validate',
   },
   breakerThreshold: {
     group: 'models',
@@ -91,6 +98,7 @@ export const DEFINITIONS: Record<SettingKey, Definition> = {
     description: 'Falhas seguidas do fornecedor para o modelo passar a ser saltado.',
     schema: int('breakerThreshold'),
     env: 'LLM_BREAKER_THRESHOLD',
+    stage: 'models',
   },
   breakerOpenMs: {
     group: 'models',
@@ -98,6 +106,7 @@ export const DEFINITIONS: Record<SettingKey, Definition> = {
     description: 'Durante quanto tempo o modelo é saltado.',
     schema: int('breakerOpenMs'),
     env: 'LLM_BREAKER_OPEN_MS',
+    stage: 'models',
   },
   streamEnabled: {
     group: 'requests',
@@ -105,6 +114,7 @@ export const DEFINITIONS: Record<SettingKey, Definition> = {
     description: 'Desligado, `"stream": true` é recusado em todas as ferramentas.',
     schema: Type.Boolean(),
     env: 'STREAM_ENABLED',
+    stage: 'response',
   },
   rateLimitPerMinute: {
     group: 'requests',
@@ -112,6 +122,7 @@ export const DEFINITIONS: Record<SettingKey, Definition> = {
     description: 'Por instância, nas rotas das ferramentas. 0 = sem limite.',
     schema: int('rateLimitPerMinute'),
     env: 'RATE_LIMIT_PER_MINUTE',
+    stage: 'rate',
   },
   stepAccessTimeoutMs: {
     group: 'stepAccess',
@@ -119,6 +130,7 @@ export const DEFINITIONS: Record<SettingKey, Definition> = {
     description: 'Passado este tempo, o StepAccess conta como indisponível (503).',
     schema: int('stepAccessTimeoutMs'),
     env: 'STEPACCESS_TIMEOUT_MS',
+    stage: 'access',
   },
   stepAccessUsageTimeoutMs: {
     group: 'stepAccess',
@@ -126,6 +138,7 @@ export const DEFINITIONS: Record<SettingKey, Definition> = {
     description: 'Em segundo plano, por isso mais folgado que o da verificação.',
     schema: int('stepAccessUsageTimeoutMs'),
     env: 'STEPACCESS_USAGE_TIMEOUT_MS',
+    stage: 'response',
   },
   memoryMaxChars: {
     group: 'memories',
@@ -133,6 +146,7 @@ export const DEFINITIONS: Record<SettingKey, Definition> = {
     description: 'Vale para as memórias novas e para as que se editam; as que já existem ficam.',
     schema: int('memoryMaxChars'),
     env: null,
+    stage: 'memories',
   },
   memoryPerOrg: {
     group: 'memories',
@@ -140,6 +154,7 @@ export const DEFINITIONS: Record<SettingKey, Definition> = {
     description: 'Baixar o limite não apaga nada: só impede criar mais.',
     schema: int('memoryPerOrg'),
     env: null,
+    stage: 'memories',
   },
   memoryPerUser: {
     group: 'memories',
@@ -147,6 +162,7 @@ export const DEFINITIONS: Record<SettingKey, Definition> = {
     description: 'Baixar o limite não apaga nada: só impede criar mais.',
     schema: int('memoryPerUser'),
     env: null,
+    stage: 'memories',
   },
 };
 
@@ -180,6 +196,10 @@ export interface SettingView {
   /** De onde vem o valor em vigor. */
   source: 'database' | 'env' | 'code';
   env: string | null;
+  /** O passo do pedido que governa. */
+  stage: PipelineStage;
+  /** `true`: cada ferramenta pode ter um valor próprio (`PUT /v1/admin/tools/:name/config`). */
+  overridablePerTool: boolean;
   updatedAt: string | null;
   updatedBy: string | null;
   constraints: Record<string, unknown>;
@@ -330,6 +350,8 @@ export class LiveSettings {
         default: this.defaults[key],
         source: row !== undefined ? 'database' : def.env === null ? 'code' : 'env',
         env: def.env,
+        stage: def.stage,
+        overridablePerTool: (OVERRIDE_KEYS as readonly string[]).includes(key),
         updatedAt: row?.updatedAt.toISOString() ?? null,
         updatedBy: row?.updatedBy ?? null,
         constraints: constraintsOf(def.schema),
@@ -344,3 +366,20 @@ export const memoryLimitsOf = (s: RuntimeSettings): MemoryLimits => ({
   perOrg: s.memoryPerOrg,
   perUser: s.memoryPerUser,
 });
+
+/**
+ * Valida as substituições de uma ferramenta com as mesmas regras (e mensagens) de
+ * `PATCH /v1/admin/settings`. `null` ou ausente: segue a definição global.
+ */
+export function overrideIssues(
+  values: Partial<Record<keyof ToolOverrides, unknown>>,
+): SettingIssue[] {
+  return OVERRIDE_KEYS.flatMap((key) => {
+    const value = values[key];
+    if (value === null || value === undefined) return [];
+    const { schema } = DEFINITIONS[key];
+    if (Value.Check(schema, value)) return [];
+    const first = [...Value.Errors(schema, value)][0];
+    return [{ key, issue: first?.message ?? 'valor inválido' }];
+  });
+}

@@ -27,7 +27,8 @@ Esta API permite à UI do StepAccess:
 5. **Memórias** — listar, criar regras da org, editar, apagar, apagar tudo de quem sai.
 6. **Playground** — testar uma ferramenta e ver o prompt final (com memórias) e a resposta.
 7. **Modelos** — lista de modelos do OpenRouter que servem para as ferramentas.
-8. **Definições** — modelos por omissão, tempos, tentativas, disjuntor, streaming, limite de pedidos, tempos do StepAccess e limites das memórias, sem reiniciar; fechar o disjuntor à mão.
+8. **Diagrama por ferramenta** — o caminho de um pedido, passo a passo, com o estado e o que controla cada passo (6.6), e o estado dos disjuntores (5.7).
+9. **Definições** — modelos por omissão, tempos, tentativas, disjuntor, streaming, limite de pedidos, tempos do StepAccess e limites das memórias, sem reiniciar; fechar o disjuntor à mão.
 
 O que **não** está nesta API (de propósito): segredos (chave do OpenRouter, credenciais), criar ferramentas novas (são código), reiniciar/deploy, logs em bruto.
 
@@ -132,9 +133,11 @@ iris.exemplo.pt {
 | 415  | `unsupported_media_type` | `Content-Type` não é JSON.                                                                                       |
 | 422  | `invalid_request`        | Validação falhou (campo em falta, formato errado, `X-Admin-Actor` em falta, ferramenta desconhecida numa lista). |
 | 429  | `quota_exceeded`         | Playground com `countUsage: true` e o limite do plano foi atingido.                                              |
+| 429  | `rate_limited`           | (Só em `/v1/tools/*`.) Acima do limite de pedidos por minuto. Traz `Retry-After`.                                |
 | 500  | `internal_error`         | Erro inesperado. Mostrar o `requestId`.                                                                          |
 | 502  | `provider_unavailable`   | O OpenRouter falhou (rede, chave, créditos, modelo sem suporte).                                                 |
 | 503  | `service_unavailable`    | Dependência indisponível (StepAccess, base de dados) ou playground sem OpenRouter configurado.                   |
+| 503  | `tool_disabled`          | (Só em `/v1/tools/*`.) A ferramenta está desligada (`enabled: false`).                                           |
 | 504  | `timeout`                | O modelo demorou mais do que o `timeoutMs` da ferramenta.                                                        |
 
 ---
@@ -152,12 +155,13 @@ Hoje o catálogo tem `diagnostic` (implementada, só existe com `ENABLE_DIAGNOST
 
 **Configuração efetiva** de uma ferramenta (o motor lê-a **em cada pedido**, por isso uma alteração vale a partir do pedido seguinte, sem reiniciar):
 
-| Campo                                                             | Origem                                                                                                                                                       |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `model`, `temperature`, `maxOutputTokens`, `timeoutMs`, `enabled` | Base de dados se houver (`config.source = "database"`); senão os valores do código (`"default"`), com o modelo da definição `defaultModel`.                  |
-| Prompt de sistema                                                 | Versão ativa na base de dados (`prompt.source = "database"`); senão o prompt do código (`"code"`); ferramenta não implementada e sem versão ativa: `"none"`. |
+| Campo                                                                  | Origem                                                                                                                                                       |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `model`, `temperature`, `maxOutputTokens`, `timeoutMs`, `enabled`      | Base de dados se houver (`config.source = "database"`); senão os valores do código (`"default"`), com o modelo da definição `defaultModel`.                  |
+| `maxAttempts`, `totalTimeoutMs`, `rateLimitPerMinute`, `streamEnabled` | Valor próprio da ferramenta se houver (`config.overrides.*.source = "tool"`); senão a definição global (`"engine"`, ver 5.6).                                |
+| Prompt de sistema                                                      | Versão ativa na base de dados (`prompt.source = "database"`); senão o prompt do código (`"code"`); ferramenta não implementada e sem versão ativa: `"none"`. |
 
-`enabled: false` faz a ferramenta responder **503** aos pedidos do Salesforce (antes de contar utilização). O playground continua a funcionar com ferramentas desligadas.
+`enabled: false` faz a ferramenta responder **503 `tool_disabled`** aos pedidos do Salesforce (antes de contar utilização). O playground continua a funcionar com ferramentas desligadas.
 
 ### 4.2 Prompts
 
@@ -199,7 +203,7 @@ O texto do pedido e da resposta é devolvido à UI mas **não é registado** em 
 
 ### 4.5 Métricas
 
-Contadores **em memória**, desde o último arranque do serviço (recomeçam do zero ao reiniciar). Só pedidos de ferramentas do Salesforce (`/v1/tools/*`); o playground não conta. Não têm ids, orgs, utilizadores nem conteúdo. Para utilização por org/utilizador, usar os dados do StepAccess.
+Contadores **em memória**, por instância, desde o último arranque do serviço (recomeçam do zero ao reiniciar). Só pedidos de ferramentas do Salesforce (`/v1/tools/*`); o playground não conta. Não têm ids, orgs, utilizadores nem conteúdo. Para utilização por org/utilizador, usar os dados do StepAccess.
 
 ---
 
@@ -276,7 +280,22 @@ Resposta `200`:
       "avgDurationMs": 1650,
       "inputTokens": 98000,
       "outputTokens": 12000,
-      "fallbacks": 3
+      "fallbacks": 3,
+      "byModel": [
+        {
+          "model": "google/gemini-2.5-flash",
+          "calls": 82,
+          "failed": 4,
+          "failedByReason": {
+            "provider_unavailable": 2,
+            "timeout": 1,
+            "invalid_output": 1,
+            "skipped_breaker": 0
+          },
+          "avgDurationMs": 1600,
+          "servedAsFallback": 0
+        }
+      ]
     }
   ],
   "byDay": [
@@ -293,15 +312,27 @@ Resposta `200`:
     }
   ],
   "byModel": [
-    { "model": "google/gemini-2.5-flash", "calls": 131, "failed": 9, "avgDurationMs": 1710 },
-    { "model": "openai/gpt-4.1-mini", "calls": 6, "failed": 0, "avgDurationMs": 2240 }
+    {
+      "model": "google/gemini-2.5-flash",
+      "calls": 131,
+      "failed": 9,
+      "failedByReason": {
+        "provider_unavailable": 5,
+        "timeout": 2,
+        "invalid_output": 2,
+        "skipped_breaker": 3
+      },
+      "avgDurationMs": 1710
+    }
   ]
 }
 ```
 
 - `avgDurationMs`: média só dos pedidos bem-sucedidos; `null` se não houve nenhum.
 - `fallbacks`: pedidos bem-sucedidos que só tiveram resposta com um modelo de recurso.
-- `byModel`: chamadas a cada modelo (tentativas, não pedidos), por ordem alfabética. `failed` = sem resposta válida (fornecedor em baixo, tempo esgotado ou resposta inválida); `avgDurationMs` só das que responderam bem. O playground não conta.
+- `errorsByCode`: pedidos parados por código. Os que param antes do modelo têm código próprio: `tool_disabled` (ferramenta desligada), `rate_limited` (limite de pedidos), `access_denied` e `quota_exceeded` (StepAccess); os de validação do pedido contam como `invalid_request` e os sem credencial como `unauthorized`.
+- `byModel`: chamadas a cada modelo (tentativas, não pedidos), por ordem alfabética. `failed` = sem resposta válida; `failedByReason` diz porquê: `provider_unavailable`, `timeout`, `invalid_output` e `skipped_breaker` (vezes que o modelo foi **saltado** pelo disjuntor — não são chamadas, por isso não contam em `calls` nem em `failed`). `avgDurationMs` só das que responderam bem. O playground não conta.
+- `byTool[].byModel`: o mesmo, só nos pedidos dessa ferramenta, mais `servedAsFallback` (respostas válidas dadas como modelo de recurso).
 - `byDay`: dias UTC, do mais antigo para o mais recente, no máximo 30.
 - Mostrar sempre `since` ("desde o arranque às …").
 
@@ -386,18 +417,18 @@ Resposta `200` (excerto):
 }
 ```
 
-| Campo               | Significado                                                                                                                                                                                                              |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `layers`            | As camadas, de cima para baixo: quem chama (`client`), rotas (`http`), núcleo (`core`), interfaces do núcleo (`port`), implementações (`adapter`), serviços externos (`external`) e ferramentas (`tool`).                |
-| `nodes[].id`        | Estável entre chamadas (ex.: `core.engine`, `external.postgres`, `tool.<nome>`). Usar como chave na UI.                                                                                                                  |
-| `nodes[].status`    | `ok` · `warning` (funciona com reservas: `bypass`, créditos perto do limite, ≥ 20% de falhas numa ferramenta) · `error` (não funciona) · `off` (desligado ou não configurado — **não é um erro**).                       |
-| `nodes[].summary`   | Uma frase pronta a mostrar junto ao módulo.                                                                                                                                                                              |
-| `nodes[].details`   | Valores para o painel lateral (modelo, tentativas, contagens, latência…). Só números, texto, booleanos ou `null`.                                                                                                        |
-| `nodes[].configure` | Onde se muda: `{ "where": "admin_api", "path": "…" }` → abrir o ecrã dessa rota; `{ "where": "env", "keys": [...] }` → só no `.env` do servidor (mostrar as variáveis, sem botão de editar); `null` → nada a configurar. |
-| `overall`           | O pior estado dos módulos ligados (os `off` não contam).                                                                                                                                                                 |
-| `edges`             | Ligações `from → to`, com `label` opcional (ex.: o pedido HTTP ao StepAccess).                                                                                                                                           |
+| Campo               | Significado                                                                                                                                                                                                                                                                                               |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `layers`            | As camadas, de cima para baixo: quem chama (`client`), rotas (`http`), núcleo (`core`), interfaces do núcleo (`port`), implementações (`adapter`), serviços externos (`external`) e ferramentas (`tool`).                                                                                                 |
+| `nodes[].id`        | Estável entre chamadas (ex.: `core.engine`, `external.postgres`, `tool.<nome>`). Usar como chave na UI.                                                                                                                                                                                                   |
+| `nodes[].status`    | `ok` · `warning` (funciona com reservas: `bypass`, créditos perto do limite, ≥ 20% de falhas numa ferramenta) · `error` (não funciona) · `off` (desligado ou não configurado — **não é um erro**).                                                                                                        |
+| `nodes[].summary`   | Uma frase pronta a mostrar junto ao módulo.                                                                                                                                                                                                                                                               |
+| `nodes[].details`   | Valores para o painel lateral (modelo, tentativas, contagens, latência…). Só números, texto, booleanos ou `null`.                                                                                                                                                                                         |
+| `nodes[].configure` | Onde se muda: `{ "where": "admin_api", "path": "…" }` → abrir o ecrã dessa rota (com `path: "/v1/admin/settings"` vem também `keys`: as definições desse módulo); `{ "where": "env", "keys": [...] }` → só no `.env` do servidor (mostrar as variáveis, sem botão de editar); `null` → nada a configurar. |
+| `overall`           | O pior estado dos módulos ligados (os `off` não contam).                                                                                                                                                                                                                                                  |
+| `edges`             | Ligações `from → to`, com `label` opcional (ex.: o pedido HTTP ao StepAccess).                                                                                                                                                                                                                            |
 
-Modelos (`adapter.llm`): `details.chain` é a cadeia de modelos (sem o fornecedor, ex.: `"gemini-2.5-flash → gpt-4.1-mini"`) quando é igual em todas as ferramentas implementadas, ou `"várias"`; `details.fallbacks` é o total de pedidos servidos por um modelo de recurso desde o arranque; `details.openBreakers` lista os modelos com o disjuntor aberto (ou `null`). Fica `warning` com ≥ 20% dos pedidos (mínimo 5) servidos por recurso, ou com algum disjuntor aberto. Cada `tool.<nome>` tem `details.fallbacks` e `details.chain`.
+Modelos (`adapter.llm`): `details.chain` é a cadeia de modelos (sem o fornecedor, ex.: `"gemini-2.5-flash → gpt-4.1-mini"`) quando é igual em todas as ferramentas implementadas, ou `"várias"`; `details.fallbacks` é o total de pedidos servidos por um modelo de recurso desde o arranque; `details.openBreakers` é **quantos** modelos têm o disjuntor aberto (`0` se nenhum; o estado de cada um está em `GET /v1/admin/breakers`, 5.7). Fica `warning` com ≥ 20% dos pedidos (mínimo 5) servidos por recurso, ou com algum disjuntor aberto. Cada `tool.<nome>` tem `details.fallbacks` e `details.chain`.
 
 Os módulos e as ligações mudam com a configuração: em `ACCESS_MODE=open` o adaptador de acesso é `OpenAccessChecker`, o StepAccess fica `off` e não há ligações para ele; ferramentas do catálogo sem implementação aparecem `off` e sem ligação ao núcleo.
 
@@ -476,6 +507,8 @@ As definições que se mudam **sem reiniciar**. Cada uma nasce no `.env` (ou num
       "default": 2, // sem nada gravado
       "source": "database", // database | env | code
       "env": "LLM_MAX_ATTEMPTS", // null nas que vêm do código
+      "stage": "validate", // o passo do pipeline (6.6) que governa
+      "overridablePerTool": true, // cada ferramenta pode ter um valor próprio (6.3)
       "updatedAt": "2026-11-06T10:00:00.000Z", // null sem nada gravado
       "updatedBy": "ricardo@stepahead.pt",
       "constraints": { "type": "integer", "minimum": 1, "maximum": 5 }, // para o formulário
@@ -496,9 +529,44 @@ Altera só as definições enviadas. Exige `X-Admin-Actor`, que fica em `updated
 
 Resposta `200`: o mesmo que o `GET`, já com os valores novos. Erros `422`, com um detalhe por definição (`body.maxAttempts`, `body.fallbackModels.0`…): valor fora dos limites, definição desconhecida, modelos repetidos ou iguais ao `defaultModel`, e modelos que não existem no catálogo do OpenRouter ou não suportam JSON Schema (um `defaultModel` errado partiria todas as ferramentas sem configuração).
 
+### 5.7 Disjuntores
+
+O disjuntor é **por modelo e por instância**: depois de `breakerThreshold` falhas seguidas do fornecedor (`provider_unavailable`, `timeout`), o modelo é saltado durante `breakerOpenMs`; a primeira chamada depois disso é um teste (meio aberto). Uma resposta, válida ou não, fecha-o. O último modelo da cadeia nunca é saltado.
+
+#### `GET /v1/admin/breakers`
+
+Os modelos chamados desde o arranque, nesta instância.
+
+```json
+{
+  "instanceId": "iris-7f9c2b:3e1a90cd",
+  "breakers": [
+    {
+      "model": "google/gemini-2.5-flash",
+      "state": "open",
+      "consecutiveFailures": 3,
+      "openedAt": "2026-11-06T10:00:00.000Z",
+      "openUntil": "2026-11-06T10:01:00.000Z",
+      "lastError": { "reason": "timeout", "at": "2026-11-06T10:00:00.000Z" }
+    }
+  ]
+}
+```
+
+| Campo                 | Significado                                                                                                                                   |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `instanceId`          | Esta instância (`<hostname>:<id do arranque>`). Com várias instâncias, cada uma tem o seu disjuntor.                                          |
+| `state`               | `closed` (usado) · `open` (saltado até `openUntil`) · `half_open` (o tempo aberto acabou: a próxima chamada testa).                           |
+| `consecutiveFailures` | Falhas seguidas do fornecedor; volta a 0 com uma resposta.                                                                                    |
+| `openedAt`            | Quando abriu nesta série de falhas; `null` se não abriu.                                                                                      |
+| `openUntil`           | Até quando é (ou foi) saltado; `null` se não abriu.                                                                                           |
+| `lastError`           | A última falha do fornecedor neste modelo desde o arranque (`reason`: `provider_unavailable` ou `timeout`), ou `null`. Fica depois de fechar. |
+
+Sem motor ligado: `{ "instanceId": "…", "breakers": [] }`.
+
 #### `POST /v1/admin/breakers/reset`
 
-Fecha o disjuntor sem esperar que o tempo aberto acabe: de um modelo com `?model=google%2Fgemini-2.5-flash`, ou de todos sem parâmetro. Sem corpo. Exige `X-Admin-Actor`. Resposta `200`: `{ "closed": ["google/gemini-2.5-flash"] }` (os que estavam abertos; `[]` se nenhum). `503` se o motor não estiver ligado. Os disjuntores abertos aparecem em `adapter.llm` na topologia (`details.openBreakers`). O disjuntor é por instância.
+Fecha o disjuntor sem esperar que o tempo aberto acabe: de um modelo com `?model=google%2Fgemini-2.5-flash`, ou de todos sem parâmetro. Sem corpo. Exige `X-Admin-Actor`. Resposta `200`: `{ "closed": ["google/gemini-2.5-flash"] }` (os que estavam abertos; `[]` se nenhum). `503` se o motor não estiver ligado. Fecha só nesta instância.
 
 ---
 
@@ -523,6 +591,12 @@ Resposta `200`:
         "maxOutputTokens": 300,
         "timeoutMs": 20000,
         "fallbackModels": ["openai/gpt-4.1-mini"],
+        "overrides": {
+          "maxAttempts": { "value": 3, "source": "tool" },
+          "totalTimeoutMs": { "value": 30000, "source": "engine" },
+          "rateLimitPerMinute": { "value": 0, "source": "engine" },
+          "streamEnabled": { "value": true, "source": "engine" }
+        },
         "source": "default"
       },
       "prompt": { "source": "code", "activeVersion": null, "versionCount": 0 }
@@ -540,15 +614,16 @@ Resposta `200`:
 }
 ```
 
-| Campo                   | Significado                                                                                                                            |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `implemented`           | Existe no código deste servidor (pode correr).                                                                                         |
-| `version`               | Versão do contrato de entrada/saída (só implementadas).                                                                                |
-| `enabled`               | `false` = o Salesforce recebe 503 nesta ferramenta.                                                                                    |
-| `config`                | Configuração efetiva; `null` = não implementada e sem configuração gravada.                                                            |
-| `config.source`         | `database` (gravada pelo admin) ou `default` (valores do código).                                                                      |
-| `config.fallbackModels` | Modelos de recurso, por ordem. Com `source: "database"`, os gravados (pode ser `[]`); com `default`, os da definição `fallbackModels`. |
-| `prompt.source`         | `database` (versão ativa), `code` (prompt de origem) ou `none`.                                                                        |
+| Campo                   | Significado                                                                                                                                                                                        |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `implemented`           | Existe no código deste servidor (pode correr).                                                                                                                                                     |
+| `version`               | Versão do contrato de entrada/saída (só implementadas).                                                                                                                                            |
+| `enabled`               | `false` = o Salesforce recebe `503 tool_disabled` nesta ferramenta.                                                                                                                                |
+| `config`                | Configuração efetiva; `null` = não implementada e sem configuração gravada.                                                                                                                        |
+| `config.source`         | `database` (gravada pelo admin) ou `default` (valores do código).                                                                                                                                  |
+| `config.fallbackModels` | Modelos de recurso, por ordem. Com `source: "database"`, os gravados (pode ser `[]`); com `default`, os da definição `fallbackModels`.                                                             |
+| `config.overrides`      | Para `maxAttempts`, `totalTimeoutMs`, `rateLimitPerMinute` e `streamEnabled`: o valor em vigor nesta ferramenta e de onde vem — `tool` (valor próprio, 6.3) ou `engine` (a definição global, 5.6). |
+| `prompt.source`         | `database` (versão ativa), `code` (prompt de origem) ou `none`.                                                                                                                                    |
 
 ### 6.2 `GET /v1/admin/tools/:name`
 
@@ -582,16 +657,22 @@ Tudo de 6.1, mais:
 
 ### 6.3 `PUT /v1/admin/tools/:name/config`
 
-Grava a configuração (substitui toda). Corpo (todos obrigatórios, exceto `fallbackModels`):
+Grava a configuração (substitui toda). Corpo (obrigatórios os cinco primeiros; campos a mais dão `422`):
 
-| Campo             | Tipo     | Regras                                                               |
-| ----------------- | -------- | -------------------------------------------------------------------- |
-| `model`           | string   | 1–200; id do OpenRouter (usar `/models`)                             |
-| `temperature`     | number   | 0–2                                                                  |
-| `maxOutputTokens` | integer  | 1–32000                                                              |
-| `timeoutMs`       | integer  | 1000–120000                                                          |
-| `enabled`         | boolean  |                                                                      |
-| `fallbackModels`  | string[] | opcional, omissão `[]`; até 3, cada um 1–200; por ordem de tentativa |
+| Campo                | Tipo            | Regras                                                                                 |
+| -------------------- | --------------- | -------------------------------------------------------------------------------------- |
+| `model`              | string          | 1–200; id do OpenRouter (usar `/models`)                                               |
+| `temperature`        | number          | 0–2                                                                                    |
+| `maxOutputTokens`    | integer         | 1–32000                                                                                |
+| `timeoutMs`          | integer         | 1000–120000                                                                            |
+| `enabled`            | boolean         |                                                                                        |
+| `fallbackModels`     | string[]        | opcional, omissão `[]`; até 3, cada um 1–200; por ordem de tentativa                   |
+| `maxAttempts`        | integer \| null | opcional; 1–5. Tentativas por modelo nesta ferramenta                                  |
+| `totalTimeoutMs`     | integer \| null | opcional; 2000–115000. Teto de tempo de um pedido nesta ferramenta                     |
+| `rateLimitPerMinute` | integer \| null | opcional; 0–100000 (0 = sem limite). Com valor próprio, conta por org **e** ferramenta |
+| `streamEnabled`      | boolean \| null | opcional. `false` recusa `"stream": true` só nesta ferramenta                          |
+
+Os quatro últimos substituem a definição global com o mesmo nome (5.6) **só nesta ferramenta**. `null` ou ausente = segue a global (e passa a acompanhá-la quando ela mudar). Os limites e as mensagens de erro são os de `PATCH /v1/admin/settings`: `422` com "As definições não são válidas." e um `details[]` por campo (`path` = `body.maxAttempts`…).
 
 ```json
 {
@@ -600,7 +681,9 @@ Grava a configuração (substitui toda). Corpo (todos obrigatórios, exceto `fal
   "maxOutputTokens": 800,
   "timeoutMs": 20000,
   "enabled": true,
-  "fallbackModels": ["google/gemini-2.5-flash", "openai/gpt-4.1-mini"]
+  "fallbackModels": ["google/gemini-2.5-flash", "openai/gpt-4.1-mini"],
+  "maxAttempts": 3,
+  "rateLimitPerMinute": null
 }
 ```
 
@@ -609,9 +692,9 @@ Resposta `200`: o detalhe da ferramenta (como 6.2), já com `config.source = "da
 **Modelos de recurso.** Quando o modelo principal (ou o OpenRouter) falha, o motor experimenta estes por ordem:
 
 - fornecedor em baixo (`provider_unavailable`) ou tempo esgotado (`timeout`) → passa logo ao seguinte;
-- resposta que não cumpre o esquema → uma nova tentativa no mesmo modelo e, se falhar outra vez, passa ao seguinte;
-- cada chamada usa o `timeoutMs` da ferramenta, dentro de um teto por pedido (definição `totalTimeoutMs`, 30 s por omissão); não se começa uma tentativa com menos de 1 s;
-- **disjuntor**: depois de 3 falhas de fornecedor seguidas, o modelo é saltado durante 60 s (exceto se for o último da cadeia).
+- resposta que não cumpre o esquema → nova tentativa no mesmo modelo até `maxAttempts` (2 por omissão) e depois passa ao seguinte;
+- cada chamada usa o `timeoutMs` da ferramenta, dentro de um teto por pedido (`totalTimeoutMs`, 30 s por omissão); não se começa uma tentativa com menos de 1 s;
+- **disjuntor**: depois de `breakerThreshold` falhas de fornecedor seguidas (3), o modelo é saltado durante `breakerOpenMs` (60 s), exceto se for o último da cadeia (ver 5.7).
 
 Omitir `fallbackModels` grava `[]` (apaga os que existiam). Cada modelo de recurso é validado contra o catálogo do OpenRouter (o mesmo de `/models`, com cache de 15 min): erros `422 invalid_request` com a mensagem "Os modelos de recurso não são válidos." e um `details[]` por modelo, com `path` = `body.fallbackModels.<i>` e `issue` = `repetido`, `é o modelo principal`, `não existe no catálogo de modelos do OpenRouter` ou `não suporta respostas com JSON Schema`. Mais de 3: `422` com `path` = `body.fallbackModels`. Se o OpenRouter não responder ao pedir o catálogo: `502 provider_unavailable` (nada é gravado).
 
@@ -669,6 +752,69 @@ Resposta `201`: a versão criada (`{ version, isActive, systemTemplate, changeNo
 ```
 
 Resposta `200`: `{ "tool": "diagnostic", "activeVersion": 3 }`. Erros: `404 not_found` (versão não existe), `404 unknown_tool`.
+
+### 6.6 `GET /v1/admin/tools/:name/pipeline`
+
+O caminho de um pedido a esta ferramenta, **pela ordem do código** (`src/engine/pipeline.ts`), com o estado de cada passo, o que o controla e as contagens desde o arranque (por instância). Para o diagrama da consola: cada passo abre o que o controla. Funciona também com ferramentas não implementadas (todos os passos `off`, `models: []`). Erro: `404 unknown_tool`.
+
+```jsonc
+{
+  "tool": "sentiment",
+  "generatedAt": "2026-11-06T10:00:00.000Z",
+  "since": "2026-11-06T08:00:00.000Z", // arranque: as contagens são desde aqui
+  "stages": [
+    {
+      "id": "rate",
+      "label": "Limite de pedidos",
+      "status": "ok", // ok | warning | error | off (como na topologia)
+      "summary": "60 pedidos por minuto por org nesta ferramenta",
+      "counts": { "passed": 118, "stopped": 2 },
+      "stoppedByCode": { "rate_limited": 2 },
+      "toolConfig": [], // campos de PUT /tools/:name/config que o controlam
+      "settings": ["rateLimitPerMinute"], // chaves de /settings (globais)
+      "overrides": ["rateLimitPerMinute"], // as que esta ferramenta pode substituir
+      "env": [], // variáveis só do .env (nomes, nunca valores)
+      "details": { "limitPerMinute": 60, "source": "tool" },
+    },
+  ],
+  "models": [
+    {
+      "model": "google/gemini-2.5-flash",
+      "role": "primary", // primary | fallback
+      "breaker": { "state": "closed", "openUntil": null, "consecutiveFailures": 0 },
+      "calls": 40,
+      "succeeded": 37,
+      "avgDurationMs": 1500,
+      "failedByReason": {
+        "provider_unavailable": 2,
+        "timeout": 1,
+        "invalid_output": 0,
+        "skipped_breaker": 5,
+      },
+      "servedAsFallback": 0,
+    },
+  ],
+}
+```
+
+**Os passos** (sempre os nove, por esta ordem):
+
+| `id`       | O que faz                                                  | Pára com                                                 | Controlado por                                                                                                                                                                                         | `details`                                                                      |
+| ---------- | ---------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| `request`  | Credencial, corpo e entrada da ferramenta                  | `unauthorized`, `invalid_request`, `payload_too_large`   | env `API_SECRET`, `MAX_BODY_BYTES`                                                                                                                                                                     | —                                                                              |
+| `gate`     | Lê a configuração: ligada? streaming permitido?            | `tool_disabled`, `invalid_request` (`body.stream`)       | `enabled`                                                                                                                                                                                              | `enabled`, `streamSupported`                                                   |
+| `rate`     | Limite de pedidos por minuto                               | `rate_limited`                                           | `rateLimitPerMinute` (global e por ferramenta)                                                                                                                                                         | `limitPerMinute`, `source` (`tool`/`engine`)                                   |
+| `access`   | StepAccess (conta utilização)                              | `access_denied`, `quota_exceeded`, `service_unavailable` | `stepAccessTimeoutMs`; env `ACCESS_MODE`, `STEPACCESS_*`                                                                                                                                               | `mode`, `latencyMs` (da última verificação de um pedido com resposta)          |
+| `memories` | Memórias da org e do utilizador                            | `internal_error`                                         | `memoryMaxChars`, `memoryPerOrg`, `memoryPerUser`                                                                                                                                                      | `orgAvg`, `userAvg` (por pedido com resposta), `runs`                          |
+| `prompt`   | Prompt de sistema com as memórias e mensagem do utilizador | `internal_error`                                         | versões do prompt (6.5)                                                                                                                                                                                | `source`, `activeVersion`                                                      |
+| `models`   | Cadeia de modelos, tentativas, disjuntor, teto de tempo    | `provider_unavailable`, `timeout`                        | `model`, `fallbackModels`, `temperature`, `maxOutputTokens`, `timeoutMs`; `defaultModel`, `fallbackModels`, `totalTimeoutMs` (por ferramenta), `breakerThreshold`, `breakerOpenMs`; env `OPENROUTER_*` | `primary`, `fallbacks`, `openBreakers`, `totalTimeoutMs`, `totalTimeoutSource` |
+| `validate` | A resposta cumpre o esquema                                | `invalid_model_output`                                   | `maxAttempts` (global e por ferramenta)                                                                                                                                                                | `invalidOutputs`, `retries`, `maxAttempts`, `maxAttemptsSource`                |
+| `response` | JSON ou SSE; custo para o StepAccess em segundo plano      | `internal_error`                                         | `streamEnabled` (global e por ferramenta), `stepAccessUsageTimeoutMs`                                                                                                                                  | `succeeded`, `avgDurationMs`, `stream`, `streamSource`                         |
+
+- `counts.passed` de um passo = os que lá chegaram menos os que lá pararam; o primeiro recebe todos os pedidos à ferramenta. `response.passed` = respostas com sucesso.
+- `status`: `gate` fica `off` com a ferramenta desligada; `access` e `memories` seguem o nó correspondente da topologia (`adapter.access`, `adapter.pgMemoryStore`); `models` fica `warning` com um disjuntor aberto na cadeia e `error` com todos; `rate`, `validate` e `response` ficam `warning` com ≥ 20% (mínimo 5) parados, inválidos ou falhados.
+- `models`: a cadeia em vigor, por ordem, com o disjuntor de cada modelo (5.7) e as chamadas feitas **por esta ferramenta**. `failedByReason.skipped_breaker` conta os saltos (não são chamadas).
+- Nunca inclui segredos, valores do `.env`, ids de org ou de utilizador, nem conteúdo de pedidos.
 
 ---
 
@@ -798,7 +944,17 @@ Monta o prompt **sem chamar o modelo** (sem custo). Resposta `200`:
     "maxOutputTokens": 300,
     "timeoutMs": 20000,
     "fallbackModels": ["openai/gpt-4.1-mini"],
-    "enabled": true
+    "enabled": true,
+    "maxAttempts": 2,
+    "totalTimeoutMs": 30000,
+    "rateLimitPerMinute": 0,
+    "streamEnabled": true,
+    "overrides": {
+      "maxAttempts": null,
+      "totalTimeoutMs": null,
+      "rateLimitPerMinute": null,
+      "streamEnabled": null
+    }
   },
   "memories": { "org": ["Tratar sempre o cliente por você."], "user": [] },
   "prompt": {
@@ -813,7 +969,7 @@ Monta o prompt **sem chamar o modelo** (sem custo). Resposta `200`:
 }
 ```
 
-`settings.systemPrompt` aparece só quando há versão ativa na base de dados.
+`settings.systemPrompt` aparece só quando há versão ativa na base de dados. `maxAttempts`, `totalTimeoutMs`, `rateLimitPerMinute` e `streamEnabled` são os valores **em vigor** nesta ferramenta; `overrides` mostra os valores próprios gravados (`null` = segue a definição global).
 
 ### 8.2 `POST /v1/admin/playground/:name/run`
 
@@ -833,13 +989,24 @@ Resposta `200` (mesmo quando o modelo responde mal — ver `ok`):
   "error": null,
   "countedUsage": false,
   "durationMs": 1432,
+  "timings": { "access": 0, "memories": 3, "prompt": 0, "models": 1420, "validate": 1 },
   "settings": {
     "model": "google/gemini-2.5-flash",
     "temperature": 0.2,
     "maxOutputTokens": 300,
     "timeoutMs": 20000,
     "fallbackModels": ["openai/gpt-4.1-mini"],
-    "enabled": true
+    "enabled": true,
+    "maxAttempts": 2,
+    "totalTimeoutMs": 30000,
+    "rateLimitPerMinute": 0,
+    "streamEnabled": true,
+    "overrides": {
+      "maxAttempts": null,
+      "totalTimeoutMs": null,
+      "rateLimitPerMinute": null,
+      "streamEnabled": null
+    }
   },
   "memories": { "org": ["Tratar sempre o cliente por você."], "user": [] },
   "prompt": { "system": "…", "user": "Olá" },
@@ -869,19 +1036,20 @@ Resposta `200` (mesmo quando o modelo responde mal — ver `ok`):
 }
 ```
 
-| Campo                       | Significado                                                                                                                                     |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ok`                        | `true` = resposta válida em `result`. `false` = toda a cadeia de modelos falhou (`result: null`; ver `error` e `attempts`).                     |
-| `error`                     | `null` com `ok: true`. Com `ok: false`: `{ code, message }` da última tentativa (`invalid_model_output`, `provider_unavailable` ou `timeout`).  |
-| `attempts`                  | Uma entrada por tentativa, pela ordem da cadeia (modelo principal e depois os de recurso), incluindo os modelos saltados.                       |
-| `attempts[].reason`         | `ok` · `invalid_output` (não cumpriu o esquema) · `provider_unavailable` · `timeout` · `skipped_breaker` (saltado pelo disjuntor, sem chamada). |
-| `attempts[].fallback`       | `true` quando o modelo não é o principal.                                                                                                       |
-| `attempts[].requestedModel` | Modelo pedido.                                                                                                                                  |
-| `attempts[].model`          | Modelo que de facto respondeu (o OpenRouter pode indicar uma variante); igual a `requestedModel` quando não houve resposta.                     |
-| `attempts[].text`           | Texto bruto devolvido pelo modelo; `null` quando não houve resposta.                                                                            |
-| `attempts[].costUsd`        | Custo da tentativa em dólares, indicado pelo OpenRouter (ausente se não vier).                                                                  |
+| Campo                       | Significado                                                                                                                                                                                          |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ok`                        | `true` = resposta válida em `result`. `false` = toda a cadeia de modelos falhou (`result: null`; ver `error` e `attempts`).                                                                          |
+| `error`                     | `null` com `ok: true`. Com `ok: false`: `{ code, message }` da última tentativa (`invalid_model_output`, `provider_unavailable` ou `timeout`).                                                       |
+| `attempts`                  | Uma entrada por tentativa, pela ordem da cadeia (modelo principal e depois os de recurso), incluindo os modelos saltados.                                                                            |
+| `attempts[].reason`         | `ok` · `invalid_output` (não cumpriu o esquema) · `provider_unavailable` · `timeout` · `skipped_breaker` (saltado pelo disjuntor, sem chamada).                                                      |
+| `attempts[].fallback`       | `true` quando o modelo não é o principal.                                                                                                                                                            |
+| `attempts[].requestedModel` | Modelo pedido.                                                                                                                                                                                       |
+| `attempts[].model`          | Modelo que de facto respondeu (o OpenRouter pode indicar uma variante); igual a `requestedModel` quando não houve resposta.                                                                          |
+| `attempts[].text`           | Texto bruto devolvido pelo modelo; `null` quando não houve resposta.                                                                                                                                 |
+| `attempts[].costUsd`        | Custo da tentativa em dólares, indicado pelo OpenRouter (ausente se não vier).                                                                                                                       |
+| `timings`                   | Tempo real de cada passo, em ms: `access` (0 sem `countUsage`), `memories`, `prompt`, `models` (soma das chamadas ao modelo) e `validate` (soma das validações). Para animar a simulação na consola. |
 
-Falhas do modelo (rede, chave, créditos, tempo esgotado) **já não** dão 502/504 no playground: a resposta é `200` com `ok: false`, o `error` e as tentativas, para se ver em que modelo e porquê falhou. O playground usa o mesmo disjuntor que os pedidos reais, mas não entra nas métricas.
+Falhas do modelo (rede, chave, créditos, tempo esgotado) **já não** dão 502/504 no playground: a resposta é `200` com `ok: false`, o `error` e as tentativas, para se ver em que modelo e porquê falhou. O playground usa o mesmo disjuntor, as mesmas tentativas e o mesmo teto de tempo da ferramenta que os pedidos reais, mas não conta para o limite de pedidos nem entra nas métricas.
 
 ---
 
@@ -917,14 +1085,14 @@ async function iris(req, method, path, body) {
 
 ### 9.2 Permissões sugeridas (perfis do StepAccess)
 
-| Ação                                                                 | Perfil                                       |
-| -------------------------------------------------------------------- | -------------------------------------------- |
-| Ver estado, métricas, modelos, ferramentas, prompts, memórias        | qualquer utilizador com acesso ao StepAccess |
-| Playground (`preview`, `run` sem contar)                             | qualquer                                     |
-| Criar, editar, apagar memórias da org; apagar memórias de utilizador | qualquer                                     |
-| Configuração de ferramentas, versões e ativação de prompts           | **admin**                                    |
-| Definições (`PATCH /settings`) e fechar o disjuntor                  | **admin**                                    |
-| `memories/purge`, playground com `countUsage: true`                  | **admin**                                    |
+| Ação                                                                        | Perfil                                       |
+| --------------------------------------------------------------------------- | -------------------------------------------- |
+| Ver estado, métricas, modelos, ferramentas, prompts, memórias               | qualquer utilizador com acesso ao StepAccess |
+| Playground (`preview`, `run` sem contar)                                    | qualquer                                     |
+| Criar, editar, apagar memórias da org; apagar memórias de utilizador        | qualquer                                     |
+| Configuração de ferramentas, versões e ativação de prompts                  | **admin**                                    |
+| Definições (`PATCH /settings`), valores por ferramenta e fechar o disjuntor | **admin**                                    |
+| `memories/purge`, playground com `countUsage: true`                         | **admin**                                    |
 
 ### 9.3 Auditoria (`access_audit_log`)
 
@@ -956,9 +1124,9 @@ Uma secção **IRIS** no menu do StepAccess, com:
    - `engine.ready = false` → listar `engine.missing`.
    - Créditos do OpenRouter (`usage` / `limit`).
    - Versão e tempo desde o arranque. Botão "Atualizar" (não fazer polling a menos de 30 s).
-2. **Definições** — `/settings`: um formulário por `group`, campos gerados de `constraints`, origem de cada valor e "Repor" para voltar ao valor inicial. Na secção dos modelos, o seletor alimentado por `/models` e, com disjuntores abertos (topologia), o botão "Fechar disjuntor".
+2. **Definições** — `/settings`: um formulário por `group`, campos gerados de `constraints`, origem de cada valor e "Repor" para voltar ao valor inicial. Na secção dos modelos, o seletor alimentado por `/models` e, com disjuntores abertos (`/breakers`), o botão "Fechar disjuntor". `stage` liga cada definição a um passo do diagrama; `overridablePerTool` diz se a ferramenta a pode substituir.
 3. **Atividade** — `/metrics`: totais, gráfico por dia (pedidos ok vs falhados), tabela por ferramenta, erros por código. Mostrar "desde <since>" e explicar que recomeça ao reiniciar.
-4. **Ferramentas** — tabela (`name`, implementada, ligada, modelo, origem da config e do prompt).
+4. **Ferramentas** — o diagrama de `/tools/:name/pipeline`: um bloco por passo, com `status`, `summary` e `counts`; ao abrir um passo, os campos de `toolConfig` (formulário da ferramenta), `overrides` (valor próprio ou "segue a global"), `settings` (link para Definições) e `env` (só leitura). Tabela (`name`, implementada, ligada, modelo, origem da config e do prompt).
    - Detalhe: formulário da configuração (seletor de modelo alimentado por `/models`, temperatura 0–2, tokens, tempo limite, ligada); "Repor valores de origem".
    - Separador **Prompt**: versão ativa; histórico; **comparação lado a lado (diff)** entre versões e com o prompt do código; "Nova versão" (editor de texto grande + nota de alteração + "ativar já"); "Ativar esta versão"; "Usar o prompt de origem".
    - Botão "Testar no playground" com o prompt/modelo em edição antes de gravar.

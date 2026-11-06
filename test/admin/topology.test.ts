@@ -132,6 +132,21 @@ describe('buildTopology', () => {
     expect(node(missing, 'core.engine')).toMatchObject({
       status: 'error',
       summary: 'Desligado: falta STEPACCESS_URL',
+      // As definições deste módulo que se mudam pela API.
+      configure: {
+        where: 'admin_api',
+        path: '/v1/admin/settings',
+        keys: [
+          'defaultModel',
+          'fallbackModels',
+          'totalTimeoutMs',
+          'maxAttempts',
+          'breakerThreshold',
+          'breakerOpenMs',
+          'streamEnabled',
+          'rateLimitPerMinute',
+        ],
+      },
     });
     expect(node(missing, 'http.tools')).toMatchObject({
       status: 'off',
@@ -184,7 +199,7 @@ describe('buildTopology', () => {
     const t = topology({ tools: [chained, reply] });
     expect(node(t, 'adapter.llm')).toMatchObject({
       status: 'ok',
-      details: { chain: 'gemini-2.5-flash → gpt-4.1-mini', fallbacks: 1, openBreakers: null },
+      details: { chain: 'gemini-2.5-flash → gpt-4.1-mini', fallbacks: 1, openBreakers: 0 },
     });
     expect(node(t, 'tool.sentiment').details).toMatchObject({ fallbacks: 1 });
 

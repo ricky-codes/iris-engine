@@ -5,6 +5,8 @@ import { EngineError } from '../../src/engine/errors.js';
 import type { LlmProvider, LlmRequest } from '../../src/engine/llm.js';
 import { callModel, runTool, type PreparedRun } from '../../src/engine/run.js';
 import type { ToolDefinition } from '../../src/engine/tool.js';
+import { emptyTimings } from '../../src/engine/pipeline.js';
+import { noOverrides } from '../../src/engine/store.js';
 import type { CostEvent } from '../../src/engine/usage.js';
 import { diagnosticTool } from '../../src/tools/diagnostic.js';
 import { fakeAccess, fakeStore } from './fakes.js';
@@ -55,11 +57,17 @@ function prepared(model: string, fallbackModels: string[], timeoutMs = 20_000): 
       timeoutMs,
       enabled: true,
       systemPrompt: undefined,
+      overrides: noOverrides(),
+      maxAttempts: 2,
+      totalTimeoutMs: 30_000,
+      rateLimitPerMinute: 0,
+      streamEnabled: true,
     },
     memories: { org: [], user: [] },
     system: 'S',
     user: 'U',
     schema: {},
+    timings: emptyTimings(),
   };
 }
 
@@ -285,6 +293,38 @@ describe('motor com modelos de recurso', () => {
     ]);
     // O playground não entra nas métricas.
     expect(events.filter((e) => e.type === 'model_call')).toHaveLength(6);
+  });
+
+  it('disjuntor: fechado, aberto, meio aberto e de volta a fechado, com a última falha', () => {
+    let now = 0;
+    const b = new CircuitBreaker(() => now, 2, 1000);
+    b.recordSuccess('m');
+    expect(b.status()).toEqual([
+      {
+        model: 'm',
+        state: 'closed',
+        consecutiveFailures: 0,
+        openedAt: null,
+        openUntil: null,
+        lastError: null,
+      },
+    ]);
+    b.recordFailure('m', 'timeout');
+    b.recordFailure('m', 'provider_unavailable');
+    expect(b.status()[0]).toMatchObject({
+      state: 'open',
+      consecutiveFailures: 2,
+      openedAt: new Date(0).toISOString(),
+      openUntil: new Date(1000).toISOString(),
+      lastError: { reason: 'provider_unavailable' },
+    });
+    now = 1500;
+    expect(b.status()[0]?.state).toBe('half_open');
+    b.recordSuccess('m');
+    expect(b.status()[0]).toMatchObject({
+      state: 'closed',
+      lastError: { reason: 'provider_unavailable' },
+    });
   });
 
   it('lê as definições em cada pedido: modelo, cadeia, tentativas e disjuntor mudam sem recriar o motor', async () => {

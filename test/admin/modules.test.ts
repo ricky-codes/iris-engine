@@ -101,6 +101,7 @@ describe('describeModules', () => {
 
   it('mostra os valores em vigor e nunca segredos', () => {
     const json = JSON.stringify(describeModules(input()));
+    expect(json).not.toMatch(/alert|webhook/i);
     expect(json).toContain('https://access.exemplo.pt');
     expect(json).toContain('openai/gpt-4.1-mini');
     expect(json).not.toMatch(/password|apiKey":"|sk-or/i);
@@ -133,6 +134,7 @@ describe('GET /v1/admin/modules', () => {
         tools: [],
         settings: testSettings(),
         breakers: undefined,
+        instanceId: 'teste:1',
         metrics: new Metrics(),
         status: async () => ({}),
         topology: async () => input().topology,

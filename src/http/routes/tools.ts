@@ -4,22 +4,25 @@ import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import type { FastifyError, FastifyRequest } from 'fastify';
 import type { Metrics } from '../../engine/metrics.js';
 import type { Engine } from '../../engine/engine.js';
-import { read, type Live } from '../../engine/live.js';
 import type { ToolDefinition } from '../../engine/tool.js';
-import { errorCodeOf, resolveError } from '../error-handler.js';
+import type { PipelineStage } from '../../engine/pipeline.js';
+import { errorCodeOf, errorStageOf, resolveError } from '../error-handler.js';
 import { AppError, type ErrorBody } from '../errors.js';
-import { RateLimiter } from '../rate-limit.js';
 
 export interface ToolRoutesOptions {
   engine: Engine;
   apiSecret: string;
   /** Contadores agregados (sem conteúdo) para a API de administração. */
   metrics?: Metrics;
-  /** `false` recusa `"stream": true` em todas as ferramentas. Por omissão, `true`. Lido em cada pedido. */
-  streamEnabled?: Live<boolean>;
-  /** Pedidos por minuto e por org (0 ou ausente = sem limite). Lido em cada pedido. */
-  rateLimitPerMinute?: Live<number>;
 }
+
+/** Os erros anteriores ao motor (credencial, corpo) param no primeiro passo. */
+const REQUEST_CODES = new Set([
+  'unauthorized',
+  'invalid_request',
+  'payload_too_large',
+  'unsupported_media_type',
+]);
 
 const sha256 = (value: string): Buffer => createHash('sha256').update(value).digest();
 
@@ -73,8 +76,6 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
     { inputTokens?: number; outputTokens?: number; fallback?: boolean }
   >();
   const toolNames = new Set(opts.engine.tools().map((t) => t.name));
-  const streamEnabled = (): boolean => read(opts.streamEnabled ?? true);
-  const limiter = new RateLimiter(opts.rateLimitPerMinute ?? 0);
 
   // Pedidos em streaming registam as métricas ao terminar a ligação, não no `onResponse`.
   const recorded = new WeakSet<FastifyRequest>();
@@ -87,9 +88,14 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
     if (opts.metrics === undefined || recorded.has(request)) return;
     recorded.add(request);
     const tokens = usage.get(request);
+    const stage: PipelineStage | undefined =
+      errorCode === undefined
+        ? undefined
+        : (errorStageOf(request) ?? (REQUEST_CODES.has(errorCode) ? 'request' : 'response'));
     opts.metrics.record({
       tool,
       errorCode,
+      stage,
       durationMs,
       inputTokens: tokens?.inputTokens,
       outputTokens: tokens?.outputTokens,
@@ -109,14 +115,17 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
     );
   });
 
-  app.get('/v1/tools', async () => ({
-    tools: opts.engine.tools().map((t) => ({
-      name: t.name,
-      version: t.version,
-      description: t.description,
-      streaming: streamEnabled() && t.stream !== undefined,
-    })),
-  }));
+  app.get('/v1/tools', async () => {
+    const streaming = await opts.engine.streaming();
+    return {
+      tools: opts.engine.tools().map((t) => ({
+        name: t.name,
+        version: t.version,
+        description: t.description,
+        streaming: streaming.get(t.name) ?? false,
+      })),
+    };
+  });
 
   for (const tool of opts.engine.tools()) {
     app.post(
@@ -136,23 +145,8 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
           ),
         );
 
-        // Antes de gastar utilização no StepAccess ou de chamar o modelo.
-        const verdict = limiter.hit(orgId);
-        if (!verdict.allowed) {
-          throw new AppError(
-            'rate_limited',
-            429,
-            'Demasiados pedidos. Tente de novo em breve.',
-            [],
-            { 'Retry-After': String(verdict.retryAfterSeconds) },
-          );
-        }
-        if (body.stream === true && !streamEnabled()) {
-          throw new AppError('invalid_request', 422, 'O pedido não é válido.', [
-            { path: 'body.stream', issue: 'o streaming está desativado neste servidor' },
-          ]);
-        }
-
+        // O limite de pedidos e o streaming dependem da ferramenta: o motor verifica-os logo a
+        // seguir a ler a configuração, antes do StepAccess e do modelo.
         const started = performance.now();
 
         if (body.stream === true) {

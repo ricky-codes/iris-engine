@@ -55,16 +55,93 @@ describe('Metrics', () => {
     expect(m.snapshot().byTool[0]).toMatchObject({ requests: 3, fallbacks: 1 });
   });
 
-  it('conta as chamadas a cada modelo, com falhas e tempo médio das que responderam', () => {
+  it('conta as chamadas a cada modelo, por motivo e por ferramenta, sem contar os saltos como chamadas', () => {
     const m = new Metrics();
-    m.recordModelCall({ model: 'b/modelo', ok: true, durationMs: 100 });
-    m.recordModelCall({ model: 'b/modelo', ok: true, durationMs: 300 });
-    m.recordModelCall({ model: 'b/modelo', ok: false, durationMs: 9000 });
-    m.recordModelCall({ model: 'a/outro', ok: false, durationMs: 50 });
-    expect(m.snapshot().byModel).toEqual([
-      { model: 'a/outro', calls: 1, failed: 1, avgDurationMs: null },
-      { model: 'b/modelo', calls: 3, failed: 1, avgDurationMs: 200 },
+    const call = (over: Partial<Parameters<Metrics['recordModelCall']>[0]>) => {
+      m.recordModelCall({
+        tool: 'reply',
+        model: 'b/modelo',
+        reason: 'ok',
+        fallback: false,
+        attempt: 1,
+        durationMs: 100,
+        ...over,
+      });
+    };
+    call({});
+    call({ durationMs: 300, fallback: true });
+    call({ reason: 'timeout', durationMs: 9000 });
+    call({ reason: 'invalid_output', attempt: 1 });
+    call({ reason: 'skipped_breaker', durationMs: 0 });
+    call({ tool: 'sentiment', model: 'a/outro', reason: 'provider_unavailable', durationMs: 50 });
+    const none = { provider_unavailable: 0, timeout: 0, invalid_output: 0, skipped_breaker: 0 };
+    const s = m.snapshot();
+    expect(s.byModel).toEqual([
+      {
+        model: 'a/outro',
+        calls: 1,
+        failed: 1,
+        failedByReason: { ...none, provider_unavailable: 1 },
+        avgDurationMs: null,
+      },
+      {
+        model: 'b/modelo',
+        calls: 4,
+        failed: 2,
+        failedByReason: { ...none, timeout: 1, invalid_output: 1, skipped_breaker: 1 },
+        avgDurationMs: 200,
+      },
     ]);
+    m.record({ tool: 'reply', errorCode: undefined, durationMs: 1 });
+    expect(m.snapshot().byTool[0]).toMatchObject({
+      tool: 'reply',
+      byModel: [{ model: 'b/modelo', calls: 4, servedAsFallback: 1 }],
+    });
+    // Nas métricas do diagrama, também as novas tentativas no mesmo modelo.
+    call({ attempt: 2 });
+    expect(m.pipeline('reply').byModel[0]).toMatchObject({ calls: 5, retries: 1 });
+  });
+
+  it('regista o passo em que cada pedido parou, e as memórias e o acesso dos que correram', () => {
+    const m = new Metrics();
+    m.record({ tool: 'reply', errorCode: 'tool_disabled', stage: 'gate', durationMs: 1 });
+    m.record({ tool: 'reply', errorCode: 'rate_limited', stage: 'rate', durationMs: 1 });
+    m.record({ tool: 'reply', errorCode: 'rate_limited', stage: 'rate', durationMs: 1 });
+    m.record({ tool: 'reply', errorCode: 'internal_error', durationMs: 1 });
+    m.recordRun({
+      tool: 'reply',
+      timings: { access: 42, memories: 1, prompt: 1, models: 10, validate: 1 },
+      orgMemories: 2,
+      userMemories: 1,
+      checkedAccess: true,
+    });
+    m.recordRun({
+      tool: 'reply',
+      timings: { access: 7, memories: 1, prompt: 1, models: 10, validate: 1 },
+      orgMemories: 1,
+      userMemories: 0,
+      checkedAccess: true,
+    });
+    const p = m.pipeline('reply');
+    expect(p.stops).toMatchObject({
+      gate: { tool_disabled: 1 },
+      rate: { rate_limited: 2 },
+      access: {},
+      // Sem passo marcado, conta na resposta.
+      response: { internal_error: 1 },
+    });
+    expect(p.memories).toEqual({ runs: 2, orgAvg: 1.5, userAvg: 0.5 });
+    expect(p.lastAccessMs).toBe(7);
+    expect(m.snapshot().byTool[0]?.errorsByCode).toEqual({
+      internal_error: 1,
+      rate_limited: 2,
+      tool_disabled: 1,
+    });
+    expect(m.pipeline('outra')).toMatchObject({
+      counters: { requests: 0 },
+      byModel: [],
+      lastAccessMs: null,
+    });
   });
 
   it('guarda só os últimos 30 dias', () => {

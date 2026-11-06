@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import type { FastifyBaseLogger } from 'fastify';
 import type pg from 'pg';
 import { buildApp } from './app.js';
@@ -32,6 +34,9 @@ let logger: FastifyBaseLogger | undefined;
 const warn = (msg: string, data: Record<string, unknown>): void => {
   logger?.warn(data, msg);
 };
+
+/** Esta instância: o disjuntor, o limite de pedidos e as métricas são por instância. */
+const instanceId = `${hostname()}:${randomUUID().slice(0, 8)}`;
 
 function readVersion(): string {
   try {
@@ -103,13 +108,19 @@ function buildEngine(
     store: new PgEngineStore(pool),
     memories: new PgMemoryStore(pool),
     llm: new OpenRouterProvider(cfg.openRouter, fetch, warn),
-    // Cada chamada a um modelo entra nas métricas por modelo (só nome, resultado e tempo).
+    // Cada chamada a um modelo e o que o motor mediu em cada pedido entram nas métricas (só
+    // nomes, resultados, contagens e tempos; nunca orgs, utilizadores nem conteúdo).
     onEvent: (e) => {
       if (e.type === 'model_call') {
-        metrics.recordModelCall({
-          model: e.model,
-          ok: e.reason === 'ok',
-          durationMs: e.durationMs,
+        const { tool, model, reason, fallback, attempt, durationMs } = e;
+        metrics.recordModelCall({ tool, model, reason, fallback, attempt, durationMs });
+      } else if (e.type === 'run_completed') {
+        metrics.recordRun({
+          tool: e.tool,
+          timings: e.timings,
+          orgMemories: e.orgMemories,
+          userMemories: e.userMemories,
+          checkedAccess: true,
         });
       }
     },
@@ -207,7 +218,11 @@ function buildAdmin(
     pool,
     tools,
     settings,
-    breakers: playground === undefined ? undefined : { reset: (m) => playground.resetBreakers(m) },
+    breakers:
+      playground === undefined
+        ? undefined
+        : { status: () => playground.breakers(), reset: (m) => playground.resetBreakers(m) },
+    instanceId,
     metrics,
     status,
     topology,
@@ -281,8 +296,6 @@ async function main(): Promise<void> {
           engine: core,
           apiSecret: config.engine.apiSecret,
           metrics,
-          streamEnabled: () => settings.current().streamEnabled,
-          rateLimitPerMinute: () => settings.current().rateLimitPerMinute,
         };
   // As memórias só precisam da base de dados e do segredo do Salesforce, não do StepAccess.
   const memories =

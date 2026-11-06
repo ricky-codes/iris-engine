@@ -1,9 +1,17 @@
 import { Type } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import type { AccessChecker } from './access.js';
-import { BREAKER_OPEN_MS, BREAKER_THRESHOLD, CircuitBreaker, type OpenBreaker } from './breaker.js';
+import {
+  BREAKER_OPEN_MS,
+  BREAKER_THRESHOLD,
+  CircuitBreaker,
+  type BreakerStatus,
+  type OpenBreaker,
+} from './breaker.js';
 import { EngineError, type EngineErrorCode, type EngineErrorDetail } from './errors.js';
 import { read, type Live } from './live.js';
+import { markStage, stageOf, type PipelineStage, type StageTimings } from './pipeline.js';
+import { RateLimiter } from './rate-limit.js';
 import type { LlmProvider } from './llm.js';
 import { Memories, type MemoryStore } from './memory.js';
 import {
@@ -19,7 +27,7 @@ import {
   type RunRequest,
   type RunResult,
 } from './run.js';
-import { fallbackChain, type EngineStore } from './store.js';
+import { fallbackChain, noOverrides, type EngineStore, type ToolOverrides } from './store.js';
 import type { ToolDefinition } from './tool.js';
 import type { UsageReporter } from './usage.js';
 
@@ -37,6 +45,10 @@ export interface EngineSettings {
   breakerThreshold?: number;
   /** Durante quanto tempo o disjuntor aberto salta o modelo (1 s a 1 h). Por omissão, 60 s. */
   breakerOpenMs?: number;
+  /** `false` recusa o streaming em todas as ferramentas sem valor próprio. Por omissão, `true`. */
+  streamEnabled?: boolean;
+  /** Pedidos por minuto e por org (0 = sem limite). Por omissão, sem limite. */
+  rateLimitPerMinute?: number;
 }
 
 /** O que aconteceu num pedido a uma ferramenta. Só metadados, nunca conteúdo. */
@@ -57,6 +69,7 @@ export type EngineEvent =
       costUsd: number | undefined;
       orgMemories: number;
       userMemories: number;
+      timings: StageTimings;
     }
   | {
       type: 'run_failed';
@@ -67,6 +80,8 @@ export type EngineEvent =
       durationMs: number;
       /** Código do erro do motor; `internal_error` para um erro inesperado. */
       code: EngineErrorCode | 'internal_error';
+      /** O passo em que o pedido parou. */
+      stage: PipelineStage;
       costUsd: number | undefined;
     }
   | ({ type: 'model_call' } & ModelCall);
@@ -129,12 +144,18 @@ export interface Engine {
     attempts: ModelAttempt[];
     /** Quando toda a cadeia falhou: o erro da última tentativa. */
     error: EngineError | undefined;
+    /** Quanto demorou cada passo, em ms. */
+    timings: StageTimings;
   }>;
   readonly memories: Memories;
   /** Os modelos que o disjuntor está a saltar agora. */
   openBreakers(): OpenBreaker[];
   /** Fecha o disjuntor de um modelo, ou de todos. Devolve os modelos que estavam abertos. */
   resetBreakers(model?: string): string[];
+  /** O disjuntor de cada modelo chamado desde o arranque. */
+  breakers(): BreakerStatus[];
+  /** As ferramentas que aceitam streaming agora (a ferramenta suporta e a configuração deixa). */
+  streaming(): Promise<Map<string, boolean>>;
 }
 
 const TOOL_NAME = /^[a-z_]+$/;
@@ -167,7 +188,13 @@ function checkSettings(settings: EngineSettings): Required<EngineSettings> {
       'Configuração do motor: breakerOpenMs tem de ser um inteiro de 1000 a 3600000.',
     );
   }
+  const rateLimitPerMinute = settings.rateLimitPerMinute ?? 0;
+  if (!Number.isInteger(rateLimitPerMinute) || rateLimitPerMinute < 0) {
+    throw new Error('Configuração do motor: rateLimitPerMinute tem de ser um inteiro ≥ 0.');
+  }
   return {
+    streamEnabled: settings.streamEnabled ?? true,
+    rateLimitPerMinute,
     defaultModel: settings.defaultModel,
     fallbackModels,
     maxAttempts,
@@ -217,6 +244,7 @@ export function createEngine(options: EngineOptions): Engine {
   let raw = read(options.settings);
   let settings = checkSettings(raw);
   const breaker = new CircuitBreaker(now, settings.breakerThreshold, settings.breakerOpenMs);
+  const rateLimiter = new RateLimiter(60_000, now);
   const current = (): Required<EngineSettings> => {
     const next = read(options.settings);
     if (next !== raw) {
@@ -246,6 +274,9 @@ export function createEngine(options: EngineOptions): Engine {
       defaultFallbackModels: s.fallbackModels,
       maxAttempts: s.maxAttempts,
       totalTimeoutMs: s.totalTimeoutMs,
+      rateLimitPerMinute: s.rateLimitPerMinute,
+      streamEnabled: s.streamEnabled,
+      rateLimiter,
       breaker,
       now,
       onModelCall: (call) => {
@@ -268,16 +299,45 @@ export function createEngine(options: EngineOptions): Engine {
     memories: new Memories(options.memories),
     openBreakers: () => breaker.open(),
     resetBreakers: (model) => breaker.reset(model),
+    breakers: () => breaker.status(),
+
+    async streaming() {
+      const global = current().streamEnabled;
+      // Uma só leitura quando o armazenamento o permite; senão, a configuração de cada ferramenta.
+      const all: Map<string, Partial<ToolOverrides>> = options.store.overridesForAll !== undefined
+        ? await options.store.overridesForAll()
+        : new Map(
+            await Promise.all(
+              [...tools.values()].map(async (t) => {
+                const stored = await options.store.settingsFor(t.name, t.defaults, {
+                  model: current().defaultModel,
+                  fallbackModels: current().fallbackModels,
+                });
+                return [t.name, stored.overrides ?? {}] as const;
+              }),
+            ),
+          );
+      return new Map(
+        [...tools.values()].map((t) => {
+          const own = { ...noOverrides(), ...all.get(t.name) }.streamEnabled;
+          return [t.name, t.stream !== undefined && (own ?? global)];
+        }),
+      );
+    },
     tools: () => [...tools.values()],
     tool: (name) => tools.get(name),
 
     async run(name, request) {
       const tool = toolOr404(name);
-      checkInput(tool, request.input);
-      if (request.stream !== undefined && tool.stream === undefined) {
-        throw new EngineError('invalid_request', 'Esta ferramenta não suporta streaming.', [
-          { path: 'stream', issue: 'esta ferramenta não suporta streaming' },
-        ]);
+      try {
+        checkInput(tool, request.input);
+        if (request.stream !== undefined && tool.stream === undefined) {
+          throw new EngineError('invalid_request', 'Esta ferramenta não suporta streaming.', [
+            { path: 'stream', issue: 'esta ferramenta não suporta streaming' },
+          ]);
+        }
+      } catch (err) {
+        throw markStage(err, 'request');
       }
       const started = performance.now();
       const base = {
@@ -301,6 +361,7 @@ export function createEngine(options: EngineOptions): Engine {
           ...base,
           durationMs: Math.round(performance.now() - started),
           code: err instanceof EngineError ? err.code : 'internal_error',
+          stage: stageOf(err) ?? 'response',
           costUsd: err instanceof EngineError ? err.costUsd : undefined,
         });
         throw err;
@@ -334,14 +395,13 @@ export function createEngine(options: EngineOptions): Engine {
         ...(opts.model !== undefined && { modelOverride: opts.model }),
         ...(opts.fallbackModels !== undefined && { fallbackModelsOverride: opts.fallbackModels }),
       });
-      // O playground usa o mesmo disjuntor, mas não entra nas métricas (sem onCall).
+      // O playground usa o mesmo disjuntor e as mesmas tentativas e teto de tempo da ferramenta,
+      // mas não conta para o limite de pedidos nem entra nas métricas (sem onCall).
       const { result, attempts, error } = await callModel(d.llm, tool, prepared, {
-        maxAttempts: d.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
-        totalTimeoutMs: d.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS,
         breaker,
         now,
       });
-      return { prepared, result, attempts, error };
+      return { prepared, result, attempts, error, timings: prepared.timings };
     },
   };
 }

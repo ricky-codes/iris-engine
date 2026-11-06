@@ -1,5 +1,3 @@
-import type { AlertsFacts } from '../alerts/monitor.js';
-
 /**
  * A IRIS descrita a si própria: os módulos, como estão ligados e o estado de cada um,
  * para a consola de administração desenhar e configurar o motor. Tudo sai do que está
@@ -68,7 +66,6 @@ export interface TopologyInput {
     user: number;
     limits: { chars: number; perOrg: number; perUser: number };
   };
-  alerts: AlertsFacts;
 }
 
 /** As camadas, de quem chama até aos serviços externos. */
@@ -205,69 +202,6 @@ function toolNode(t: ToolFact): TopologyNode {
     },
     configure: { where: 'admin_api', path: `/v1/admin/tools/${t.name}` },
   };
-}
-
-const ENV_ALERTS: ConfigureAt = {
-  where: 'env',
-  keys: ['ALERT_WEBHOOK_URL', 'ALERT_WEBHOOK_SECRET', 'ALERT_WEBHOOK_FORMAT', 'CONSOLE_URL'],
-};
-
-/** O avaliador, a porta, o adaptador e o webhook dos alertas. */
-function alertNodes(a: AlertsFacts): TopologyNode[] {
-  const sink: NodeStatus = !a.configured ? 'off' : a.lastError !== null ? 'warning' : 'ok';
-  const sinkSummary = !a.configured
-    ? 'Sem webhook: os alertas ficam só na API de administração'
-    : a.lastError !== null
-      ? `O último envio falhou: ${a.lastError}`
-      : a.lastSentAt === null
-        ? 'Pronto, ainda sem envios'
-        : `Último envio às ${a.lastSentAt.slice(11, 16)} UTC`;
-  const details = {
-    format: a.format,
-    active: a.active,
-    lastSentAt: a.lastSentAt,
-    lastError: a.lastError,
-  };
-  return [
-    {
-      id: 'core.alerts',
-      layer: 'core',
-      label: 'Alertas',
-      status: 'ok',
-      summary: a.active === 0 ? 'Sem alertas ativos' : `${String(a.active)} alerta(s) ativo(s)`,
-      details: { active: a.active },
-      configure: { where: 'admin_api', path: '/v1/admin/alerts' },
-    },
-    {
-      id: 'port.alerts',
-      layer: 'port',
-      label: 'AlertSink',
-      status: sink,
-      summary: 'Para onde vão os alertas',
-      details: {},
-      configure: null,
-    },
-    {
-      id: 'adapter.alerts',
-      layer: 'adapter',
-      label: a.configured ? 'WebhookAlertSink' : 'sem envio',
-      status: sink,
-      summary: sinkSummary,
-      details,
-      configure: ENV_ALERTS,
-    },
-    {
-      id: 'external.webhook',
-      layer: 'external',
-      label: 'Webhook de alertas',
-      status: sink,
-      summary: a.configured
-        ? `Formato ${a.format ?? 'iris'} · assinado com HMAC`
-        : 'Não configurado',
-      details,
-      configure: ENV_ALERTS,
-    },
-  ];
 }
 
 export function buildTopology(input: TopologyInput, now: Date = new Date()): Topology {
@@ -519,8 +453,6 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
       },
       configure: ENV_OPENROUTER,
     },
-    // alertas
-    ...alertNodes(input.alerts),
     // ferramentas
     ...tools.map(toolNode),
   ];
@@ -554,11 +486,6 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
         ]
       : []),
     { from: 'adapter.llm', to: 'external.openrouter' },
-    { from: 'core.alerts', to: 'port.alerts' },
-    { from: 'port.alerts', to: 'adapter.alerts' },
-    ...(input.alerts.configured
-      ? [{ from: 'adapter.alerts', to: 'external.webhook', label: 'POST assinado' }]
-      : []),
     ...tools
       .filter((t) => t.implemented)
       .map((t) => ({ from: `tool.${t.name}`, to: 'core.engine', label: 'registada' })),

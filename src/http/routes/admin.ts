@@ -24,7 +24,6 @@ import {
 import type { Metrics } from '../../engine/metrics.js';
 import type { ModulesReport } from '../../admin/modules.js';
 import type { Topology } from '../../admin/topology.js';
-import type { Alert, DeliveryResult } from '../../alerts/types.js';
 import type { ModelInfo } from '../../adapters/openrouter-models.js';
 import type { Engine } from '../../engine/engine.js';
 import { fallbackChain } from '../../engine/store.js';
@@ -48,11 +47,6 @@ export interface AdminRoutesOptions {
   topology: () => Promise<Topology>;
   /** Os adaptadores descritos: o que fazem e que definições têm (ver src/admin/modules.ts). */
   modules: () => Promise<ModulesReport>;
-  /** Os alertas ativos e recentes, e o envio de um alerta de teste. */
-  alerts: {
-    view(): { configured: boolean; active: Alert[]; recent: Alert[] };
-    sendTest(): Promise<DeliveryResult>;
-  };
   models: { list(): Promise<{ models: ModelInfo[]; fetchedAt: string }> };
   /** Sem dependências não há playground (falta base de dados ou OpenRouter). */
   playground:
@@ -188,16 +182,6 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
   // Cada adaptador (PgEngineStore, PgMemoryStore, StepAccessClient, StepAccessUsageReporter,
   // OpenRouterProvider) com a descrição, as definições em vigor e o que falta controlar.
   app.get('/v1/admin/modules', async () => opts.modules());
-
-  // ---------- alertas ----------
-
-  app.get('/v1/admin/alerts', async () => opts.alerts.view());
-
-  // Envia já um alerta de teste e devolve como correu (estado HTTP e duração, sem o corpo).
-  app.post('/v1/admin/alerts/test', async () => ({
-    key: 'test',
-    ...(await opts.alerts.sendTest()),
-  }));
 
   app.get(
     '/v1/admin/models',

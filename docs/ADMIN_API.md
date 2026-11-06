@@ -233,8 +233,7 @@ Resposta `200`:
     "database": { "status": "ok", "latencyMs": 4 },
     "stepAccess": { "status": "ok", "latencyMs": 31 },
     "openRouter": { "status": "ok", "latencyMs": 120, "credits": { "usage": 0.42, "limit": null } }
-  },
-  "alerts": { "configured": true, "active": 1 }
+  }
 }
 ```
 
@@ -244,7 +243,6 @@ Resposta `200`:
 | `engine.missing`            | O que falta configurar (texto), ex.: `"OPENROUTER_API_KEY"`.                                                                                                                                                     |
 | `engine.tools`              | Ferramentas implementadas e ativas neste servidor.                                                                                                                                                               |
 | `config.stepAccess`         | `live` (verifica cada pedido), `open` (`ACCESS_MODE=open`: acesso só pelo `API_SECRET`, sem licenças — escolha deliberada), `bypass` (**não verifica — só desenvolvimento**, mostrar aviso vermelho), `missing`. |
-| `alerts`                    | `configured` = há webhook (`ALERT_WEBHOOK_URL`); `active` = alertas ativos agora (ver 5.5). Sem webhook os alertas são calculados na mesma.                                                                      |
 | `config.openRouter`         | `configured` ou `missing`.                                                                                                                                                                                       |
 | `checks.*.status`           | `ok`, `failed` (ver `detail`, ex.: `"HTTP 401"`, `"TimeoutError"`), `not_configured` (ver `detail`).                                                                                                             |
 | `checks.openRouter.credits` | `usage` = USD gastos com a chave; `limit` = limite da chave em USD (`null` = sem limite). Pode faltar.                                                                                                           |
@@ -399,11 +397,9 @@ Resposta `200` (excerto):
 
 Modelos (`adapter.llm`): `details.chain` é a cadeia de modelos (sem o fornecedor, ex.: `"gemini-2.5-flash → gpt-4.1-mini"`) quando é igual em todas as ferramentas implementadas, ou `"várias"`; `details.fallbacks` é o total de pedidos servidos por um modelo de recurso desde o arranque; `details.openBreakers` lista os modelos com o disjuntor aberto (ou `null`). Fica `warning` com ≥ 20% dos pedidos (mínimo 5) servidos por recurso, ou com algum disjuntor aberto. Cada `tool.<nome>` tem `details.fallbacks` e `details.chain`.
 
-Alertas: `core.alerts` (o avaliador, com `details.active`) → `port.alerts` (`AlertSink`) → `adapter.alerts` (`WebhookAlertSink` ou `sem envio`) → `external.webhook`. O adaptador e o webhook têm `details.format`, `details.active`, `details.lastSentAt` e `details.lastError`; ficam `off` sem `ALERT_WEBHOOK_URL` e `warning` quando o último envio falhou. `configure` aponta para as variáveis `ALERT_WEBHOOK_URL`, `ALERT_WEBHOOK_SECRET`, `ALERT_WEBHOOK_FORMAT` e `CONSOLE_URL`.
-
 Os módulos e as ligações mudam com a configuração: em `ACCESS_MODE=open` o adaptador de acesso é `OpenAccessChecker`, o StepAccess fica `off` e não há ligações para ele; ferramentas do catálogo sem implementação aparecem `off` e sem ligação ao núcleo.
 
-### 5.4b `GET /v1/admin/modules`
+### 5.5 `GET /v1/admin/modules`
 
 Os cinco adaptadores que ligam o motor ao mundo, para a consola mostrar o que cada um faz e o que se pode configurar. Os mesmos que aparecem como nós `adapter.*` na topologia. Descrição completa em [`MODULES.md`](MODULES.md).
 
@@ -442,92 +438,6 @@ Os cinco adaptadores que ligam o motor ao mundo, para a consola mostrar o que ca
 ```
 
 Nunca inclui segredos: o StepAccess aparece só com a origem do URL, e a chave do OpenRouter não aparece.
-
-### 5.5 Alertas
-
-A IRIS avisa por webhook (para o Slack, o email ou um serviço de automação encaminharem) quando algo fica mal. O avaliador corre a cada `ALERT_EVAL_INTERVAL_MS` (60 s por omissão) sobre a topologia (as mesmas verificações do `/status`, sem chamadas extra) e as métricas. Com várias instâncias, só a que tem o bloqueio consultivo do Postgres avalia e envia.
-
-**Regras**
-
-| `key`                      | Quando                                                                                                                                                                                                                                       | Gravidade                  |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| `external.<serviço>.error` | Postgres, StepAccess ou OpenRouter em erro na topologia                                                                                                                                                                                      | `error`                    |
-| `core.engine.error`        | O motor está desligado por falta de configuração                                                                                                                                                                                             | `error`                    |
-| `openrouter.credits`       | Créditos da chave ≥ 90% do limite                                                                                                                                                                                                            | `warning`; ≥ 100%: `error` |
-| `tool.<nome>.failure_rate` | ≥ 5 pedidos e ≥ 20% de falhas na janela (`ALERT_WINDOW_MS`, 15 min). Só contam falhas do motor ou do fornecedor (`provider_unavailable`, `timeout`, `invalid_model_output`, `service_unavailable`, `internal_error`), não recusas de licença | `warning`; ≥ 50%: `error`  |
-| `llm.fallback_rate`        | ≥ 5 pedidos e ≥ 20% servidos por um modelo de recurso na janela                                                                                                                                                                              | `warning`                  |
-| `llm.breaker.<modelo>`     | Disjuntor do modelo aberto há mais de 5 min                                                                                                                                                                                                  | `warning`                  |
-
-Os módulos que só herdam o erro de outro (interfaces, adaptadores, memórias) não dão alerta próprio, para o mesmo problema não chegar repetido.
-
-**Ciclo de vida** (estado em memória): um alerta é enviado com `state: "firing"` ao passar a mau; volta a ser enviado se mudar de gravidade e, enquanto se mantém, a cada `ALERT_REPEAT_MS` (4 h). Quando a condição desaparece em **2 avaliações seguidas**, é enviado com `state: "resolved"`.
-
-**Formato `iris`** (`ALERT_WEBHOOK_FORMAT=iris`, por omissão), `POST` JSON:
-
-```json
-{
-  "service": "iris-engine",
-  "environment": "production",
-  "key": "tool.reply.failure_rate",
-  "state": "firing",
-  "severity": "warning",
-  "title": "Ferramenta reply com 35% de falhas",
-  "summary": "12 de 34 pedidos falharam nos últimos 15 min (provider_unavailable: 9, timeout: 3).",
-  "nodeId": "tool.reply",
-  "details": {
-    "requests": 34,
-    "failed": 12,
-    "errorsByCode": { "provider_unavailable": 9, "timeout": 3 }
-  },
-  "startedAt": "2026-11-02T10:00:00.000Z",
-  "sentAt": "2026-11-02T10:00:00.000Z",
-  "consoleUrl": "https://hub.exemplo.pt/iris"
-}
-```
-
-`consoleUrl` só existe com `CONSOLE_URL`. Um alerta nunca leva conteúdo, ids de org ou de utilizador, nem mensagens dos fornecedores: só contagens, códigos de erro e nomes de módulos, ferramentas e modelos.
-
-**Formato `slack`**: `{ "text": "*[Aviso] Ferramenta reply com 35% de falhas*\n12 de 34 pedidos…\n<https://hub…|Abrir a consola>" }` (`[Erro]` / `[Aviso]` / `[Resolvido]`).
-
-**Assinatura**: cabeçalho `X-Iris-Signature: sha256=<hex>`, o HMAC-SHA256 do corpo exato com `ALERT_WEBHOOK_SECRET`. Para verificar (Node): `createHmac('sha256', segredo).update(corpoBruto).digest('hex')`.
-
-**Entrega**: timeout de 5 s por tentativa; em falha de rede, 429 ou 5xx tenta mais 3 vezes, esperando 1 s, 4 s e 10 s; um 4xx não se repete. Nunca atrasa os pedidos às ferramentas. As falhas vão só para o log e para `lastError` na topologia.
-
-#### `GET /v1/admin/alerts`
-
-```json
-{
-  "configured": true,
-  "active": [
-    {
-      "service": "iris-engine",
-      "environment": "production",
-      "key": "external.openrouter.error",
-      "state": "firing",
-      "severity": "error",
-      "title": "OpenRouter não funciona",
-      "summary": "Falhou: HTTP 401",
-      "nodeId": "external.openrouter",
-      "details": { "status": "error" },
-      "startedAt": "2026-11-02T10:00:00.000Z",
-      "sentAt": "2026-11-02T10:00:00.000Z"
-    }
-  ],
-  "recent": []
-}
-```
-
-`active`: alertas ativos agora, por `key`. `recent`: os últimos 100 enviados (incluindo `resolved` e os de teste), do mais recente para o mais antigo, em memória. Sem webhook, `configured: false` e os alertas aparecem na mesma.
-
-#### `POST /v1/admin/alerts/test`
-
-Envia já um alerta com `key: "test"` e espera pelo resultado. Exige `X-Admin-Actor`. Corpo vazio. Resposta `200` (mesmo que o envio falhe; ver `delivered`):
-
-```json
-{ "key": "test", "delivered": true, "status": 204, "durationMs": 182, "attempts": 1, "error": null }
-```
-
-`status` é o estado HTTP da última tentativa (`null` sem resposta); `error` diz porque falhou (`HTTP 500`, `TimeoutError`; sem webhook: `ALERT_WEBHOOK_URL não configurado`). O corpo da resposta do destino nunca é devolvido.
 
 ---
 

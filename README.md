@@ -74,25 +74,19 @@ Variáveis de ambiente, validadas no arranque (`src/config.ts`). Com configuraç
 | `RATE_LIMIT_PER_MINUTE`                                   | `0` — pedidos por minuto e por org, por instância (429 acima disso); 0 = sem limite           |
 | `ENABLE_DIAGNOSTIC_TOOL`                                  | `false`                                                                                       |
 | `ADMIN_API_SECRET`                                        | _(vazio)_ — liga a API de administração; ≥ 32 caracteres, diferente do `API_SECRET`           |
-| `ALERT_WEBHOOK_URL`, `ALERT_WEBHOOK_SECRET`               | _(vazio)_ — webhook dos alertas e segredo da assinatura (≥ 32 car.); os dois ou nenhum        |
-| `ALERT_WEBHOOK_FORMAT`                                    | `iris` — ou `slack`                                                                           |
-| `ALERT_EVAL_INTERVAL_MS`                                  | `60000` — intervalo do avaliador de alertas (mín. 10000)                                      |
-| `ALERT_WINDOW_MS`                                         | `900000` — janela das taxas de falhas (pelo menos o dobro do intervalo)                       |
-| `ALERT_REPEAT_MS`                                         | `14400000` — lembrete enquanto um alerta se mantém                                            |
-| `CONSOLE_URL`                                             | _(vazio)_ — link para a consola nos alertas                                                   |
 
 ## Endpoints
 
-| Método e caminho           | Função                                                                                                                                                                 |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /healthz`             | Processo vivo                                                                                                                                                          |
-| `GET /readyz`              | Dependências acessíveis (200 ou 503, com estado por check)                                                                                                             |
-| `GET /v1/tools`            | Lista as ferramentas disponíveis e se aceitam streaming (precisa de credencial)                                                                                        |
-| `POST /v1/tools/<nome>`    | Corre uma ferramenta (precisa de credencial). Com `"stream": true`, responde em SSE (ver [Streaming](#streaming))                                                      |
-| `GET /v1/memories`         | Regras da org e memórias do utilizador (`?orgId=…&userId=…`, opcional `&tool=…`). Precisa de credencial; não conta utilização no StepAccess                            |
-| `POST /v1/memories`        | Guarda uma memória do utilizador (`{orgId, userId, content, tools?}`). Precisa de credencial; não conta utilização                                                     |
-| `DELETE /v1/memories/<id>` | Apaga uma memória do próprio utilizador (`?orgId=…&userId=…`); as da org e as de colegas dão 404                                                                       |
-| `/v1/admin/*`              | API de administração para o StepAccess: estado, métricas, topologia, alertas, ferramentas, prompts, memórias, playground. Ver [`docs/ADMIN_API.md`](docs/ADMIN_API.md) |
+| Método e caminho           | Função                                                                                                                                                        |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /healthz`             | Processo vivo                                                                                                                                                 |
+| `GET /readyz`              | Dependências acessíveis (200 ou 503, com estado por check)                                                                                                    |
+| `GET /v1/tools`            | Lista as ferramentas disponíveis e se aceitam streaming (precisa de credencial)                                                                               |
+| `POST /v1/tools/<nome>`    | Corre uma ferramenta (precisa de credencial). Com `"stream": true`, responde em SSE (ver [Streaming](#streaming))                                             |
+| `GET /v1/memories`         | Regras da org e memórias do utilizador (`?orgId=…&userId=…`, opcional `&tool=…`). Precisa de credencial; não conta utilização no StepAccess                   |
+| `POST /v1/memories`        | Guarda uma memória do utilizador (`{orgId, userId, content, tools?}`). Precisa de credencial; não conta utilização                                            |
+| `DELETE /v1/memories/<id>` | Apaga uma memória do próprio utilizador (`?orgId=…&userId=…`); as da org e as de colegas dão 404                                                              |
+| `/v1/admin/*`              | API de administração para o StepAccess: estado, métricas, topologia, ferramentas, prompts, memórias, playground. Ver [`docs/ADMIN_API.md`](docs/ADMIN_API.md) |
 
 Todas as respostas levam `X-Request-Id`. Os erros têm sempre este formato:
 
@@ -145,7 +139,7 @@ A resposta é `text/event-stream`, com estes eventos (`data` é sempre JSON):
 
 - Os erros **anteriores** ao `start` (credencial, validação, sem acesso, ferramenta desligada) saem como JSON normal, com o estado HTTP de sempre (401, 422, 403…). Depois do `start` o estado já seguiu (200) e os erros vão no evento `error`.
 - O texto dos `delta` é provisório: só o `result` está validado. Se chegar `reset` ou `error`, o cliente deve descartar o que mostrou.
-- Utilização, custo, métricas e alertas contam exatamente como num pedido normal.
+- Utilização, custo e métricas contam exatamente como num pedido normal.
 
 ### Experimentar com o OpenRouter
 
@@ -264,13 +258,6 @@ src/
     postgres-memory-store.ts  as memórias no Postgres
     health.ts             verificações do StepAccess e do OpenRouter
     fetch.ts              o tipo do fetch que os adaptadores recebem
-    webhook-alert-sink.ts envio dos alertas por webhook (HMAC, tentativas) e o NoopAlertSink
-    pg-leader-lock.ts     bloqueio consultivo: só uma instância avalia os alertas
-  alerts/
-    types.ts              o alerta e a porta AlertSink
-    rules.ts              as regras (funções puras sobre a topologia e a janela)
-    window.ts             janela das métricas por diferenças entre fotografias
-    monitor.ts            avaliação em intervalo, ciclo de vida, lembretes, histórico recente
   tools/
     index.ts              as ferramentas ativas
     diagnostic.ts         ferramenta de teste de ligação
@@ -280,7 +267,7 @@ src/
     queries.ts            listar memórias e ferramentas
     topology.ts           os módulos, ligações e estado (função pura)
     modules.ts            os cinco adaptadores descritos: função, definições e o que falta controlar
-    topology-source.ts    junta o que está a correr numa topologia (rota e alertas)
+    topology-source.ts    junta o que está a correr numa topologia
     status.ts             o que o /v1/admin/status mostra
     validation.ts         validações dos dados que o administrador escreve
     api.ts                o que a interface pode fazer (e a versão sobre a base de dados)

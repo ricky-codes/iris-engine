@@ -17,9 +17,6 @@ import { describeModules } from './admin/modules.js';
 import { statusReport } from './admin/status.js';
 import { collectTopology } from './admin/topology-source.js';
 import type { RuntimeFacts, Topology } from './admin/topology.js';
-import { AlertMonitor } from './alerts/monitor.js';
-import { PgLeaderLock } from './adapters/pg-leader-lock.js';
-import { NoopAlertSink, WebhookAlertSink } from './adapters/webhook-alert-sink.js';
 import { createEngine, type Engine } from './engine/engine.js';
 import { DEFAULT_MAX_ATTEMPTS } from './engine/run.js';
 import { EngineError } from './engine/errors.js';
@@ -174,7 +171,6 @@ function buildAdmin(
   metrics: Metrics,
   runtime: () => Promise<RuntimeFacts>,
   topology: () => Promise<Topology>,
-  monitor: AlertMonitor,
   playground: Engine | undefined,
   countsUsage: boolean,
 ): AdminRoutesOptions | undefined {
@@ -187,7 +183,6 @@ function buildAdmin(
       tools: tools.map((t) => t.name),
       defaultModel: cfg.defaultModel,
       diagnosticTool: cfg.enableDiagnosticTool,
-      alerts: monitor.facts(),
     });
 
   return {
@@ -235,7 +230,6 @@ function buildAdmin(
         },
       });
     },
-    alerts: monitor,
     models: new ModelCatalog(cfg.openRouter?.baseUrl ?? 'https://openrouter.ai/api/v1'),
     playground: playground === undefined ? undefined : { engine: playground, countsUsage },
   };
@@ -287,14 +281,6 @@ async function main(): Promise<void> {
   const engineState = { ready: engine !== undefined, missing };
   const runtime = runtimeFacts(config, pool, engineState, core, memories !== undefined);
 
-  // Alertas: avaliados em intervalo a partir da topologia e das métricas; enviados por webhook.
-  const { alerts: alertsCfg } = config;
-  const sink =
-    alertsCfg.webhook === undefined
-      ? new NoopAlertSink()
-      : new WebhookAlertSink(alertsCfg.webhook, fetch);
-  const leader = pool === undefined ? undefined : new PgLeaderLock(pool);
-  const breakers = () => core?.openBreakers() ?? [];
   const topology = (): Promise<Topology> =>
     collectTopology({
       pool,
@@ -303,22 +289,8 @@ async function main(): Promise<void> {
       defaultModel: config.engine.defaultModel,
       defaultFallbackModels: config.engine.fallbackModels,
       metrics,
-      breakers,
-      alerts: () => monitor.facts(),
+      breakers: () => core?.openBreakers() ?? [],
     });
-  const monitor = new AlertMonitor({
-    sink,
-    format: alertsCfg.webhook?.format ?? null,
-    topology,
-    metrics,
-    breakers,
-    service: { name: 'iris-engine', environment: config.env },
-    consoleUrl: alertsCfg.consoleUrl,
-    windowMs: alertsCfg.windowMs,
-    repeatMs: alertsCfg.repeatMs,
-    leader,
-    log: warn,
-  });
 
   const admin = buildAdmin(
     config,
@@ -327,7 +299,6 @@ async function main(): Promise<void> {
     metrics,
     runtime,
     topology,
-    monitor,
     core,
     // Só o StepAccess conta utilização; no modo aberto ou em bypass não há o que contar.
     typeof config.engine.stepAccess === 'object',
@@ -349,12 +320,6 @@ async function main(): Promise<void> {
               },
             },
           ],
-  });
-  monitor.start(alertsCfg.evalIntervalMs);
-  app.addHook('onClose', async () => {
-    monitor.stop();
-    await monitor.flush();
-    await leader?.release();
   });
   if (pool !== undefined) app.addHook('onClose', async () => pool.end());
   logger = app.log;

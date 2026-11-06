@@ -1,5 +1,4 @@
 import type { Pool } from 'pg';
-import type { AlertsFacts } from '../alerts/monitor.js';
 import { MAX_MEMORY_CHARS, MAX_ORG_MEMORIES, MAX_USER_MEMORIES } from '../engine/memory.js';
 import type { Metrics } from '../engine/metrics.js';
 import { fallbackChain } from '../engine/store.js';
@@ -24,12 +23,11 @@ export interface TopologySourceDeps {
   defaultFallbackModels: string[];
   metrics: Metrics;
   breakers: () => BreakerFact[];
-  alerts: () => AlertsFacts;
 }
 
 /**
- * Junta o que está a correr numa topologia: a usa a rota `/v1/admin/topology` e o avaliador de
- * alertas, com as mesmas verificações do `/status` (sem chamadas extra aos serviços externos).
+ * Junta o que está a correr numa topologia para a rota `/v1/admin/topology`, com as mesmas
+ * verificações do `/status` (sem chamadas extra aos serviços externos).
  */
 export async function collectTopology(d: TopologySourceDeps): Promise<Topology> {
   const registered = new Map(d.tools.map((t) => [t.name, t]));
@@ -84,6 +82,5 @@ export async function collectTopology(d: TopologySourceDeps): Promise<Topology> 
       user,
       limits: { chars: MAX_MEMORY_CHARS, perOrg: MAX_ORG_MEMORIES, perUser: MAX_USER_MEMORIES },
     },
-    alerts: d.alerts(),
   });
 }

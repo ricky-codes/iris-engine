@@ -65,7 +65,7 @@ Legenda das definições: **API** = muda-se pela API de administração sem rein
 | Tentativas (2) e espera (1000 ms) | **código**                             |
 | Tempo máximo                      | env `STEPACCESS_USAGE_TIMEOUT_MS`      |
 
-**Falta controlar pela API:** uma fila persistente (`cost_outbox`, só metadados) com reenvio automático, o número de pendentes no `/status` e um alerta quando cresce. É a lacuna mais séria dos cinco módulos.
+**Falta controlar pela API:** uma fila persistente (`cost_outbox`, só metadados) com reenvio automático, o número de pendentes no `/status` e um aviso na topologia quando cresce. É a lacuna mais séria dos cinco módulos.
 
 ## OpenRouterProvider
 
@@ -83,4 +83,4 @@ Legenda das definições: **API** = muda-se pela API de administração sem rein
 | Disjuntor (3 falhas, 60 s)                             | env `LLM_BREAKER_THRESHOLD`, `LLM_BREAKER_OPEN_MS`                     |
 | Política de dados (`deny`)                             | **código**                                                             |
 
-**Falta controlar pela API:** valores por omissão e teto de tempo na base de dados; tentativas e disjuntor editáveis (com botão para fechar o disjuntor); política de dados por ferramenta, com auditoria; ordem e lista de fornecedores; limiar do alerta de créditos (hoje 90%); estado da rotação da chave (só leitura, últimos 4 caracteres).
+**Falta controlar pela API:** valores por omissão e teto de tempo na base de dados; tentativas e disjuntor editáveis (com botão para fechar o disjuntor); política de dados por ferramenta, com auditoria; ordem e lista de fornecedores; limiar do aviso de créditos na topologia (hoje 90%); estado da rotação da chave (só leitura, últimos 4 caracteres).

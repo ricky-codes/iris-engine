@@ -4,8 +4,6 @@ import type { RuntimeFacts, Topology } from '../../src/admin/topology.js';
 import { Metrics } from '../../src/engine/metrics.js';
 import { PgMemoryStore } from '../../src/adapters/postgres-memory-store.js';
 import { collectTopology } from '../../src/admin/topology-source.js';
-import { AlertMonitor } from '../../src/alerts/monitor.js';
-import type { Alert, DeliveryResult } from '../../src/alerts/types.js';
 import { createEngine } from '../../src/engine/engine.js';
 import { EngineError } from '../../src/engine/errors.js';
 import { PgEngineStore, syncToolCatalog } from '../../src/adapters/postgres-store.js';
@@ -44,26 +42,6 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
   let access: ReturnType<typeof fakeAccess>;
   let llm: ReturnType<typeof fakeLlm>;
   const metrics = new Metrics();
-  // Alertas: um destino falso que regista o que recebe.
-  const sent: Alert[] = [];
-  const monitor = new AlertMonitor({
-    sink: {
-      configured: true,
-      send: async (alert): Promise<DeliveryResult> => {
-        sent.push(alert);
-        return { delivered: true, status: 204, durationMs: 3, attempts: 1, error: null };
-      },
-    },
-    format: 'iris',
-    topology: async () => {
-      throw new Error('não usado');
-    },
-    metrics,
-    breakers: () => [],
-    service: { name: 'iris-engine', environment: 'test' },
-    windowMs: 900_000,
-    repeatMs: 14_400_000,
-  });
 
   beforeAll(async () => {
     db = await createTestDb();
@@ -95,12 +73,10 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
             defaultFallbackModels: [],
             metrics,
             breakers: () => [],
-            alerts: () => monitor.facts(),
           }),
         modules: async () => {
           throw new Error('não usado');
         },
-        alerts: monitor,
         models: {
           list: async () => ({
             fetchedAt: '2026-10-13T00:00:00.000Z',
@@ -197,42 +173,6 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
       expect((await ready().inject({ method: 'GET', url: '/v1/admin/topology' })).statusCode).toBe(
         401,
       );
-    });
-
-    it('alertas: lista os ativos e recentes, e envia um alerta de teste', async () => {
-      expect((await get('/v1/admin/alerts')).json()).toEqual({
-        configured: true,
-        active: [],
-        recent: [],
-      });
-      // O envio de teste é uma escrita: exige X-Admin-Actor, como as outras.
-      const anonymous = await ready().inject({
-        method: 'POST',
-        url: '/v1/admin/alerts/test',
-        headers: READ,
-      });
-      expect(anonymous.statusCode).toBe(422);
-
-      const res = await send('POST', '/v1/admin/alerts/test');
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({
-        key: 'test',
-        delivered: true,
-        status: 204,
-        durationMs: 3,
-        attempts: 1,
-        error: null,
-      });
-      expect(sent.at(-1)).toMatchObject({ key: 'test', state: 'firing', service: 'iris-engine' });
-      expect((await get('/v1/admin/alerts')).json()).toMatchObject({
-        recent: [{ key: 'test' }],
-      });
-      const t = (await get('/v1/admin/topology')).json<Topology>();
-      expect(t.nodes.find((n) => n.id === 'adapter.alerts')).toMatchObject({
-        label: 'WebhookAlertSink',
-        status: 'ok',
-        details: { lastError: null },
-      });
     });
 
     it('devolve as métricas agregadas', async () => {
@@ -604,7 +544,6 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
           modules: async () => {
             throw new Error('não usado');
           },
-          alerts: monitor,
           models: { list: async () => ({ fetchedAt: '', models: [] }) },
           playground: {
             engine: createEngine({
@@ -653,7 +592,6 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
           modules: async () => {
             throw new Error('não usado');
           },
-          alerts: monitor,
           models: { list: async () => ({ fetchedAt: '', models: [] }) },
           playground: {
             engine: createEngine({

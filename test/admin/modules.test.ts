@@ -27,7 +27,6 @@ function input(over: Partial<ModulesInput> = {}): ModulesInput {
       runtime,
       tools: [],
       breakers: [],
-      alerts: { configured: false, format: null, active: 0, lastSentAt: null, lastError: null },
       memories: { org: 1, user: 2, limits: { chars: 500, perOrg: 50, perUser: 20 } },
     }),
     engine: {
@@ -124,12 +123,6 @@ describe('GET /v1/admin/modules', () => {
         status: async () => ({}),
         topology: async () => input().topology,
         modules: async () => describeModules(input()),
-        alerts: {
-          view: () => ({ configured: false, active: [], recent: [] }),
-          sendTest: async () => {
-            throw new Error('não usado');
-          },
-        },
         models: { list: async () => ({ fetchedAt: '', models: [] }) },
         playground: undefined,
       },

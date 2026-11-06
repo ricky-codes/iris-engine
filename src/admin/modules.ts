@@ -403,9 +403,9 @@ export function describeModules(input: ModulesInput): ModulesReport {
       },
       {
         key: 'pending',
-        label: 'Custos pendentes no estado e nos alertas',
-        description: 'Contador em `/v1/admin/status` e uma regra de alerta quando a fila cresce.',
-        suggested: 'alerta acima de 20',
+        label: 'Custos pendentes no estado',
+        description: 'Contador em `/v1/admin/status` e aviso na topologia quando a fila cresce.',
+        suggested: 'aviso acima de 20',
       },
     ],
   };
@@ -523,9 +523,10 @@ export function describeModules(input: ModulesInput): ModulesReport {
         suggested: 'automático',
       },
       {
-        key: 'creditsAlert',
-        label: 'Limiar do alerta de créditos',
-        description: 'Hoje fixo nos 90% do limite da chave.',
+        key: 'creditsWarning',
+        label: 'Limiar do aviso de créditos',
+        description:
+          'Na topologia, o OpenRouter passa a `warning` aos 90% do limite da chave (hoje fixo).',
         suggested: '90%',
       },
       {

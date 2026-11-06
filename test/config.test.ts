@@ -40,13 +40,6 @@ describe('loadConfig', () => {
         rateLimitPerMinute: 0,
         enableDiagnosticTool: false,
       },
-      alerts: {
-        webhook: undefined,
-        evalIntervalMs: 60_000,
-        windowMs: 900_000,
-        repeatMs: 14_400_000,
-        consoleUrl: undefined,
-      },
     });
   });
 
@@ -137,39 +130,6 @@ describe('loadConfig', () => {
     expect(loadConfig({ LLM_TOTAL_TIMEOUT_MS: '45000' }).engine.totalTimeoutMs).toBe(45_000);
     expect(() => loadConfig({ LLM_TOTAL_TIMEOUT_MS: '1000' })).toThrow(/LLM_TOTAL_TIMEOUT_MS/);
     expect(() => loadConfig({ LLM_TOTAL_TIMEOUT_MS: '120000' })).toThrow(/LLM_TOTAL_TIMEOUT_MS/);
-  });
-
-  it('alertas: webhook com URL e segredo juntos, formato iris ou slack, e intervalos válidos', () => {
-    const hook = {
-      ALERT_WEBHOOK_URL: 'https://automacao.exemplo.pt/webhook/iris',
-      ALERT_WEBHOOK_SECRET: 's'.repeat(32),
-    };
-    expect(
-      loadConfig({ ...hook, ALERT_WEBHOOK_FORMAT: 'slack', CONSOLE_URL: 'https://hub.exemplo.pt/' })
-        .alerts,
-    ).toMatchObject({
-      webhook: { url: hook.ALERT_WEBHOOK_URL, secret: 's'.repeat(32), format: 'slack' },
-      consoleUrl: 'https://hub.exemplo.pt',
-    });
-    expect(loadConfig(hook).alerts.webhook?.format).toBe('iris');
-    expect(() => loadConfig({ ALERT_WEBHOOK_URL: hook.ALERT_WEBHOOK_URL })).toThrow(
-      /ou os dois ou nenhum/,
-    );
-    expect(() => loadConfig({ ...hook, ALERT_WEBHOOK_SECRET: 'curto' })).toThrow(
-      /ALERT_WEBHOOK_SECRET/,
-    );
-    expect(() => loadConfig({ ...hook, ALERT_WEBHOOK_URL: 'ftp://x' })).toThrow(
-      /ALERT_WEBHOOK_URL/,
-    );
-    expect(() => loadConfig({ ALERT_WEBHOOK_FORMAT: 'teams' })).toThrow(/ALERT_WEBHOOK_FORMAT/);
-    expect(() => loadConfig({ ALERT_EVAL_INTERVAL_MS: '1000' })).toThrow(/ALERT_EVAL_INTERVAL_MS/);
-    expect(() => loadConfig({ ALERT_EVAL_INTERVAL_MS: '600000' })).toThrow(/pelo menos o dobro/);
-    expect(
-      loadConfig({ ALERT_WINDOW_MS: '1800000', ALERT_REPEAT_MS: '3600000' }).alerts,
-    ).toMatchObject({
-      windowMs: 1_800_000,
-      repeatMs: 3_600_000,
-    });
   });
 
   it('o segredo de admin é opcional, mas tem de ser diferente do API_SECRET', () => {

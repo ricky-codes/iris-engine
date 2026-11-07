@@ -19,6 +19,10 @@ export type PipelineStage = (typeof PIPELINE_STAGES)[number];
 
 /** Tempo de cada passo do motor num pedido, em milissegundos. */
 export interface StageTimings {
+  /** Ler a configuração da ferramenta. */
+  gate: number;
+  /** Contar no limite de pedidos. */
+  rate: number;
   access: number;
   memories: number;
   prompt: number;
@@ -27,12 +31,53 @@ export interface StageTimings {
 }
 
 export const emptyTimings = (): StageTimings => ({
+  gate: 0,
+  rate: 0,
   access: 0,
   memories: 0,
   prompt: 0,
   models: 0,
   validate: 0,
 });
+
+/**
+ * A razão fina de uma falha, para o catálogo `GET /v1/admin/errors`, as métricas e os traces.
+ * Não muda o código que o cliente recebe (`/v1/tools` continua com os códigos de sempre).
+ */
+export type FailureReason =
+  | 'tool_disabled'
+  | 'rate_limited'
+  | 'access_denied'
+  | 'quota_exceeded'
+  | 'stepaccess_unavailable'
+  | 'model_timeout'
+  | 'provider_error'
+  | 'all_models_failed'
+  | 'invalid_output';
+
+const reasons = new WeakMap<object, FailureReason>();
+
+export function markReason(err: unknown, reason: FailureReason): unknown {
+  if (typeof err === 'object' && err !== null) reasons.set(err, reason);
+  return err;
+}
+
+/** A razão fina, a partir da marca do motor ou do código e do passo. `undefined`: o próprio código. */
+export function reasonOf(
+  err: unknown,
+  code: string,
+  stage: PipelineStage,
+): FailureReason | undefined {
+  const marked = typeof err === 'object' && err !== null ? reasons.get(err) : undefined;
+  if (marked !== undefined) return marked;
+  if (code === 'tool_disabled' || code === 'rate_limited') return code;
+  if (code === 'access_denied' || code === 'quota_exceeded') return code;
+  if (stage === 'access' && code === 'service_unavailable') return 'stepaccess_unavailable';
+  if (code === 'invalid_model_output') return 'invalid_output';
+  if (code === 'timeout') return 'model_timeout';
+  if (code === 'provider_unavailable') return 'provider_error';
+  return undefined;
+}
 
 // O passo em que cada erro foi lançado. Um WeakMap para não mexer em erros de outros módulos.
 const stages = new WeakMap<object, PipelineStage>();

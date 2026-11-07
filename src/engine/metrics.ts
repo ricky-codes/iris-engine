@@ -1,4 +1,9 @@
-import { PIPELINE_STAGES, type PipelineStage, type StageTimings } from './pipeline.js';
+import {
+  PIPELINE_STAGES,
+  type FailureReason,
+  type PipelineStage,
+  type StageTimings,
+} from './pipeline.js';
 import type { AttemptReason } from './run.js';
 
 /**
@@ -51,7 +56,7 @@ export interface ToolModelCounters extends ModelCounters {
 export interface MetricsSnapshot {
   since: string;
   totals: ToolCounters;
-  byTool: ({ tool: string; byModel: ToolModelCounters[] } & ToolCounters)[];
+  byTool: ({ tool: string; byModel: ToolModelCounters[] } & ToolCounters & ToolFlow)[];
   /** Últimos dias (UTC), do mais antigo para o mais recente. */
   byDay: ({ day: string } & ToolCounters)[];
   byModel: ModelCounters[];
@@ -77,7 +82,105 @@ export interface RunMetric {
   userMemories?: number;
   /** `true` quando o pedido passou pela verificação de acesso. */
   checkedAccess: boolean;
+  /** O passo em que parou; ausente quando correu bem. */
+  stoppedAt?: PipelineStage;
+  /** Os modelos chamados, por ordem (para os pares de recurso `de → para`). */
+  models?: string[];
 }
+
+/** Os contadores de um passo, em `byTool[].stages`. */
+export interface StageCounters {
+  entered: number;
+  passed: number;
+  stopped: number;
+  /** Paragens pela razão fina do catálogo (ou pelo código, quando não há razão). */
+  byCode: Record<string, number>;
+  /** Tempo médio no passo, nos pedidos que lá entraram; `null` sem medida. */
+  avgMs: number | null;
+}
+
+/** Um modelo numa ferramenta, no formato do dashboard (`byTool[].models`). */
+export interface FlowModelCounters {
+  model: string;
+  calls: number;
+  failed: number;
+  /** Por razão: `provider_error`, `model_timeout`, `invalid_output`, `skipped_breaker`. */
+  byCode: Record<string, number>;
+  avgMs: number | null;
+  p95Ms: number | null;
+  /** Vezes que este modelo foi chamado como recurso. */
+  fallbackFrom: number;
+}
+
+/** O fluxo de uma ferramenta, para animar o diagrama. */
+export interface ToolFlow {
+  stages: Record<PipelineStage, StageCounters>;
+  models: FlowModelCounters[];
+  /** Novas tentativas no mesmo modelo depois de uma resposta inválida. */
+  retries: number;
+  fallbackPairs: { from: string; to: string; count: number }[];
+  p50Ms: number | null;
+  p95Ms: number | null;
+  /** Os últimos 60 minutos (UTC), do mais antigo para o mais recente, só os que tiveram pedidos. */
+  recent: { minute: string; requests: number; failed: number }[];
+}
+
+/** As últimas N durações, para os percentis (memória fixa). */
+class Samples {
+  private readonly values: number[] = [];
+  private next = 0;
+  constructor(private readonly size = 1000) {}
+  add(v: number): void {
+    if (this.values.length < this.size) this.values.push(v);
+    else this.values[this.next] = v;
+    this.next = (this.next + 1) % this.size;
+  }
+  percentile(p: number): number | null {
+    if (this.values.length === 0) return null;
+    const sorted = [...this.values].sort((a, b) => a - b);
+    return sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)] ?? null;
+  }
+}
+
+const ENGINE_STAGES = [
+  'gate',
+  'rate',
+  'access',
+  'memories',
+  'prompt',
+  'models',
+  'validate',
+] as const;
+const CALL_CODE: Record<string, string> = {
+  provider_unavailable: 'provider_error',
+  timeout: 'model_timeout',
+  invalid_output: 'invalid_output',
+  skipped_breaker: 'skipped_breaker',
+};
+
+interface Flow {
+  stageMs: Map<PipelineStage, { sum: number; n: number }>;
+  reasonStops: Map<PipelineStage, Map<string, number>>;
+  durations: Samples;
+  minutes: Map<string, { requests: number; failed: number }>;
+  modelDurations: Map<string, Samples>;
+  fallbackFrom: Map<string, number>;
+  pairs: Map<string, number>;
+}
+
+const emptyFlow = (): Flow => ({
+  stageMs: new Map(),
+  reasonStops: new Map(),
+  durations: new Samples(),
+  minutes: new Map(),
+  modelDurations: new Map(),
+  fallbackFrom: new Map(),
+  pairs: new Map(),
+});
+
+const bump = <K>(map: Map<K, number>, key: K, n = 1): void => {
+  map.set(key, (map.get(key) ?? 0) + n);
+};
 
 /** O que o diagrama de uma ferramenta precisa, além dos contadores. */
 export interface ToolPipelineMetrics {
@@ -157,6 +260,8 @@ export interface MetricEvent {
   errorCode: string | undefined;
   /** O passo em que o pedido parou (só nos que falharam). */
   stage?: PipelineStage | undefined;
+  /** A razão fina (catálogo de erros); sem ela conta o código. */
+  reason?: FailureReason | undefined;
   durationMs: number;
   inputTokens?: number | undefined;
   outputTokens?: number | undefined;
@@ -230,6 +335,7 @@ export class Metrics {
   private readonly byDay = new Map<string, Bucket>();
   private readonly byModel = new Map<string, ModelBucket>();
   private readonly toolModels = new Map<string, Map<string, ModelBucket>>();
+  private readonly flows = new Map<string, Flow>();
   private readonly runs = new Map<
     string,
     { memoryRuns: number; org: number; user: number; lastAccessMs: number | null }
@@ -244,10 +350,35 @@ export class Metrics {
     return this.startedAt.toISOString();
   }
 
+  private flow(tool: string): Flow {
+    let f = this.flows.get(tool);
+    if (f === undefined) this.flows.set(tool, (f = emptyFlow()));
+    return f;
+  }
+
   record(event: MetricEvent): void {
     let tool = this.byTool.get(event.tool);
     if (tool === undefined) this.byTool.set(event.tool, (tool = emptyBucket()));
     add(tool, event);
+
+    const f = this.flow(event.tool);
+    f.durations.add(event.durationMs);
+    if (event.errorCode !== undefined) {
+      const stage = event.stage ?? 'response';
+      let codes = f.reasonStops.get(stage);
+      if (codes === undefined) f.reasonStops.set(stage, (codes = new Map<string, number>()));
+      bump(codes, event.reason ?? event.errorCode);
+    }
+    const minute = this.clock().toISOString().slice(0, 16);
+    const m = f.minutes.get(minute) ?? { requests: 0, failed: 0 };
+    m.requests++;
+    if (event.errorCode !== undefined) m.failed++;
+    f.minutes.set(minute, m);
+    // Só os últimos 60 minutos.
+    if (f.minutes.size > 61) {
+      const cutoff = new Date(this.clock().getTime() - 60 * 60_000).toISOString().slice(0, 16);
+      for (const key of f.minutes.keys()) if (key <= cutoff) f.minutes.delete(key);
+    }
 
     const day = this.clock().toISOString().slice(0, 10);
     let daily = this.byDay.get(day);
@@ -270,6 +401,12 @@ export class Metrics {
     let t = models.get(call.model);
     if (t === undefined) models.set(call.model, (t = emptyModel()));
     addCall(t, call);
+    if (call.reason === 'skipped_breaker') return;
+    const f = this.flow(call.tool);
+    let samples = f.modelDurations.get(call.model);
+    if (samples === undefined) f.modelDurations.set(call.model, (samples = new Samples(500)));
+    samples.add(call.durationMs);
+    if (call.fallback && call.attempt === 1) bump(f.fallbackFrom, call.model);
   }
 
   recordRun(run: RunMetric): void {
@@ -282,6 +419,88 @@ export class Metrics {
       r.org += run.orgMemories;
       r.user += run.userMemories;
     }
+    const f = this.flow(run.tool);
+    // Os passos em que o pedido entrou: todos até ao que o parou.
+    const stop = run.stoppedAt;
+    const last =
+      stop === undefined || stop === 'response'
+        ? ENGINE_STAGES.length
+        : stop === 'request'
+          ? -1
+          : ENGINE_STAGES.indexOf(stop);
+    ENGINE_STAGES.forEach((stage, i) => {
+      if (i > last) return;
+      if (stage === 'access' && !run.checkedAccess) return;
+      const t = f.stageMs.get(stage) ?? { sum: 0, n: 0 };
+      t.sum += run.timings[stage];
+      t.n++;
+      f.stageMs.set(stage, t);
+    });
+    const chain = run.models ?? [];
+    for (let i = 1; i < chain.length; i++) {
+      const from = chain[i - 1];
+      const to = chain[i];
+      if (from !== undefined && to !== undefined && from !== to)
+        bump(f.pairs, `${from}\u0000${to}`);
+    }
+  }
+
+  /** O fluxo de uma ferramenta: passos, modelos, percentis e os últimos 60 minutos. */
+  flowOf(tool: string): ToolFlow {
+    const bucket = this.byTool.get(tool) ?? emptyBucket();
+    const f = this.flows.get(tool) ?? emptyFlow();
+    let entered = bucket.requests;
+    const stages = Object.fromEntries(
+      PIPELINE_STAGES.map((stage) => {
+        const codes = f.reasonStops.get(stage) ?? new Map<string, number>();
+        const stopped = [...codes.values()].reduce((a, b) => a + b, 0);
+        const t = f.stageMs.get(stage);
+        const c: StageCounters = {
+          entered,
+          passed: Math.max(0, entered - stopped),
+          stopped,
+          byCode: Object.fromEntries([...codes].sort(([a], [b]) => a.localeCompare(b))),
+          avgMs: t === undefined || t.n === 0 ? null : Math.round(t.sum / t.n),
+        };
+        entered = c.passed;
+        return [stage, c];
+      }),
+    ) as Record<PipelineStage, StageCounters>;
+    const models = sortedModels(
+      this.toolModels.get(tool) ?? new Map<string, ModelBucket>(),
+      (model, m): FlowModelCounters => {
+        const v = modelView(model, m);
+        return {
+          model,
+          calls: v.calls,
+          failed: v.failed,
+          byCode: Object.fromEntries(
+            Object.entries(v.failedByReason).map(([k, n]) => [CALL_CODE[k] ?? k, n]),
+          ),
+          avgMs: v.avgDurationMs,
+          p95Ms: f.modelDurations.get(model)?.percentile(95) ?? null,
+          fallbackFrom: f.fallbackFrom.get(model) ?? 0,
+        };
+      },
+    );
+    const cutoff = new Date(this.clock().getTime() - 60 * 60_000).toISOString().slice(0, 16);
+    return {
+      stages,
+      models,
+      retries: [...(this.toolModels.get(tool)?.values() ?? [])].reduce((n, m) => n + m.retries, 0),
+      fallbackPairs: [...f.pairs]
+        .map(([key, count]) => {
+          const [from = '', to = ''] = key.split('\u0000');
+          return { from, to, count };
+        })
+        .sort((a, b) => b.count - a.count || a.from.localeCompare(b.from)),
+      p50Ms: f.durations.percentile(50),
+      p95Ms: f.durations.percentile(95),
+      recent: [...f.minutes]
+        .filter(([minute]) => minute > cutoff)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([minute, m]) => ({ minute: `${minute}:00.000Z`, ...m })),
+    };
   }
 
   /** O que o diagrama da ferramenta mostra: contadores, paragens por passo e modelos. */
@@ -333,6 +552,7 @@ export class Metrics {
               servedAsFallback: m.servedAsFallback,
             }),
           ),
+          ...this.flowOf(tool),
         })),
       byDay: [...this.byDay]
         .sort(([a], [b]) => a.localeCompare(b))

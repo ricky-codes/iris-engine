@@ -2,6 +2,7 @@ import type { BreakerState, BreakerStatus } from '../engine/breaker.js';
 import type { ModelFailure, ToolPipelineMetrics } from '../engine/metrics.js';
 import { PIPELINE_STAGES, type PipelineStage } from '../engine/pipeline.js';
 import type { ToolOverrides } from '../engine/store.js';
+import { ERROR_CATALOG } from './error-catalog.js';
 import type { NodeStatus, Topology } from './topology.js';
 
 /**
@@ -13,9 +14,24 @@ import type { NodeStatus, Topology } from './topology.js';
 
 export type Scalar = string | number | boolean | null;
 
+/** O tipo de passo, para o dashboard escolher o desenho. */
+export type StageKind =
+  | 'request'
+  | 'gate'
+  | 'rate'
+  | 'access'
+  | 'memories'
+  | 'prompt'
+  | 'model'
+  | 'validate'
+  | 'response';
+
 export interface PipelineStageView {
   id: PipelineStage;
   label: string;
+  kind: StageKind;
+  /** As saídas possíveis neste passo (catálogo `GET /v1/admin/errors`). */
+  exits: { code: string; httpStatus: number; label: string }[];
   status: NodeStatus;
   summary: string;
   /** Pedidos que passaram e que pararam neste passo, desde o arranque. */
@@ -49,6 +65,15 @@ export interface Pipeline {
   since: string;
   stages: PipelineStageView[];
   models: PipelineModelView[];
+  /** A cadeia no formato curto do dashboard. */
+  modelChain: {
+    model: string;
+    role: 'primary' | 'fallback';
+    order: number;
+    breaker: BreakerState;
+    openedAt?: string;
+    reopensAt?: string;
+  }[];
 }
 
 type Resolved = {
@@ -316,6 +341,12 @@ export function buildPipeline(input: PipelineInput, now: Date = new Date()): Pip
     return {
       id,
       label,
+      kind: id === 'models' ? 'model' : id,
+      exits: ERROR_CATALOG.filter((e) => e.stage === id).map(({ code, httpStatus, label: l }) => ({
+        code,
+        httpStatus,
+        label: l,
+      })),
       status: off ? 'off' : d.status,
       summary: off ? 'Sem implementação neste servidor' : d.summary,
       counts: { passed: counts[id].passed, stopped: counts[id].stopped },
@@ -349,5 +380,24 @@ export function buildPipeline(input: PipelineInput, now: Date = new Date()): Pip
     };
   });
 
-  return { tool: input.tool, generatedAt: now.toISOString(), since: input.since, stages, models };
+  const modelChain = chain.map((model, order) => {
+    const b = breakerOf(model);
+    return {
+      model,
+      role: order === 0 ? ('primary' as const) : ('fallback' as const),
+      order,
+      breaker: b?.state ?? 'closed',
+      ...(b?.openedAt != null && { openedAt: b.openedAt }),
+      ...(b?.openUntil != null && b.state !== 'closed' && { reopensAt: b.openUntil }),
+    };
+  });
+
+  return {
+    tool: input.tool,
+    generatedAt: now.toISOString(),
+    since: input.since,
+    stages,
+    models,
+    modelChain,
+  };
 }

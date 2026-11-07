@@ -10,7 +10,15 @@ import {
 } from './breaker.js';
 import { EngineError, type EngineErrorCode, type EngineErrorDetail } from './errors.js';
 import { read, type Live } from './live.js';
-import { markStage, stageOf, type PipelineStage, type StageTimings } from './pipeline.js';
+import {
+  emptyTimings,
+  markStage,
+  reasonOf,
+  stageOf,
+  type FailureReason,
+  type PipelineStage,
+  type StageTimings,
+} from './pipeline.js';
 import { RateLimiter } from './rate-limit.js';
 import type { LlmProvider } from './llm.js';
 import { Memories, type MemoryStore } from './memory.js';
@@ -70,6 +78,8 @@ export type EngineEvent =
       orgMemories: number;
       userMemories: number;
       timings: StageTimings;
+      /** As chamadas aos modelos deste pedido, por ordem (incluindo os saltos do disjuntor). */
+      calls: ModelCall[];
     }
   | {
       type: 'run_failed';
@@ -82,7 +92,11 @@ export type EngineEvent =
       code: EngineErrorCode | 'internal_error';
       /** O passo em que o pedido parou. */
       stage: PipelineStage;
+      /** A razão fina (catálogo `GET /v1/admin/errors`); `undefined` = o próprio código. */
+      reason: FailureReason | undefined;
       costUsd: number | undefined;
+      timings: StageTimings;
+      calls: ModelCall[];
     }
   | ({ type: 'model_call' } & ModelCall);
 
@@ -346,23 +360,38 @@ export function createEngine(options: EngineOptions): Engine {
         userId: request.userId,
         requestId: request.requestId,
       };
+      // Os tempos e as chamadas deste pedido, também quando falha (para métricas e traces).
+      const timings = emptyTimings();
+      const calls: ModelCall[] = [];
+      const d = deps();
+      const onModelCall = d.onModelCall;
+      d.onModelCall = (call) => {
+        calls.push(call);
+        onModelCall?.(call);
+      };
       try {
-        const out = await runTool(deps(), tool, request);
+        const out = await runTool(d, tool, request, timings);
         emit({
           type: 'run_completed',
           ...base,
           durationMs: Math.round(performance.now() - started),
           ...out.meta,
+          calls,
         });
         return out;
       } catch (err) {
+        const code = err instanceof EngineError ? err.code : 'internal_error';
+        const stage = stageOf(err) ?? 'response';
         emit({
           type: 'run_failed',
           ...base,
           durationMs: Math.round(performance.now() - started),
-          code: err instanceof EngineError ? err.code : 'internal_error',
-          stage: stageOf(err) ?? 'response',
+          code,
+          stage,
+          reason: reasonOf(err, code, stage),
           costUsd: err instanceof EngineError ? err.costUsd : undefined,
+          timings,
+          calls,
         });
         throw err;
       }

@@ -24,10 +24,12 @@ export interface RuntimeSettings {
   memoryMaxChars: number;
   memoryPerOrg: number;
   memoryPerUser: number;
+  tracesEnabled: boolean;
+  tracesPerTool: number;
 }
 
 export type SettingKey = keyof RuntimeSettings;
-export type SettingGroup = 'models' | 'requests' | 'stepAccess' | 'memories';
+export type SettingGroup = 'models' | 'requests' | 'stepAccess' | 'memories' | 'traces';
 
 export const SETTINGS_REFRESH_MS = 30_000;
 
@@ -43,6 +45,7 @@ export const RANGES = {
   memoryMaxChars: { minimum: 50, maximum: MEMORY_CHARS_CAP },
   memoryPerOrg: { minimum: 1, maximum: 200 },
   memoryPerUser: { minimum: 1, maximum: 100 },
+  tracesPerTool: { minimum: 10, maximum: 500 },
 } as const;
 
 const ModelCode = Type.String({ minLength: 1, maxLength: 200, pattern: '^\\S+$' });
@@ -163,6 +166,23 @@ export const DEFINITIONS: Record<SettingKey, Definition> = {
     schema: int('memoryPerUser'),
     env: null,
     stage: 'memories',
+  },
+  tracesEnabled: {
+    group: 'traces',
+    label: 'Guardar os últimos pedidos',
+    description:
+      'Só metadados, em memória e por instância: passos, tempos, modelos e um id opaco da org. Nunca texto.',
+    schema: Type.Boolean(),
+    env: null,
+    stage: 'response',
+  },
+  tracesPerTool: {
+    group: 'traces',
+    label: 'Pedidos guardados por ferramenta',
+    description: 'Os mais antigos saem quando se chega ao limite.',
+    schema: int('tracesPerTool'),
+    env: null,
+    stage: 'response',
   },
 };
 

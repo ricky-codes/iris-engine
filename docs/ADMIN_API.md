@@ -8,7 +8,7 @@
 
 ## 1. O que é a IRIS e o que esta API controla
 
-A **IRIS** é um motor de IA para o Salesforce. Recebe pedidos de componentes do Salesforce (`POST /v1/tools/<ferramenta>`), confirma no **StepAccess** que o utilizador tem acesso (e o StepAccess conta a utilização), junta as **memórias** da org e do utilizador, chama um modelo de IA através do **OpenRouter** e devolve JSON validado. **A IRIS não guarda pedidos nem respostas.**
+A **IRIS** é um motor de IA para o Salesforce. Recebe pedidos de componentes do Salesforce (`POST /v1/tools/<ferramenta>`), confirma no **StepAccess** que o utilizador tem acesso (e o StepAccess conta a utilização), junta as **memórias** da org e do utilizador, chama um modelo de IA através do **OpenRouter** e devolve JSON validado. **A IRIS não guarda pedidos nem respostas.** Para o diagrama do dashboard, guarda só em memória os metadados dos últimos pedidos de cada ferramenta (6.7), sem texto nem utilizador.
 
 Divisão de responsabilidades (não misturar):
 
@@ -333,6 +333,49 @@ Resposta `200`:
 - `errorsByCode`: pedidos parados por código. Os que param antes do modelo têm código próprio: `tool_disabled` (ferramenta desligada), `rate_limited` (limite de pedidos), `access_denied` e `quota_exceeded` (StepAccess); os de validação do pedido contam como `invalid_request` e os sem credencial como `unauthorized`.
 - `byModel`: chamadas a cada modelo (tentativas, não pedidos), por ordem alfabética. `failed` = sem resposta válida; `failedByReason` diz porquê: `provider_unavailable`, `timeout`, `invalid_output` e `skipped_breaker` (vezes que o modelo foi **saltado** pelo disjuntor — não são chamadas, por isso não contam em `calls` nem em `failed`). `avgDurationMs` só das que responderam bem. O playground não conta.
 - `byTool[].byModel`: o mesmo, só nos pedidos dessa ferramenta, mais `servedAsFallback` (respostas válidas dadas como modelo de recurso).
+
+**Fluxo por ferramenta** (para animar o diagrama; acrescentado a cada `byTool[]`):
+
+```jsonc
+{
+  "stages": {
+    // um por passo (6.6): request, gate, rate, access, memories, prompt, models, validate, response
+    "access": {
+      "entered": 120,
+      "passed": 117,
+      "stopped": 3,
+      "byCode": { "access_denied": 2, "stepaccess_unavailable": 1 },
+      "avgMs": 42,
+    },
+  },
+  "models": [
+    {
+      "model": "google/gemini-2.5-flash",
+      "calls": 118,
+      "failed": 4,
+      "byCode": {
+        "provider_error": 2,
+        "model_timeout": 1,
+        "invalid_output": 1,
+        "skipped_breaker": 0,
+      },
+      "avgMs": 1500,
+      "p95Ms": 3100,
+      "fallbackFrom": 0,
+    },
+  ],
+  "retries": 3,
+  "fallbackPairs": [{ "from": "google/gemini-2.5-flash", "to": "openai/gpt-4.1-mini", "count": 2 }],
+  "p50Ms": 1400,
+  "p95Ms": 3300,
+  "recent": [{ "minute": "2026-11-07T10:02:00.000Z", "requests": 4, "failed": 0 }],
+}
+```
+
+- `stages.<id>`: `entered` = os que chegaram ao passo; `passed` = `entered − stopped`; `byCode` usa os códigos do catálogo (5.8) quando o passo os tem, senão o código da resposta. `avgMs` = tempo médio no passo (`null` em `request` e `response`, que não se medem, e sem pedidos). Em `access`, só os pedidos que de facto perguntaram ao StepAccess.
+- `models`: as chamadas desta ferramenta a cada modelo. `p95Ms` sobre as últimas 500 chamadas; `fallbackFrom` = vezes que o modelo foi chamado como recurso.
+- `retries`: novas tentativas no mesmo modelo depois de uma resposta inválida. `fallbackPairs`: passagens de um modelo para o seguinte, por par.
+- `p50Ms`/`p95Ms`: duração dos pedidos, sobre os últimos 1000. `recent`: os últimos 60 minutos, por minuto (UTC), só os minutos com pedidos.
 - `byDay`: dias UTC, do mais antigo para o mais recente, no máximo 30.
 - Mostrar sempre `since` ("desde o arranque às …").
 
@@ -491,6 +534,8 @@ As definições que se mudam **sem reiniciar**. Cada uma nasce no `.env` (ou num
 | `memoryMaxChars`           | `memories`   | 500 (código)                  | 50–2000                                     |
 | `memoryPerOrg`             | `memories`   | 50 (código)                   | 1–200                                       |
 | `memoryPerUser`            | `memories`   | 20 (código)                   | 1–100                                       |
+| `tracesEnabled`            | `traces`     | `true` (código)               | booleano                                    |
+| `tracesPerTool`            | `traces`     | 100 (código)                  | 10–500                                      |
 
 #### `GET /v1/admin/settings`
 
@@ -562,11 +607,49 @@ Os modelos chamados desde o arranque, nesta instância.
 | `openUntil`           | Até quando é (ou foi) saltado; `null` se não abriu.                                                                                           |
 | `lastError`           | A última falha do fornecedor neste modelo desde o arranque (`reason`: `provider_unavailable` ou `timeout`), ou `null`. Fica depois de fechar. |
 
+Cada entrada traz também `failures` (= `consecutiveFailures`), `threshold` (falhas que o abrem, `breakerThreshold`) e `reopensAt` (quando volta a ser experimentado; só com `state: "open"`, senão `null`).
+
 Sem motor ligado: `{ "instanceId": "…", "breakers": [] }`.
 
 #### `POST /v1/admin/breakers/reset`
 
 Fecha o disjuntor sem esperar que o tempo aberto acabe: de um modelo com `?model=google%2Fgemini-2.5-flash`, ou de todos sem parâmetro. Sem corpo. Exige `X-Admin-Actor`. Resposta `200`: `{ "closed": ["google/gemini-2.5-flash"] }` (os que estavam abertos; `[]` se nenhum). `503` se o motor não estiver ligado. Fecha só nesta instância.
+
+### 5.8 `GET /v1/admin/errors`
+
+O catálogo das saídas do caminho de um pedido: um código estável por razão, com o passo e o estado HTTP. São os códigos de `stages.*.byCode` (5.2), de `exits` (6.6) e de `reason` nos traces (6.7). **Não mudam o que o Salesforce recebe:** `publicCode` é o código da resposta de `/v1/tools/*`.
+
+```json
+{
+  "errors": [
+    {
+      "code": "stepaccess_unavailable",
+      "stage": "access",
+      "httpStatus": 503,
+      "publicCode": "service_unavailable",
+      "label": "StepAccess indisponível ou resposta inesperada"
+    }
+  ]
+}
+```
+
+| `code`                   | Passo      | HTTP | `publicCode`           |
+| ------------------------ | ---------- | ---- | ---------------------- |
+| `unauthorized`           | `request`  | 401  | `unauthorized`         |
+| `invalid_request`        | `request`  | 422  | `invalid_request`      |
+| `payload_too_large`      | `request`  | 413  | `payload_too_large`    |
+| `tool_disabled`          | `gate`     | 503  | `tool_disabled`        |
+| `rate_limited`           | `rate`     | 429  | `rate_limited`         |
+| `access_denied`          | `access`   | 403  | `access_denied`        |
+| `quota_exceeded`         | `access`   | 429  | `quota_exceeded`       |
+| `stepaccess_unavailable` | `access`   | 503  | `service_unavailable`  |
+| `model_timeout`          | `models`   | 504  | `timeout`              |
+| `provider_error`         | `models`   | 502  | `provider_unavailable` |
+| `all_models_failed`      | `models`   | 502  | `provider_unavailable` |
+| `invalid_output`         | `validate` | 502  | `invalid_model_output` |
+| `internal_error`         | `response` | 500  | `internal_error`       |
+
+`model_timeout` e `provider_error` quando só se chamou um modelo; `all_models_failed` quando a cadeia tinha mais de um e falharam todos.
 
 ---
 
@@ -814,7 +897,85 @@ O caminho de um pedido a esta ferramenta, **pela ordem do código** (`src/engine
 - `counts.passed` de um passo = os que lá chegaram menos os que lá pararam; o primeiro recebe todos os pedidos à ferramenta. `response.passed` = respostas com sucesso.
 - `status`: `gate` fica `off` com a ferramenta desligada; `access` e `memories` seguem o nó correspondente da topologia (`adapter.access`, `adapter.pgMemoryStore`); `models` fica `warning` com um disjuntor aberto na cadeia e `error` com todos; `rate`, `validate` e `response` ficam `warning` com ≥ 20% (mínimo 5) parados, inválidos ou falhados.
 - `models`: a cadeia em vigor, por ordem, com o disjuntor de cada modelo (5.7) e as chamadas feitas **por esta ferramenta**. `failedByReason.skipped_breaker` conta os saltos (não são chamadas).
+- Cada passo traz também `kind` (o tipo de desenho: `request`, `gate`, `rate`, `access`, `memories`, `prompt`, `model`, `validate`, `response`) e `exits`: as saídas possíveis nesse passo, `[{ code, httpStatus, label }]`, do catálogo (5.8).
+- `modelChain`: a cadeia no formato curto, `[{ model, role, order, breaker: "closed" | "open" | "half_open", openedAt?, reopensAt? }]`.
 - Nunca inclui segredos, valores do `.env`, ids de org ou de utilizador, nem conteúdo de pedidos.
+
+### 6.7 `GET /v1/admin/tools/:name/traces?limit=20`
+
+Os últimos pedidos a esta ferramenta, do mais recente para o mais antigo, para o dashboard reproduzir um pedido real no diagrama. `limit`: 1–500 (omissão 20). Erro: `404 unknown_tool`.
+
+```json
+{
+  "tool": "reply",
+  "instanceId": "iris-7f9c2b:3e1a90cd",
+  "enabled": true,
+  "traces": [
+    {
+      "id": "2c002e0d-2208-4fc6-beed-868c43cdf734",
+      "at": "2026-11-07T10:02:13.120Z",
+      "orgRef": "9f2c41aa0be7d3c5",
+      "durationMs": 950,
+      "outcome": "success",
+      "path": [
+        { "stage": "request", "ms": 0 },
+        { "stage": "gate", "ms": 1 },
+        { "stage": "rate", "ms": 0 },
+        { "stage": "access", "ms": 30 },
+        { "stage": "memories", "ms": 2 },
+        { "stage": "prompt", "ms": 1 },
+        {
+          "stage": "models",
+          "ms": 500,
+          "model": "google/gemini-2.5-flash",
+          "attempt": 1,
+          "result": "timeout"
+        },
+        {
+          "stage": "models",
+          "ms": 400,
+          "model": "openai/gpt-4.1-mini",
+          "attempt": 1,
+          "result": "ok"
+        },
+        { "stage": "validate", "ms": 1 },
+        { "stage": "response", "ms": 0 }
+      ]
+    }
+  ]
+}
+```
+
+- **Só metadados, em memória, por instância.** Perdem-se ao reiniciar; nada vai para a base de dados. Nunca têm o texto do pedido, da resposta ou do prompt, nem o utilizador.
+- `orgRef`: um id **opaco** da org (HMAC com uma chave derivada do `ADMIN_API_SECRET`, 16 hex). É sempre o mesmo para a mesma org e em todas as instâncias, mas não revela qual é; se for preciso o nome, a tradução fica no StepHub. Mudar o `ADMIN_API_SECRET` muda os ids.
+- `id`: o `X-Request-Id` do pedido (o mesmo dos logs). Nos que falharam, `code` (o que o cliente recebeu) e `reason` (5.8); o último passo de `path` tem `stopped: true`.
+- Os pedidos recusados antes do motor (credencial, corpo inválido) não entram.
+- Ligam-se e desligam-se com as definições `tracesEnabled` e `tracesPerTool` (5.6).
+
+### 6.8 `POST /v1/admin/tools/:name/dry-run`
+
+Corre os passos de entrada e de contexto **sem StepAccess nem modelo** (sem custo, sem contar utilização nem limite de pedidos). Corpo: `{ "orgId": "00D…", "userId": "005…", "input": { … } }`. Exige `X-Admin-Actor`.
+
+```json
+{
+  "tool": "reply",
+  "path": [
+    { "stage": "request", "ms": 0 },
+    { "stage": "gate", "ms": 2 },
+    { "stage": "rate", "ms": 0, "skipped": true },
+    { "stage": "access", "ms": 0, "skipped": true },
+    { "stage": "memories", "ms": 3 },
+    { "stage": "prompt", "ms": 0 }
+  ],
+  "prompt": { "systemChars": 1820, "userChars": 240, "estimatedTokens": 515 },
+  "memories": { "org": 2, "user": 1 },
+  "model": "google/gemini-2.5-flash",
+  "fallbackModels": ["openai/gpt-4.1-mini"],
+  "enabled": true
+}
+```
+
+`estimatedTokens` é uma estimativa grosseira (~4 caracteres por token). Não devolve o texto do prompt (para isso, `playground/:name/preview`). Funciona com a ferramenta desligada. Erros como no playground: `404 unknown_tool` (sem implementação), `503` sem OpenRouter, `422` com `body.input.<campo>`.
 
 ---
 

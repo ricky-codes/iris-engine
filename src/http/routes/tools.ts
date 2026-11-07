@@ -6,7 +6,7 @@ import type { Metrics } from '../../engine/metrics.js';
 import type { Engine } from '../../engine/engine.js';
 import type { ToolDefinition } from '../../engine/tool.js';
 import type { PipelineStage } from '../../engine/pipeline.js';
-import { errorCodeOf, errorStageOf, resolveError } from '../error-handler.js';
+import { errorCodeOf, errorReasonOf, errorStageOf, resolveError } from '../error-handler.js';
 import { AppError, type ErrorBody } from '../errors.js';
 
 export interface ToolRoutesOptions {
@@ -96,6 +96,7 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
       tool,
       errorCode,
       stage,
+      reason: errorCode === undefined ? undefined : errorReasonOf(request),
       durationMs,
       inputTokens: tokens?.inputTokens,
       outputTokens: tokens?.outputTokens,

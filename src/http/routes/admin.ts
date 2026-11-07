@@ -23,7 +23,9 @@ import {
 } from '../../admin/tools.js';
 import type { Metrics } from '../../engine/metrics.js';
 import type { ModulesReport } from '../../admin/modules.js';
+import { ERROR_CATALOG } from '../../admin/error-catalog.js';
 import { buildPipeline } from '../../admin/pipeline.js';
+import type { Traces } from '../../traces/traces.js';
 import type { Topology } from '../../admin/topology.js';
 import type { ModelInfo } from '../../adapters/openrouter-models.js';
 import type { BreakerStatus } from '../../engine/breaker.js';
@@ -64,6 +66,8 @@ export interface AdminRoutesOptions {
   breakers: { status(): BreakerStatus[]; reset(model?: string): string[] } | undefined;
   /** Identifica esta instância: o disjuntor e as métricas são por instância. */
   instanceId: string;
+  /** Os últimos pedidos (só metadados, em memória). Sem eles, `/traces` devolve uma lista vazia. */
+  traces?: Traces | undefined;
   metrics: Metrics;
   status: () => Promise<StatusReport>;
   /** Os módulos e o estado de cada um (ver src/admin/topology-source.ts). */
@@ -277,6 +281,9 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
     },
   );
 
+  // Os códigos estáveis de cada saída do caminho de um pedido, com o passo e o estado HTTP.
+  app.get('/v1/admin/errors', async () => ({ errors: ERROR_CATALOG }));
+
   // O disjuntor de cada modelo chamado desde o arranque, nesta instância.
   app.get('/v1/admin/breakers', async () => ({
     instanceId: opts.instanceId,
@@ -449,6 +456,80 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
       topology,
     });
   });
+
+  // Os últimos pedidos a esta ferramenta, só metadados (sem texto nem utilizador).
+  app.get(
+    '/v1/admin/tools/:name/traces',
+    {
+      schema: {
+        params: NameParams,
+        querystring: Type.Object(
+          // A query string chega sempre como texto.
+          {
+            limit: Type.Optional(
+              Type.String({ pattern: '^(?:[1-9]|[1-9][0-9]|[1-4][0-9]{2}|500)$' }),
+            ),
+          },
+          { additionalProperties: false },
+        ),
+      },
+    },
+    async (request) => {
+      const { name } = request.params;
+      await catalogRow(name);
+      const limit = Number(request.query.limit ?? '20');
+      return {
+        tool: name,
+        instanceId: opts.instanceId,
+        enabled: opts.traces !== undefined && opts.settings.current().tracesEnabled,
+        traces: opts.traces?.list(name, limit) ?? [],
+      };
+    },
+  );
+
+  // Simulação a seco: os passos de entrada e de contexto, sem StepAccess nem modelo (sem custo).
+  app.post(
+    '/v1/admin/tools/:name/dry-run',
+    {
+      schema: {
+        params: NameParams,
+        body: Type.Object(
+          { orgId: OrgId, userId: UserId, input: Type.Record(Type.String(), Type.Unknown()) },
+          { additionalProperties: false },
+        ),
+      },
+    },
+    async (request) => {
+      const tool = playgroundTool(request.params.name);
+      const deps = playgroundDeps();
+      const { orgId, userId, input } = request.body;
+      checkInput(tool, input);
+      const prepared = await deps.engine.preview(tool.name, { orgId, userId, input });
+      const t = prepared.timings;
+      const chars = prepared.system.length + prepared.user.length;
+      return {
+        tool: tool.name,
+        path: [
+          { stage: 'request', ms: 0 },
+          { stage: 'gate', ms: t.gate },
+          { stage: 'rate', ms: 0, skipped: true },
+          { stage: 'access', ms: 0, skipped: true },
+          { stage: 'memories', ms: t.memories },
+          { stage: 'prompt', ms: t.prompt },
+        ],
+        prompt: {
+          systemChars: prepared.system.length,
+          userChars: prepared.user.length,
+          // Estimativa grosseira (~4 caracteres por token); o valor real só o modelo o dá.
+          estimatedTokens: Math.ceil(chars / 4),
+        },
+        memories: { org: prepared.memories.org.length, user: prepared.memories.user.length },
+        model: prepared.settings.model,
+        fallbackModels: prepared.settings.fallbackModels,
+        enabled: prepared.settings.enabled,
+      };
+    },
+  );
 
   app.put(
     '/v1/admin/tools/:name/config',

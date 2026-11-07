@@ -29,6 +29,8 @@ export function testSettings(over: Partial<RuntimeSettings> = {}, store?: Settin
       memoryMaxChars: DEFAULT_MEMORY_LIMITS.chars,
       memoryPerOrg: DEFAULT_MEMORY_LIMITS.perOrg,
       memoryPerUser: DEFAULT_MEMORY_LIMITS.perUser,
+      tracesEnabled: true,
+      tracesPerTool: 100,
       ...over,
     },
     store,

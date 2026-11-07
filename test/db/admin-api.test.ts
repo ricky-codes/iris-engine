@@ -211,10 +211,10 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
     };
     const byKey = (body: Settings) => new Map(body.settings.map((v) => [v.key, v]));
 
-    it('lista as treze definições, com o valor em vigor e de onde vem', async () => {
+    it('lista as quinze definições, com o valor em vigor e de onde vem', async () => {
       const body = (await get('/v1/admin/settings')).json<Settings>();
       expect(body.refreshSeconds).toBe(30);
-      expect(body.settings).toHaveLength(13);
+      expect(body.settings).toHaveLength(15);
       expect(byKey(body).get('defaultModel')).toMatchObject({
         value: 'google/gemini-2.5-flash',
         source: 'env',
@@ -675,11 +675,14 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
       });
       expect(Object.keys(body.breakers[0] ?? {}).sort()).toEqual([
         'consecutiveFailures',
+        'failures',
         'lastError',
         'model',
         'openUntil',
         'openedAt',
+        'reopensAt',
         'state',
+        'threshold',
       ]);
       expect(typeof body.breakers[0]?.['openUntil']).toBe('string');
       await send('POST', '/v1/admin/breakers/reset');
@@ -690,6 +693,91 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
       expect((await get('/v1/admin/tools/diagnostic/pipeline')).json()).toMatchObject({
         models: [{ model: 'google/gemini-2.5-flash', breaker: { state: 'closed' } }],
       });
+    });
+  });
+
+  describe('dashboard: catálogo de erros, traces, dry-run e fluxo nas métricas', () => {
+    it('GET /errors: os códigos estáveis com o passo e o estado HTTP', async () => {
+      const { errors } = (await get('/v1/admin/errors')).json<{
+        errors: { code: string; stage: string; httpStatus: number; publicCode: string }[];
+      }>();
+      const byCode = new Map(errors.map((e) => [e.code, e]));
+      for (const code of [
+        'tool_disabled',
+        'rate_limited',
+        'access_denied',
+        'quota_exceeded',
+        'stepaccess_unavailable',
+        'model_timeout',
+        'provider_error',
+        'all_models_failed',
+        'invalid_output',
+      ])
+        expect(byCode.has(code)).toBe(true);
+      expect(byCode.get('stepaccess_unavailable')).toMatchObject({
+        stage: 'access',
+        httpStatus: 503,
+        publicCode: 'service_unavailable',
+      });
+    });
+
+    it('pipeline: kind, saídas de cada passo e a cadeia curta', async () => {
+      const p = (await get('/v1/admin/tools/diagnostic/pipeline')).json<{
+        stages: { id: string; kind: string; exits: { code: string }[] }[];
+        modelChain: { model: string; role: string; order: number; breaker: string }[];
+      }>();
+      expect(p.stages.find((x) => x.id === 'models')).toMatchObject({ kind: 'model' });
+      expect(p.stages.find((x) => x.id === 'access')?.exits.map((e) => e.code)).toEqual([
+        'access_denied',
+        'quota_exceeded',
+        'stepaccess_unavailable',
+      ]);
+      expect(p.modelChain).toEqual([
+        { model: 'google/gemini-2.5-flash', role: 'primary', order: 0, breaker: 'closed' },
+      ]);
+    });
+
+    it('traces: vazios sem módulo; ferramenta desconhecida 404; limite validado', async () => {
+      expect((await get('/v1/admin/tools/diagnostic/traces')).json()).toEqual({
+        tool: 'diagnostic',
+        instanceId: 'teste:1',
+        enabled: false,
+        traces: [],
+      });
+      expect((await get('/v1/admin/tools/nao_existe/traces')).statusCode).toBe(404);
+      expect((await get('/v1/admin/tools/diagnostic/traces?limit=0')).statusCode).toBe(422);
+    });
+
+    it('dry-run: os passos de entrada e de contexto, o tamanho do prompt e as memórias', async () => {
+      const org = sfId('00D');
+      await send('POST', '/v1/admin/memories', { orgId: org, content: 'Tratar por você.' });
+      const res = await send('POST', '/v1/admin/tools/diagnostic/dry-run', {
+        orgId: org,
+        userId: sfId('005'),
+        input: { message: 'olá' },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json<{
+        path: { stage: string; skipped?: boolean }[];
+        prompt: { systemChars: number; userChars: number; estimatedTokens: number };
+        memories: { org: number; user: number };
+      }>();
+      expect(body.path.map((x) => x.stage)).toEqual([
+        'request',
+        'gate',
+        'rate',
+        'access',
+        'memories',
+        'prompt',
+      ]);
+      expect(body.memories).toEqual({ org: 1, user: 0 });
+      expect(body.prompt.estimatedTokens).toBe(
+        Math.ceil((body.prompt.systemChars + body.prompt.userChars) / 4),
+      );
+      // Nada de texto do prompt nem chamada ao modelo.
+      expect(res.payload).not.toContain('Tratar por você');
+      expect(llm.requests).toHaveLength(0);
+      expect(access.calls).toHaveLength(0);
     });
   });
 
@@ -877,7 +965,15 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
         body(sfId('00D'), sfId('005')),
       );
       const timings = res.json<{ timings: Record<string, number> }>().timings;
-      expect(Object.keys(timings)).toEqual(['access', 'memories', 'prompt', 'models', 'validate']);
+      expect(Object.keys(timings)).toEqual([
+        'gate',
+        'rate',
+        'access',
+        'memories',
+        'prompt',
+        'models',
+        'validate',
+      ]);
       expect(Object.values(timings).every((v) => Number.isInteger(v) && v >= 0)).toBe(true);
     });
 

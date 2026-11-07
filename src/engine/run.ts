@@ -6,7 +6,7 @@ import type { LlmProvider } from './llm.js';
 import { buildSystemPrompt } from './prompt.js';
 import { StringFieldStream, type StreamHandlers } from './stream.js';
 import type { MemoryStore, RequestMemories } from './memory.js';
-import { atStage, emptyTimings, markStage, type StageTimings } from './pipeline.js';
+import { atStage, emptyTimings, markReason, markStage, type StageTimings } from './pipeline.js';
 import type { RateLimiter } from './rate-limit.js';
 import {
   fallbackChain,
@@ -173,9 +173,12 @@ export async function prepareRun(
     systemPromptOverride?: string;
     modelOverride?: string;
     fallbackModelsOverride?: string[];
+    /** Onde escrever os tempos (para quem precisa deles mesmo quando o pedido falha). */
+    timings?: StageTimings;
   },
 ): Promise<PreparedRun> {
-  const timings = emptyTimings();
+  const timings = opts.timings ?? emptyTimings();
+  const gateStarted = performance.now();
   const settings = await atStage('gate', async () => {
     const stored = await deps.store.settingsFor(tool.name, tool.defaults, {
       model: deps.defaultModel,
@@ -209,10 +212,12 @@ export async function prepareRun(
     }
     return s;
   });
+  timings.gate = elapsed(gateStarted);
 
   // Antes de gastar utilização no StepAccess ou de chamar o modelo. Com um limite próprio, a
   // ferramenta conta à parte (por org e ferramenta); sem ele, as ferramentas partilham o da org.
   if (opts.checkRateLimit === true && deps.rateLimiter !== undefined) {
+    const rateStarted = performance.now();
     const own = settings.overrides.rateLimitPerMinute !== null;
     const key = own ? `${request.orgId}\u0000${tool.name}` : request.orgId;
     const verdict = deps.rateLimiter.hit(key, settings.rateLimitPerMinute);
@@ -228,6 +233,7 @@ export async function prepareRun(
         'rate',
       );
     }
+    timings.rate = elapsed(rateStarted);
   }
 
   if (opts.checkAccess) {
@@ -457,11 +463,13 @@ export async function runTool(
   deps: EngineDeps,
   tool: ToolDefinition,
   request: RunRequest,
+  timings?: StageTimings,
 ): Promise<RunResult> {
   const prepared = await prepareRun(deps, tool, request, {
     checkAccess: true,
     requireEnabled: true,
     checkRateLimit: true,
+    ...(timings !== undefined && { timings }),
   });
   request.stream?.onStart?.();
   const { result, attempts, error } = await atStage('models', () =>
@@ -499,10 +507,19 @@ export async function runTool(
     const last =
       error ?? new EngineError('timeout', 'O modelo de IA demorou demasiado a responder.');
     // Resposta inválida: parou na validação; o resto (fornecedor, tempo): na cadeia de modelos.
-    throw markStage(
-      new EngineError(last.code, last.message, last.details, costUsd),
-      last.code === 'invalid_model_output' ? 'validate' : 'models',
+    const failure = new EngineError(last.code, last.message, last.details, costUsd);
+    const tried = new Set(called.map((a) => a.requestedModel)).size;
+    markReason(
+      failure,
+      last.code === 'invalid_model_output'
+        ? 'invalid_output'
+        : tried > 1
+          ? 'all_models_failed'
+          : last.code === 'timeout'
+            ? 'model_timeout'
+            : 'provider_error',
     );
+    throw markStage(failure, last.code === 'invalid_model_output' ? 'validate' : 'models');
   }
   return {
     result,

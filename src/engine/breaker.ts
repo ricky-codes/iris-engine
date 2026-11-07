@@ -28,6 +28,12 @@ export interface BreakerStatus {
   openUntil: string | null;
   /** A última falha do fornecedor neste modelo, desde o arranque. */
   lastError: { reason: BreakerFailure; at: string } | null;
+  /** O mesmo que `consecutiveFailures` (nome usado pelo dashboard). */
+  failures: number;
+  /** Falhas seguidas que abrem o disjuntor (definição `breakerThreshold`). */
+  threshold: number;
+  /** Quando volta a ser experimentado; `null` se não está aberto. */
+  reopensAt: string | null;
 }
 
 interface State {
@@ -131,6 +137,9 @@ export class CircuitBreaker {
           consecutiveFailures: s.failures,
           openedAt: s.openSince === undefined ? null : iso(s.openSince),
           openUntil: tripped ? iso(s.openUntil) : null,
+          failures: s.failures,
+          threshold: this.threshold,
+          reopensAt: state === 'open' ? iso(s.openUntil) : null,
           lastError:
             s.lastError === undefined
               ? null

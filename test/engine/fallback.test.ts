@@ -307,6 +307,9 @@ describe('motor com modelos de recurso', () => {
         openedAt: null,
         openUntil: null,
         lastError: null,
+        failures: 0,
+        threshold: 2,
+        reopensAt: null,
       },
     ]);
     b.recordFailure('m', 'timeout');
@@ -316,6 +319,8 @@ describe('motor com modelos de recurso', () => {
       consecutiveFailures: 2,
       openedAt: new Date(0).toISOString(),
       openUntil: new Date(1000).toISOString(),
+      reopensAt: new Date(1000).toISOString(),
+      failures: 2,
       lastError: { reason: 'provider_unavailable' },
     });
     now = 1500;

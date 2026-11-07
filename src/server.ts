@@ -27,6 +27,8 @@ import { Metrics } from './engine/metrics.js';
 import type { ToolDefinition } from './engine/tool.js';
 import type { AdminRoutesOptions, StatusReport } from './http/routes/admin.js';
 import { enabledTools } from './tools/index.js';
+import { Traces } from './traces/traces.js';
+import { createHash } from 'node:crypto';
 import { LiveSettings, memoryLimitsOf, type RuntimeSettings } from './settings/settings.js';
 
 // Os clientes externos registam avisos no logger da app, que só existe depois de criada.
@@ -64,6 +66,8 @@ function settingsDefaults(config: AppConfig): RuntimeSettings {
     memoryMaxChars: DEFAULT_MEMORY_LIMITS.chars,
     memoryPerOrg: DEFAULT_MEMORY_LIMITS.perOrg,
     memoryPerUser: DEFAULT_MEMORY_LIMITS.perUser,
+    tracesEnabled: true,
+    tracesPerTool: 100,
   };
 }
 
@@ -97,6 +101,7 @@ function buildEngine(
   access: AccessChecker | undefined,
   metrics: Metrics,
   settings: LiveSettings,
+  traces: Traces | undefined,
 ): Engine | undefined {
   const { engine: cfg } = config;
   if (pool === undefined || cfg.openRouter === undefined) return undefined;
@@ -121,8 +126,19 @@ function buildEngine(
           orgMemories: e.orgMemories,
           userMemories: e.userMemories,
           checkedAccess: true,
+          models: e.calls.filter((c) => c.reason !== 'skipped_breaker').map((c) => c.model),
+        });
+      } else {
+        const reachedAccess = !['request', 'gate', 'rate'].includes(e.stage);
+        metrics.recordRun({
+          tool: e.tool,
+          timings: e.timings,
+          checkedAccess: reachedAccess,
+          stoppedAt: e.stage,
+          models: e.calls.filter((c) => c.reason !== 'skipped_breaker').map((c) => c.model),
         });
       }
+      traces?.record(e);
     },
     ...(cfg.stepAccess !== undefined &&
       typeof cfg.stepAccess === 'object' && {
@@ -201,6 +217,7 @@ function buildAdmin(
   playground: Engine | undefined,
   countsUsage: boolean,
   settings: LiveSettings,
+  traces: Traces | undefined,
 ): AdminRoutesOptions | undefined {
   if (config.adminApiSecret === undefined || pool === undefined) return undefined;
   const { engine: cfg } = config;
@@ -223,6 +240,7 @@ function buildAdmin(
         ? undefined
         : { status: () => playground.breakers(), reset: (m) => playground.resetBreakers(m) },
     instanceId,
+    traces,
     metrics,
     status,
     topology,
@@ -286,7 +304,17 @@ async function main(): Promise<void> {
 
   const metrics = new Metrics();
   const access = accessChecker(config, settings);
-  const core = buildEngine(config, pool, tools, access, metrics, settings);
+  // Os últimos pedidos (só metadados, em memória), para o dashboard. Só com a API de admin, que
+  // é quem os mostra; o id opaco da org usa uma chave derivada do segredo de admin.
+  const traces =
+    config.adminApiSecret === undefined
+      ? undefined
+      : new Traces({
+          enabled: () => settings.current().tracesEnabled,
+          perTool: () => settings.current().tracesPerTool,
+          orgKey: createHash('sha256').update(`iris-traces:${config.adminApiSecret}`).digest('hex'),
+        });
+  const core = buildEngine(config, pool, tools, access, metrics, settings, traces);
   const missing = missingEngineConfig(config.engine, pool !== undefined);
   // As rotas das ferramentas só se ligam com a configuração completa (incluindo o acesso).
   const engine =
@@ -330,6 +358,7 @@ async function main(): Promise<void> {
     // Só o StepAccess conta utilização; no modo aberto ou em bypass não há o que contar.
     typeof config.engine.stepAccess === 'object',
     settings,
+    traces,
   );
 
   const app = await buildApp({

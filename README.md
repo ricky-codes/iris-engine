@@ -117,7 +117,7 @@ Um pedido `POST /v1/tools/<nome>` passa sempre por estes passos, por esta ordem 
 8. **Validação** (`validate`): se a resposta não cumprir o esquema, tenta de novo no mesmo modelo (`maxAttempts`, 2 por omissão) e depois passa ao seguinte; no fim: **502** `invalid_model_output`.
 9. **Resposta** (`response`): JSON ou SSE; o custo vai para o StepAccess em segundo plano.
 
-Resposta: `{ "tool": "<nome>", "version": <n>, "result": { … } }`. Nada é guardado: dos pedidos ficam só linhas de log com id, ferramenta, modelo, tokens, número de memórias e duração.
+Resposta: `{ "tool": "<nome>", "version": <n>, "result": { … } }`. Nada é guardado: dos pedidos ficam só linhas de log com id, ferramenta, modelo, tokens, número de memórias e duração e, em memória, os metadados dos últimos pedidos por ferramenta para o dashboard (passos, tempos, modelos e um id opaco da org; `src/traces/traces.ts`).
 
 Uma ferramenta é um módulo em `src/tools/` (ver `src/tools/diagnostic.ts`): nome, versão, entrada, saída, prompt de origem e valores por omissão. O motor regista-a no catálogo `tool` ao arrancar.
 
@@ -268,6 +268,8 @@ src/
     fetch.ts              o tipo do fetch que os adaptadores recebem
   settings/
     settings.ts           as definições alteráveis sem reiniciar: valores, limites, validação, leitura periódica
+  traces/
+    traces.ts             os últimos pedidos por ferramenta, só metadados e em memória (id opaco da org)
   tools/
     index.ts              as ferramentas ativas
     diagnostic.ts         ferramenta de teste de ligação

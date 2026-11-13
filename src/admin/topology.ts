@@ -14,7 +14,7 @@ export interface CheckFact {
   credits?: { usage: number | null; limit: number | null };
 }
 
-/** `live`: StepAccess a verificar cada pedido · `open`: só o API_SECRET · `bypass`: não verifica (desenvolvimento). */
+/** `live`: StepAccess a verificar cada pedido · `open`: só a credencial da API · `bypass`: não verifica (desenvolvimento). */
 export type AccessMode = 'live' | 'open' | 'bypass' | 'missing';
 
 /** O que só o servidor sabe: configuração em vigor, rotas ligadas e verificações das dependências. */
@@ -30,6 +30,8 @@ export interface RuntimeFacts {
   access: AccessMode;
   openRouter: 'configured' | 'missing';
   routes: { tools: boolean; memories: boolean };
+  /** Como as rotas públicas autenticam quem chama (AUTH_MODE). Sem valor: segredo partilhado. */
+  auth?: 'token' | 'shared_secret';
   checks: { database: CheckFact; stepAccess: CheckFact; openRouter: CheckFact };
 }
 
@@ -131,7 +133,7 @@ const ACCESS_ADAPTER: Record<AccessMode, { label: string; status: NodeStatus; su
   open: {
     label: 'OpenAccessChecker',
     status: 'ok',
-    summary: 'Modo aberto: o acesso é só pelo API_SECRET',
+    summary: 'Modo aberto: o acesso é só pela credencial da API',
   },
   bypass: {
     label: 'OpenAccessChecker',
@@ -239,6 +241,7 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
     rt.access === 'live' ? fromCheck(checks.stepAccess) : accessAdapter.status;
   const engine: NodeStatus = rt.engine.ready ? 'ok' : 'error';
   const usageLive = rt.access === 'live';
+  const publicAuth = rt.auth === 'token' ? 'token da org (JWT)' : 'API_SECRET';
 
   const nodes: TopologyNode[] = [
     // quem chama
@@ -267,9 +270,9 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
       label: '/v1/tools',
       status: routeStatus(rt.routes.tools),
       summary: rt.routes.tools
-        ? 'Ligada · Bearer API_SECRET'
+        ? `Ligada · Bearer ${publicAuth}`
         : 'Desligada: falta configuração do motor',
-      details: { auth: 'API_SECRET' },
+      details: { auth: publicAuth },
       configure: rt.routes.tools ? null : { where: 'env', keys: rt.engine.missing },
     },
     {
@@ -279,8 +282,8 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
       status: routeStatus(rt.routes.memories),
       summary: rt.routes.memories
         ? 'Ligada · não conta utilização'
-        : 'Desligada: falta DATABASE_URL ou API_SECRET',
-      details: { auth: 'API_SECRET', countsUsage: false },
+        : `Desligada: falta DATABASE_URL ou ${rt.auth === 'token' ? 'ORG_KEY_ENCRYPTION_KEY' : 'API_SECRET'}`,
+      details: { auth: publicAuth, countsUsage: false },
       configure: null,
     },
     {

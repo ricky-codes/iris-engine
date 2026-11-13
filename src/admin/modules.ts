@@ -259,7 +259,7 @@ export function describeModules(input: ModulesInput): ModulesReport {
       {
         key: 'accessMode',
         label: 'Modo de acesso',
-        description: '`stepaccess` (licenças) ou `open` (só o API_SECRET).',
+        description: '`stepaccess` (licenças) ou `open` (só a credencial da API).',
         value: input.access,
         source: ENV,
         adminPath: null,

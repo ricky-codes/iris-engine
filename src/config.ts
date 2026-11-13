@@ -34,7 +34,15 @@ const EnvSchema = Type.Object({
   DATABASE_URL: Type.Optional(Type.String({ pattern: '^postgres(ql)?://' })),
   MIGRATIONS_DIR: Type.String({ minLength: 1, default: 'migrations' }),
 
-  // Segredo partilhado que o Salesforce envia em `Authorization: Bearer …`.
+  // Como as rotas públicas autenticam quem chama. `token`: cada org assina os pedidos (JWT HS256)
+  // com uma chave própria e a IRIS tira daí o orgId e o userId. `shared_secret`: um segredo único
+  // (API_SECRET) e os ids declarados no pedido.
+  AUTH_MODE: Type.Union([Type.Literal('token'), Type.Literal('shared_secret')], {
+    default: 'token',
+  }),
+  // Chave mestra (32 bytes em base64) que cifra as chaves das orgs na base de dados.
+  ORG_KEY_ENCRYPTION_KEY: Type.Optional(Type.String({ minLength: 1 })),
+  // Segredo partilhado que o Salesforce envia em `Authorization: Bearer …` (AUTH_MODE=shared_secret).
   API_SECRET: Type.Optional(Type.String({ minLength: 32 })),
   // Segredo da API de administração (usado pelo backend do StepAccess). Diferente do API_SECRET.
   ADMIN_API_SECRET: Type.Optional(Type.String({ minLength: 32 })),
@@ -105,6 +113,8 @@ export interface AppConfig {
   engine: EngineConfig;
   /** Sem segredo não há API de administração. */
   adminApiSecret: string | undefined;
+  /** Chave mestra das chaves das orgs (32 bytes). Sem ela não há tokens nem chaves na API de admin. */
+  orgKeyEncryptionKey: Buffer | undefined;
 }
 
 export interface StepAccessConfig {
@@ -115,6 +125,9 @@ export interface StepAccessConfig {
 }
 
 export interface EngineConfig {
+  /** Ver `AUTH_MODE`. */
+  authMode: 'token' | 'shared_secret';
+  /** Só no modo `shared_secret`. */
   apiSecret: string | undefined;
   /**
    * `open`: sem StepAccess, por escolha (`ACCESS_MODE=open`). `bypass`: sem StepAccess, só
@@ -138,10 +151,17 @@ export interface EngineConfig {
 }
 
 /** O que falta para o motor poder atender pedidos. Vazio = pronto. */
-export function missingEngineConfig(engine: EngineConfig, hasDatabase: boolean): string[] {
+export function missingEngineConfig(
+  engine: EngineConfig,
+  hasDatabase: boolean,
+  orgKeyEncryptionKey: Buffer | undefined,
+): string[] {
   const missing: string[] = [];
   if (!hasDatabase) missing.push('DATABASE_URL');
-  if (engine.apiSecret === undefined) missing.push('API_SECRET');
+  if (engine.authMode === 'shared_secret' && engine.apiSecret === undefined)
+    missing.push('API_SECRET (ou AUTH_MODE=token)');
+  if (engine.authMode === 'token' && orgKeyEncryptionKey === undefined)
+    missing.push('ORG_KEY_ENCRYPTION_KEY');
   if (engine.stepAccess === undefined)
     missing.push(
       'STEPACCESS_URL, STEPACCESS_USER, STEPACCESS_PASSWORD e STEPACCESS_COMPONENT_UUID (ou STEPACCESS_BYPASS=true fora de produção)',
@@ -229,7 +249,20 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
   ];
   if (fallbackIssues.length > 0) throw new ConfigError(fallbackIssues);
 
+  let orgKeyEncryptionKey: Buffer | undefined;
+  if (converted.ORG_KEY_ENCRYPTION_KEY !== undefined) {
+    const raw = converted.ORG_KEY_ENCRYPTION_KEY;
+    const key = Buffer.from(raw, 'base64');
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(raw) || key.length !== 32) {
+      throw new ConfigError([
+        'ORG_KEY_ENCRYPTION_KEY: tem de ser 32 bytes em base64 (gerar com: openssl rand -base64 32)',
+      ]);
+    }
+    orgKeyEncryptionKey = key;
+  }
+
   const engine: EngineConfig = {
+    authMode: converted.AUTH_MODE,
     apiSecret: converted.API_SECRET,
     stepAccess:
       converted.ACCESS_MODE === 'open'
@@ -274,7 +307,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
   }
 
   if (converted.NODE_ENV === 'production') {
-    const missing = missingEngineConfig(engine, true);
+    const missing = missingEngineConfig(engine, true, orgKeyEncryptionKey);
     if (missing.length > 0)
       throw new ConfigError(missing.map((m) => `${m}: obrigatório em produção`));
   }
@@ -290,5 +323,6 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     migrationsDir: converted.MIGRATIONS_DIR,
     engine,
     adminApiSecret: converted.ADMIN_API_SECRET,
+    orgKeyEncryptionKey,
   };
 }

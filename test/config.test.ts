@@ -10,6 +10,7 @@ const STEPACCESS = {
 const PRODUCTION_NO_STEPACCESS = {
   NODE_ENV: 'production',
   DATABASE_URL: 'postgres://u:p@localhost:5432/d',
+  AUTH_MODE: 'shared_secret',
   API_SECRET: 'x'.repeat(32),
   OPENROUTER_API_KEY: 'sk-or-teste',
 };
@@ -28,6 +29,7 @@ describe('loadConfig', () => {
       databaseUrl: undefined,
       migrationsDir: 'migrations',
       engine: {
+        authMode: 'token',
         apiSecret: undefined,
         stepAccess: undefined,
         openRouter: undefined,
@@ -42,6 +44,44 @@ describe('loadConfig', () => {
         stepAccessUsageTimeoutMs: 10_000,
         enableDiagnosticTool: false,
       },
+      adminApiSecret: undefined,
+      orgKeyEncryptionKey: undefined,
+    });
+  });
+
+  describe('autenticação das rotas públicas', () => {
+    const KEY = Buffer.alloc(32, 7).toString('base64');
+    const TOKEN_PRODUCTION = {
+      ...PRODUCTION,
+      AUTH_MODE: 'token',
+      API_SECRET: '',
+      ORG_KEY_ENCRYPTION_KEY: KEY,
+    };
+
+    it('por omissão usa tokens das orgs, com a chave mestra em base64 (32 bytes)', () => {
+      const config = loadConfig({ ORG_KEY_ENCRYPTION_KEY: KEY });
+      expect(config.engine.authMode).toBe('token');
+      expect(config.orgKeyEncryptionKey).toEqual(Buffer.alloc(32, 7));
+    });
+
+    it('recusa uma chave mestra que não tenha 32 bytes', () => {
+      expect(() =>
+        loadConfig({ ORG_KEY_ENCRYPTION_KEY: Buffer.alloc(16).toString('base64') }),
+      ).toThrow(/ORG_KEY_ENCRYPTION_KEY/);
+      expect(() => loadConfig({ ORG_KEY_ENCRYPTION_KEY: 'não é base64!' })).toThrow(
+        /ORG_KEY_ENCRYPTION_KEY/,
+      );
+    });
+
+    it('em produção, com tokens, exige a chave mestra e dispensa o API_SECRET', () => {
+      expect(loadConfig(TOKEN_PRODUCTION).engine.authMode).toBe('token');
+      expect(() => loadConfig({ ...TOKEN_PRODUCTION, ORG_KEY_ENCRYPTION_KEY: '' })).toThrow(
+        /ORG_KEY_ENCRYPTION_KEY: obrigatório em produção/,
+      );
+    });
+
+    it('com o segredo partilhado exige o API_SECRET', () => {
+      expect(() => loadConfig({ ...PRODUCTION, API_SECRET: '' })).toThrow(/API_SECRET/);
     });
   });
 

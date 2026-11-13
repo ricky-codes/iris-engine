@@ -13,6 +13,9 @@ import { fakeAccess, fakeLlm } from '../engine/fakes.js';
 import { PgSettingsStore } from '../../src/adapters/postgres-settings-store.js';
 import type { LiveSettings } from '../../src/settings/settings.js';
 import { buildTestApp, testSettings } from '../helpers.js';
+import { OrgKeys } from '../../src/auth/org-keys.js';
+import { signOrgToken } from '../../src/auth/org-token.js';
+import { PgOrgKeyStore, SecretBox } from '../../src/adapters/postgres-org-key-store.js';
 import { TEST_DATABASE_URL, addMemory, createTestDb, sfId, type TestDb } from './helpers.js';
 
 const SECRET = 'a'.repeat(40);
@@ -46,6 +49,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
   let settings: LiveSettings;
   let core: ReturnType<typeof createEngine>;
   const metrics = new Metrics();
+  let orgKeys: OrgKeys;
 
   beforeAll(async () => {
     db = await createTestDb();
@@ -63,6 +67,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
     await db.pool.query('DELETE FROM engine_setting');
     settings = testSettings({}, new PgSettingsStore(db.pool));
     await settings.refresh();
+    orgKeys = new OrgKeys(new PgOrgKeyStore(db.pool, new SecretBox(Buffer.alloc(32, 3))));
     core = createEngine({
       settings: () => settings.current(),
       tools: [tool],
@@ -117,6 +122,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
           }),
         },
         playground: { engine: core, countsUsage: true },
+        orgKeys,
       },
     });
   });
@@ -1101,6 +1107,80 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
         body(sfId('00D'), sfId('005')),
       );
       expect(missing.json()).toMatchObject({ error: { code: 'unknown_tool' } });
+    });
+  });
+  describe('chaves das orgs', () => {
+    const base = (org: string) => `/v1/admin/orgs/${org}/keys`;
+
+    it('cria uma chave: o segredo aparece uma vez e fica cifrado na base de dados', async () => {
+      const org = sfId('00D');
+      const res = await app!.inject({ method: 'POST', url: base(org), headers: WRITE });
+      expect(res.statusCode).toBe(201);
+      expect(res.headers['cache-control']).toBe('no-store');
+      const body = res.json<{ kid: string; secret: string; createdBy: string; status: string }>();
+      expect(body).toMatchObject({
+        orgId: org,
+        status: 'active',
+        createdBy: 'ricardo@stepahead.pt',
+      });
+
+      const { rows } = await db.pool.query<{ secret_enc: Buffer }>(
+        'SELECT secret_enc FROM org_key WHERE org_key_id = $1',
+        [body.kid],
+      );
+      expect(rows[0]!.secret_enc.toString('latin1')).not.toContain(body.secret);
+
+      // O segredo devolvido assina tokens que a IRIS aceita.
+      const token = signOrgToken(
+        { kid: body.kid, orgId: org, secret: body.secret },
+        { userId: sfId('005'), jti: 'pedido-db-0001', iat: Math.floor(Date.now() / 1000) },
+      );
+      expect(await orgKeys.verify(token)).toMatchObject({ ok: true });
+
+      const list = await app!.inject({ method: 'GET', url: base(org), headers: READ });
+      expect(list.json()).toEqual({ keys: [expect.objectContaining({ kid: body.kid })] });
+      expect(JSON.stringify(list.json())).not.toContain(body.secret);
+    });
+
+    it('no máximo duas chaves ativas; revogar liberta o lugar e invalida os tokens', async () => {
+      const org = sfId('00D');
+      const create = () => app!.inject({ method: 'POST', url: base(org), headers: WRITE });
+      const first = (await create()).json<{ kid: string; secret: string }>();
+      expect((await create()).statusCode).toBe(201);
+      const third = await create();
+      expect(third.statusCode).toBe(422);
+
+      const del = await app!.inject({
+        method: 'DELETE',
+        url: `${base(org)}/${first.kid}`,
+        headers: WRITE,
+      });
+      expect(del.statusCode).toBe(204);
+      expect((await create()).statusCode).toBe(201);
+
+      const token = signOrgToken(
+        { kid: first.kid, orgId: org, secret: first.secret },
+        { userId: sfId('005'), jti: 'pedido-db-0002', iat: Math.floor(Date.now() / 1000) },
+      );
+      expect(await orgKeys.verify(token)).toEqual({ ok: false, reason: 'unknown_key' });
+
+      const again = await app!.inject({
+        method: 'DELETE',
+        url: `${base(org)}/${first.kid}`,
+        headers: WRITE,
+      });
+      expect(again.statusCode).toBe(404);
+      const list = await app!.inject({ method: 'GET', url: base(org), headers: READ });
+      expect(list.json<{ keys: { status: string }[] }>().keys.map((k) => k.status)).toEqual([
+        'active',
+        'active',
+        'revoked',
+      ]);
+    });
+
+    it('criar e revogar exigem quem faz a alteração', async () => {
+      const res = await app!.inject({ method: 'POST', url: base(sfId('00D')), headers: READ });
+      expect(res.statusCode).toBe(422);
     });
   });
 });

@@ -49,46 +49,50 @@ Variáveis de ambiente, validadas no arranque (`src/config.ts`). Com configuraç
 
 As marcadas com **(definição)** são só o valor inicial: mudam-se sem reiniciar em `PATCH /v1/admin/settings` e o valor gravado na base de dados (`engine_setting`) prevalece. Cada instância volta a ler a tabela a cada 30 s. Os limites das memórias (500 caracteres, 50 por org, 20 por utilizador) também são definições, sem variável de ambiente. Ver [`docs/ADMIN_API.md`](docs/ADMIN_API.md#56-definições).
 
-| Variável                                                  | Omissão                                                                                       |
-| --------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `NODE_ENV`                                                | `development`                                                                                 |
-| `HOST`                                                    | `0.0.0.0`                                                                                     |
-| `PORT`                                                    | `8080`                                                                                        |
-| `LOG_LEVEL`                                               | `info`                                                                                        |
-| `MAX_BODY_BYTES`                                          | `1048576`                                                                                     |
-| `SHUTDOWN_TIMEOUT_MS`                                     | `10000`                                                                                       |
-| `DATABASE_URL`                                            | _(vazio)_                                                                                     |
-| `MIGRATIONS_DIR`                                          | `migrations`                                                                                  |
-| `API_SECRET`                                              | _(vazio)_ — segredo partilhado com o Salesforce, ≥ 32 caracteres                              |
-| `STEPACCESS_URL`, `_USER`, `_PASSWORD`, `_COMPONENT_UUID` | _(vazio)_ — todos ou nenhum                                                                   |
-| `STEPACCESS_TIMEOUT_MS`                                   | `3000` — (definição) 100 a 30000                                                              |
-| `STEPACCESS_USAGE_TIMEOUT_MS`                             | `10000` — (definição) tempo máximo do envio do custo, em segundo plano (100 a 60000)          |
-| `STEPACCESS_BYPASS`                                       | `false` — proibido em produção                                                                |
-| `ACCESS_MODE`                                             | `stepaccess` — ou `open`: acesso só pelo `API_SECRET`, sem StepAccess (permitido em produção) |
-| `OPENROUTER_API_KEY`                                      | _(vazio)_                                                                                     |
-| `OPENROUTER_BASE_URL`                                     | `https://openrouter.ai/api/v1`                                                                |
-| `LLM_DEFAULT_MODEL`                                       | `google/gemini-2.5-flash` — (definição)                                                       |
-| `LLM_FALLBACK_MODELS`                                     | _(vazio)_ — (definição) modelos de recurso por omissão, separados por vírgulas (máximo 3)     |
-| `LLM_TOTAL_TIMEOUT_MS`                                    | `30000` — (definição) teto de tempo das chamadas ao modelo de um pedido (2000 a 115000)       |
-| `LLM_MAX_ATTEMPTS`                                        | `2` — (definição) tentativas por modelo até obter uma resposta válida (1 a 5)                 |
-| `LLM_BREAKER_THRESHOLD`, `LLM_BREAKER_OPEN_MS`            | `3` falhas seguidas (1 a 20) e `60000` ms (1000 a 3600000) com o modelo saltado (definição)   |
-| `STREAM_ENABLED`                                          | `true` — (definição) `false` recusa `"stream": true` em todas as ferramentas                  |
-| `RATE_LIMIT_PER_MINUTE`                                   | `0` — (definição) pedidos por minuto e por org, por instância (429 acima); 0 = sem limite     |
-| `ENABLE_DIAGNOSTIC_TOOL`                                  | `false`                                                                                       |
-| `ADMIN_API_SECRET`                                        | _(vazio)_ — liga a API de administração; ≥ 32 caracteres, diferente do `API_SECRET`           |
+| Variável                                                  | Omissão                                                                                     |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                                                | `development`                                                                               |
+| `HOST`                                                    | `0.0.0.0`                                                                                   |
+| `PORT`                                                    | `8080`                                                                                      |
+| `LOG_LEVEL`                                               | `info`                                                                                      |
+| `MAX_BODY_BYTES`                                          | `1048576`                                                                                   |
+| `SHUTDOWN_TIMEOUT_MS`                                     | `10000`                                                                                     |
+| `DATABASE_URL`                                            | _(vazio)_                                                                                   |
+| `MIGRATIONS_DIR`                                          | `migrations`                                                                                |
+| `AUTH_MODE`                                               | `token` — ou `shared_secret` (ver [Autenticação](#autenticação))                            |
+| `ORG_KEY_ENCRYPTION_KEY`                                  | _(vazio)_ — 32 bytes em base64 que cifram as chaves das orgs; obrigatória com `token`       |
+| `API_SECRET`                                              | _(vazio)_ — só com `shared_secret`: segredo partilhado com o Salesforce, ≥ 32 caracteres    |
+| `STEPACCESS_URL`, `_USER`, `_PASSWORD`, `_COMPONENT_UUID` | _(vazio)_ — todos ou nenhum                                                                 |
+| `STEPACCESS_TIMEOUT_MS`                                   | `3000` — (definição) 100 a 30000                                                            |
+| `STEPACCESS_USAGE_TIMEOUT_MS`                             | `10000` — (definição) tempo máximo do envio do custo, em segundo plano (100 a 60000)        |
+| `STEPACCESS_BYPASS`                                       | `false` — proibido em produção                                                              |
+| `ACCESS_MODE`                                             | `stepaccess` — ou `open`: acesso só pela credencial, sem StepAccess (permitido em produção) |
+| `OPENROUTER_API_KEY`                                      | _(vazio)_                                                                                   |
+| `OPENROUTER_BASE_URL`                                     | `https://openrouter.ai/api/v1`                                                              |
+| `LLM_DEFAULT_MODEL`                                       | `google/gemini-2.5-flash` — (definição)                                                     |
+| `LLM_FALLBACK_MODELS`                                     | _(vazio)_ — (definição) modelos de recurso por omissão, separados por vírgulas (máximo 3)   |
+| `LLM_TOTAL_TIMEOUT_MS`                                    | `30000` — (definição) teto de tempo das chamadas ao modelo de um pedido (2000 a 115000)     |
+| `LLM_MAX_ATTEMPTS`                                        | `2` — (definição) tentativas por modelo até obter uma resposta válida (1 a 5)               |
+| `LLM_BREAKER_THRESHOLD`, `LLM_BREAKER_OPEN_MS`            | `3` falhas seguidas (1 a 20) e `60000` ms (1000 a 3600000) com o modelo saltado (definição) |
+| `STREAM_ENABLED`                                          | `true` — (definição) `false` recusa `"stream": true` em todas as ferramentas                |
+| `RATE_LIMIT_PER_MINUTE`                                   | `0` — (definição) pedidos por minuto e por org, por instância (429 acima); 0 = sem limite   |
+| `ENABLE_DIAGNOSTIC_TOOL`                                  | `false`                                                                                     |
+| `ADMIN_API_SECRET`                                        | _(vazio)_ — liga a API de administração; ≥ 32 caracteres, diferente do `API_SECRET`         |
 
 ## Endpoints
 
-| Método e caminho           | Função                                                                                                                                                                    |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /healthz`             | Processo vivo                                                                                                                                                             |
-| `GET /readyz`              | Dependências acessíveis (200 ou 503, com estado por check)                                                                                                                |
-| `GET /v1/tools`            | Lista as ferramentas disponíveis e se aceitam streaming (precisa de credencial)                                                                                           |
-| `POST /v1/tools/<nome>`    | Corre uma ferramenta (precisa de credencial). Com `"stream": true`, responde em SSE (ver [Streaming](#streaming))                                                         |
-| `GET /v1/memories`         | Regras da org e memórias do utilizador (`?orgId=…&userId=…`, opcional `&tool=…`). Precisa de credencial; não conta utilização no StepAccess                               |
-| `POST /v1/memories`        | Guarda uma memória do utilizador (`{orgId, userId, content, tools?}`). Precisa de credencial; não conta utilização                                                        |
-| `DELETE /v1/memories/<id>` | Apaga uma memória do próprio utilizador (`?orgId=…&userId=…`); as da org e as de colegas dão 404                                                                          |
-| `/v1/admin/*`              | API de administração para o StepAccess: estado, métricas, topologia, definições, ferramentas, prompts, memórias, playground. Ver [`docs/ADMIN_API.md`](docs/ADMIN_API.md) |
+| Método e caminho           | Função                                                                                                                                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /healthz`             | Processo vivo                                                                                                                                                                              |
+| `GET /readyz`              | Dependências acessíveis (200 ou 503, com estado por check)                                                                                                                                 |
+| `GET /v1/tools`            | Lista as ferramentas disponíveis e se aceitam streaming (precisa de credencial)                                                                                                            |
+| `POST /v1/tools/<nome>`    | Corre uma ferramenta (precisa de credencial). Com `"stream": true`, responde em SSE (ver [Streaming](#streaming))                                                                          |
+| `GET /v1/memories`         | Regras da org e memórias do utilizador (opcional `?tool=…`). Precisa de credencial; não conta utilização no StepAccess                                                                     |
+| `POST /v1/memories`        | Guarda uma memória do utilizador (`{content, tools?}`). Precisa de credencial; não conta utilização                                                                                        |
+| `DELETE /v1/memories/<id>` | Apaga uma memória do próprio utilizador; as da org e as de colegas dão 404                                                                                                                 |
+| `/v1/admin/*`              | API de administração para o StepAccess: estado, métricas, topologia, definições, ferramentas, prompts, memórias, chaves das orgs, playground. Ver [`docs/ADMIN_API.md`](docs/ADMIN_API.md) |
+
+Com `AUTH_MODE=shared_secret`, os pedidos às rotas públicas levam também `orgId` e `userId` (no corpo ou, nos `GET`/`DELETE` das memórias, na query string). Com `token` (por omissão), não: vêm do token, e mandá-los dá **422**.
 
 Todas as respostas levam `X-Request-Id`. Os erros têm sempre este formato:
 
@@ -103,11 +107,77 @@ Todas as respostas levam `X-Request-Id`. Os erros têm sempre este formato:
 }
 ```
 
+## Autenticação
+
+A IRIS tem de saber, com certeza, de que org e de que utilizador vem cada pedido, antes de perguntar ao StepAccess se podem usar a ferramenta (plano e consumo). Com `AUTH_MODE=token` (por omissão), cada org tem uma **chave própria** e assina cada pedido com um token curto; a IRIS tira o `orgId` e o `userId` do token, depois de verificar a assinatura.
+
+```
+Pedido ─▶ IRIS: verifica o token ─▶ org e utilizador provados
+       ─▶ StepAccess: "pode usar?" (plano e consumo)
+       ─▶ memórias, modelo, resposta
+```
+
+### O token
+
+JWT HS256, um por pedido, enviado em `Authorization: Bearer <token>`:
+
+| Parte     | Campo | Valor                                                             |
+| --------- | ----- | ----------------------------------------------------------------- |
+| cabeçalho | `alg` | `HS256` (qualquer outro é recusado, incluindo `none`)             |
+| cabeçalho | `kid` | id da chave da org (`k_` + 16 hex)                                |
+| conteúdo  | `iss` | `orgId` (`00D…`, 18 caracteres): tem de ser a org da chave        |
+| conteúdo  | `sub` | `userId` (`005…`, 18 caracteres)                                  |
+| conteúdo  | `aud` | `iris-engine`                                                     |
+| conteúdo  | `iat` | emitido em (segundos Unix)                                        |
+| conteúdo  | `exp` | expira em; no máximo 300 s depois do `iat`                        |
+| conteúdo  | `jti` | id único do token (8 a 128 caracteres); um token só serve uma vez |
+
+A assinatura é HMAC-SHA256 de `base64url(cabeçalho).base64url(conteúdo)`, com os **bytes UTF-8 do segredo** como chave. Tolera 30 s de diferença de relógios. Qualquer falha dá **401** `unauthorized`, sempre com a mesma mensagem; a razão (`expired`, `bad_signature`, `replayed`…) fica só no log.
+
+Em Apex fica assim:
+
+```apex
+String b64url(Blob b) {
+  return EncodingUtil.base64Encode(b).replace('+', '-').replace('/', '_').replace('=', '');
+}
+Long now = Datetime.now().getTime() / 1000;
+String header = b64url(Blob.valueOf(JSON.serialize(new Map<String, Object>{
+  'alg' => 'HS256', 'typ' => 'JWT', 'kid' => kid })));
+String payload = b64url(Blob.valueOf(JSON.serialize(new Map<String, Object>{
+  'iss' => UserInfo.getOrganizationId(), 'sub' => UserInfo.getUserId(), 'aud' => 'iris-engine',
+  'iat' => now, 'exp' => now + 60, 'jti' => EncodingUtil.convertToHex(Crypto.generateAesKey(128)) })));
+String signature = b64url(Crypto.generateMac('HmacSHA256',
+  Blob.valueOf(header + '.' + payload), Blob.valueOf(secret)));
+String token = header + '.' + payload + '.' + signature;
+```
+
+### As chaves
+
+- Criam-se em `POST /v1/admin/orgs/<orgId>/keys` (ou `admin create-org-key --org-id 00D…`). O segredo aparece **uma única vez**; a IRIS guarda-o cifrado (AES-256-GCM com `ORG_KEY_ENCRYPTION_KEY`).
+- No máximo **2 chaves ativas** por org, para rodar sem interrupção: cria-se a nova, passa-se a usá-la, revoga-se a antiga.
+- Revogar (`DELETE /v1/admin/orgs/<orgId>/keys/<kid>`) vale logo na instância que recebe o pedido; nas outras, até 30 s (a cache das chaves).
+- Os `jti` já usados ficam em memória por instância: com várias instâncias, um token repetido noutra instância não é apanhado (vive no máximo 5 minutos).
+- Mudar a `ORG_KEY_ENCRYPTION_KEY` invalida todas as chaves: é preciso emiti-las de novo.
+
+### Experimentar
+
+```bash
+docker compose run --rm admin create-org-key --org-id 00DgL00000O7vLVUAZ
+docker compose run --rm admin sign-token --org-id 00DgL00000O7vLVUAZ --user-id 005gL00000GpOQTQA3 \
+  --kid <kid> --secret <segredo>
+```
+
+O `sign-token` imprime um token válido durante 5 minutos, para usar em `Authorization: Bearer <token>`. Cada token só serve para um pedido.
+
+### Modo antigo
+
+Com `AUTH_MODE=shared_secret`, há um único `API_SECRET` para todos e o `orgId` e o `userId` vêm no pedido: a IRIS confia neles. Quem tiver o segredo pode fazer-se passar por qualquer org.
+
 ## Motor
 
 Um pedido `POST /v1/tools/<nome>` passa sempre por estes passos, por esta ordem (os mesmos ids de `src/engine/pipeline.ts`, que a consola mostra em `GET /v1/admin/tools/:name/pipeline`):
 
-1. **Pedido** (`request`): `Authorization: Bearer <API_SECRET>`, comparada em tempo constante (falha: **401**, antes de olhar para o corpo); depois `orgId` (`00D…`, 18 caracteres), `userId` (`005…`, 18 caracteres), `version` opcional e os campos da ferramenta. Campos a mais são recusados. Falha: **422**, sem gastar utilização.
+1. **Pedido** (`request`): `Authorization: Bearer <token da org>`, verificado antes de olhar para o corpo (falha: **401**); o `orgId` e o `userId` saem do token (ver [Autenticação](#autenticação)). Depois `version` opcional e os campos da ferramenta. Campos a mais são recusados. Falha: **422**, sem gastar utilização. Com `AUTH_MODE=shared_secret`: `Bearer <API_SECRET>`, comparado em tempo constante, e `orgId` (`00D…`, 18 caracteres) e `userId` (`005…`, 18 caracteres) no corpo.
 2. **Ligada** (`gate`): modelo, temperatura, limites e prompt. A base de dados (`tool_config`, versão ativa em `prompt_version`) substitui os valores do código. Ferramenta desativada: **503** `tool_disabled`. `stream: true` com o streaming desligado (na ferramenta ou em geral): **422**.
 3. **Limite de pedidos** (`rate`): pedidos por minuto e por org, por instância. Com um limite próprio da ferramenta, conta à parte (por org e ferramenta). Acima: **429** `rate_limited`, com `Retry-After`.
 4. **Acesso** (`access`): `GET /v1/access` ao StepAccess com org, utilizador e o componente IRIS. Conta utilização. Sem acesso: **403** `access_denied`; limite atingido: **429** `quota_exceeded`; StepAccess indisponível ou resposta inesperada: **503** `service_unavailable` (falha fechada).
@@ -127,8 +197,8 @@ Algumas ferramentas têm um campo de texto livre na resposta (declaram `stream: 
 
 ```bash
 curl -N -X POST localhost:8080/v1/tools/diagnostic \
-  -H "Authorization: Bearer <API_SECRET>" -H 'Content-Type: application/json' \
-  -d '{"orgId":"00D…","userId":"005…","message":"Olá IRIS","stream":true}'
+  -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' \
+  -d '{"message":"Olá IRIS","stream":true}'
 ```
 
 A resposta é `text/event-stream`, com estes eventos (`data` é sempre JSON):
@@ -150,18 +220,18 @@ A resposta é `text/event-stream`, com estes eventos (`data` é sempre JSON):
 No `.env` (nunca no Git):
 
 ```bash
-API_SECRET=<openssl rand -base64 48>
+ORG_KEY_ENCRYPTION_KEY=<openssl rand -base64 32>
 STEPACCESS_BYPASS=true          # enquanto o StepAccess não estiver ligado (proibido em produção)
 OPENROUTER_API_KEY=sk-or-...
 ENABLE_DIAGNOSTIC_TOOL=true
 ```
 
-Depois de `docker compose up --build`:
+Depois de `docker compose up --build`, crie uma chave e um token (ver [Experimentar](#experimentar)) e:
 
 ```bash
 curl -s -X POST localhost:8080/v1/tools/diagnostic \
-  -H "Authorization: Bearer <API_SECRET>" -H 'Content-Type: application/json' \
-  -d '{"orgId":"00DgL00000O7vLVUAZ","userId":"005gL00000GpOQTQA3","message":"Olá IRIS, estás a funcionar?"}'
+  -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' \
+  -d '{"message":"Olá IRIS, estás a funcionar?"}'
 ```
 
 Para ver as memórias a funcionar, crie uma regra da org e repita o pedido:
@@ -209,8 +279,10 @@ PostgreSQL 16, 3.ª forma normal. As migrações são ficheiros SQL em `migratio
 | `0001`–`0007`                       | Modelo inicial (catálogos, identidade, memórias, pedidos, resultados)   |
 | `0008_motor_de_ferramentas.sql`     | Sem pedidos nem resultados; "ação" passa a "ferramenta"                 |
 | `0009_identidade_no_stepaccess.sql` | Sem clientes, orgs, utilizadores nem chaves; memórias por id Salesforce |
+| `0010`–`0012`                       | Modelos de recurso e definições alteráveis sem reiniciar                |
+| `0013_chaves_das_orgs.sql`          | Chaves das orgs (`org_key`), com o segredo cifrado                      |
 
-Ficam 12 tabelas: catálogos (`tool`, `ai_provider`, `memory_scope`, `memory_source`), memórias (`memory`, `org_memory`, `user_memory`, `memory_tool`) e configuração (`llm_model`, `tool_config`, `prompt`, `prompt_version`).
+Ficam 15 tabelas: catálogos (`tool`, `ai_provider`, `memory_scope`, `memory_source`), memórias (`memory`, `org_memory`, `user_memory`, `memory_tool`), configuração (`llm_model`, `tool_config`, `tool_config_fallback`, `prompt`, `prompt_version`, `engine_setting`) e chaves das orgs (`org_key`).
 
 Regras garantidas pela própria base de dados: uma memória tem exatamente um dono (uma org ou um utilizador); as memórias da org têm sempre origem admin; os limites por dono não se furam nem com inserções simultâneas; uma versão de prompt publicada não muda.
 
@@ -230,7 +302,11 @@ src/
   server.ts               arranque e encerramento ordenado
   app.ts                  construção da app Fastify (usada também nos testes)
   config.ts               leitura e validação do ambiente (único sítio com process.env)
+  auth/
+    org-token.ts          tokens das orgs (JWT HS256): verificar e assinar
+    org-keys.ts           chaves das orgs: cache, tokens repetidos, criar, listar, revogar
   http/
+    auth.ts               autenticação das rotas públicas (token da org ou segredo partilhado)
     errors.ts             AppError: código estável + estado HTTP; tradução dos erros do motor
     error-handler.ts      conversão de todos os erros para o formato comum
     routes/health.ts      /healthz e /readyz
@@ -264,6 +340,7 @@ src/
     postgres-store.ts     configuração das ferramentas; registo do catálogo de ferramentas
     postgres-memory-store.ts  as memórias no Postgres
     postgres-settings-store.ts  as definições na tabela engine_setting
+    postgres-org-key-store.ts   as chaves das orgs na tabela org_key, cifradas (AES-256-GCM)
     health.ts             verificações do StepAccess e do OpenRouter
     fetch.ts              o tipo do fetch que os adaptadores recebem
   settings/

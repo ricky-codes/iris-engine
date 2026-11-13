@@ -43,6 +43,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('migrações', () => {
       'memory_scope',
       'memory_source',
       'memory_tool',
+      'org_key',
       'org_memory',
       'prompt',
       'prompt_version',

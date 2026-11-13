@@ -65,10 +65,17 @@ EFFECTIVE_ENV="${NODE_ENV_VALUE:-production}"
 BYPASS="$(env_value STEPACCESS_BYPASS)"
 ACCESS_MODE="$(env_value ACCESS_MODE)"
 ACCESS_MODE="${ACCESS_MODE:-stepaccess}"
+AUTH_MODE="$(env_value AUTH_MODE)"
+AUTH_MODE="${AUTH_MODE:-token}"
 
 step "A verificar a configuração ($EFFECTIVE_ENV)"
 MISSING=()
-env_set API_SECRET || MISSING+=("API_SECRET")
+case "$AUTH_MODE" in
+  # Cada org assina os pedidos com a sua chave; a chave mestra cifra-as na base de dados.
+  token) env_set ORG_KEY_ENCRYPTION_KEY || MISSING+=("ORG_KEY_ENCRYPTION_KEY") ;;
+  shared_secret) env_set API_SECRET || MISSING+=("API_SECRET") ;;
+  *) fail "AUTH_MODE=$AUTH_MODE não é válido: use token ou shared_secret." ;;
+esac
 env_set OPENROUTER_API_KEY || MISSING+=("OPENROUTER_API_KEY")
 case "$ACCESS_MODE" in
   open)
@@ -92,7 +99,8 @@ if [ "$EFFECTIVE_ENV" = "production" ]; then
   if [ "${#MISSING[@]}" -gt 0 ]; then
     fail "Em produção faltam no .env: ${MISSING[*]}. O serviço não arrancaria."
   fi
-  ok "Configuração completa para produção"
+  ok "Configuração completa para produção (autenticação: $AUTH_MODE)"
+  [ "$AUTH_MODE" = "shared_secret" ] && warn "AUTH_MODE=shared_secret: o orgId e o userId vêm no pedido, protegidos só pelo API_SECRET."
   [ "$ACCESS_MODE" = "open" ] && warn "ACCESS_MODE=open: acesso só pelo API_SECRET, sem licenças nem contagem de utilização no StepAccess."
 else
   if [ "${#MISSING[@]}" -gt 0 ]; then

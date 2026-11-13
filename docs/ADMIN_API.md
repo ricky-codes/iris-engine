@@ -60,6 +60,7 @@ IRIS Engine  /v1/admin/*
 
 ```bash
 ADMIN_API_SECRET=<segredo com ≥ 32 caracteres, diferente do API_SECRET>
+ORG_KEY_ENCRYPTION_KEY=<openssl rand -base64 32>   # para as chaves das orgs (7.8)
 ```
 
 Gerar no Linux: `openssl rand -base64 48`. Sem esta variável (ou sem base de dados) a API de admin **não existe** (todas as rotas `/v1/admin/*` dão 404). O log de arranque diz `API de administração ligada em /v1/admin`.
@@ -74,7 +75,7 @@ IRIS_ADMIN_SECRET=<o mesmo valor do ADMIN_API_SECRET>
 ### 2.2 Rede
 
 - Se a IRIS e o StepAccess estão no **mesmo servidor**, o StepAccess deve chamar a IRIS por endereço interno (`http://127.0.0.1:8080` ou pela rede Docker), **não** pelo domínio público.
-- Se a IRIS estiver publicada na internet (para o Salesforce chamar `/v1/tools/*`), **bloquear `/v1/admin/*` no proxy público** (Caddy). Exemplo:
+- Se a IRIS estiver publicada na internet (para o Salesforce chamar `/v1/tools/*` e `/v1/memories`), **bloquear `/v1/admin/*` no proxy público** (Caddy). Exemplo:
 
 ```caddy
 iris.exemplo.pt {
@@ -1076,6 +1077,34 @@ Apaga qualquer memória (da org ou de utilizador). Resposta `204` sem corpo. `40
 Resposta `200`: `{ "deleted": 7 }`. Não falha se não houver nada (`deleted: 0`). **Irreversível**: na UI, pedir confirmação escrevendo o id da org.
 
 ---
+
+### 7.8 Chaves das orgs
+
+Com `AUTH_MODE=token` (por omissão), cada org assina os pedidos às rotas públicas com uma chave própria (ver o README, secção Autenticação). Estas rotas dão `503 service_unavailable` sem `ORG_KEY_ENCRYPTION_KEY` no `.env` da IRIS.
+
+Formato de uma chave (nunca com o segredo):
+
+```json
+{
+  "kid": "k_115ff92b875192f6",
+  "orgId": "00DgL00000O7vLVUAZ",
+  "status": "active",
+  "createdAt": "2026-11-13T00:09:22.439Z",
+  "createdBy": "ricardo@stepahead.pt",
+  "revokedAt": null,
+  "revokedBy": null
+}
+```
+
+| Rota                                     | O que faz                                                                                                                 |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `GET /v1/admin/orgs/:orgId/keys`         | `{ keys: [...] }`: ativas primeiro, mais recentes primeiro                                                                |
+| `POST /v1/admin/orgs/:orgId/keys`        | **201** com a chave e `"secret"`. O segredo só aparece aqui (`Cache-Control: no-store`). **422** se a org já tem 2 ativas |
+| `DELETE /v1/admin/orgs/:orgId/keys/:kid` | **204**. **404** se a chave não existe nessa org ou já estava revogada                                                    |
+
+- O StepAccess deve mostrar o segredo uma vez a quem cria a chave e **não o guardar**.
+- Rodar uma chave: criar a nova, configurá-la na org, revogar a antiga. A revogação vale logo na instância que a recebe e, nas outras, até 30 s.
+- Quando uma org sai, revogar todas as suas chaves (e apagar as memórias com `purge`).
 
 ## 8. Playground
 

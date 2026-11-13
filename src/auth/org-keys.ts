@@ -1,0 +1,126 @@
+import { randomBytes } from 'node:crypto';
+import {
+  peekKid,
+  TOKEN_CLOCK_SKEW_SECONDS,
+  verifyOrgToken,
+  type OrgSigningKey,
+  type TokenCheck,
+} from './org-token.js';
+
+/** Uma chave como a API de administração a mostra: nunca o segredo. */
+export interface OrgKeyInfo {
+  kid: string;
+  orgId: string;
+  status: 'active' | 'revoked';
+  createdAt: Date;
+  createdBy: string;
+  revokedAt: Date | null;
+  revokedBy: string | null;
+}
+
+/** Onde as chaves vivem. O segredo é guardado cifrado (ver src/adapters/postgres-org-key-store.ts). */
+export interface OrgKeyStore {
+  /** A chave ativa com este id, ou `undefined` (não existe ou está revogada). */
+  findActive(kid: string): Promise<OrgSigningKey | undefined>;
+  /** Grava uma chave nova. `undefined` se a org já tem `maxActive` chaves ativas. */
+  insert(key: OrgSigningKey, actor: string, maxActive: number): Promise<OrgKeyInfo | undefined>;
+  list(orgId: string): Promise<OrgKeyInfo[]>;
+  /** `false` se a chave não existe nesta org ou já estava revogada. */
+  revoke(orgId: string, kid: string, actor: string): Promise<boolean>;
+}
+
+/** Chaves ativas por org: a atual e a próxima, durante uma rotação. */
+export const MAX_ACTIVE_KEYS_PER_ORG = 2;
+/** Quanto tempo uma chave lida fica em memória. É o atraso máximo de uma revogação noutras instâncias. */
+export const KEY_CACHE_MS = 30_000;
+/** Um `kid` que não existe fica em memória menos tempo, para uma chave nova aparecer depressa. */
+const MISS_CACHE_MS = 5_000;
+
+export class OrgKeyError extends Error {
+  constructor(
+    public readonly kind: 'limit' | 'not_found',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'OrgKeyError';
+  }
+}
+
+/**
+ * As chaves das orgs: verifica tokens (com cache das chaves e proteção contra repetições) e
+ * cria, lista e revoga chaves para a API de administração.
+ *
+ * A cache e os `jti` já vistos são por instância: com várias instâncias, uma revogação demora
+ * até `KEY_CACHE_MS` a chegar às outras, e um token repetido noutra instância não é apanhado
+ * (vive no máximo 5 minutos).
+ */
+export class OrgKeys {
+  private readonly cache = new Map<string, { key: OrgSigningKey | undefined; until: number }>();
+  private readonly seenJti = new Map<string, number>();
+  private lastSweep = 0;
+
+  constructor(
+    private readonly store: OrgKeyStore,
+    private readonly nowMs: () => number = () => Date.now(),
+  ) {}
+
+  /** Verifica um token. Nunca lança por causa do token; só se a base de dados falhar. */
+  async verify(token: string): Promise<TokenCheck> {
+    const kid = peekKid(token);
+    const key = kid === undefined ? undefined : await this.key(kid);
+    const now = this.nowMs();
+    this.sweep(now);
+    return verifyOrgToken(token, key, Math.floor(now / 1000), (orgId, jti, exp) => {
+      const id = `${orgId}:${jti}`;
+      if (this.seenJti.has(id)) return true;
+      this.seenJti.set(id, (exp + TOKEN_CLOCK_SKEW_SECONDS) * 1000);
+      return false;
+    });
+  }
+
+  /** Cria uma chave. O segredo só existe aqui: devolve-se uma vez e guarda-se cifrado. */
+  async create(orgId: string, actor: string): Promise<OrgKeyInfo & { secret: string }> {
+    const key: OrgSigningKey = {
+      kid: `k_${randomBytes(8).toString('hex')}`,
+      orgId,
+      secret: randomBytes(32).toString('base64url'),
+    };
+    const info = await this.store.insert(key, actor, MAX_ACTIVE_KEYS_PER_ORG);
+    if (info === undefined) {
+      throw new OrgKeyError(
+        'limit',
+        `A org já tem ${MAX_ACTIVE_KEYS_PER_ORG} chaves ativas: revogue uma antes de criar outra.`,
+      );
+    }
+    this.cache.delete(key.kid);
+    return { ...info, secret: key.secret };
+  }
+
+  list(orgId: string): Promise<OrgKeyInfo[]> {
+    return this.store.list(orgId);
+  }
+
+  async revoke(orgId: string, kid: string, actor: string): Promise<void> {
+    const done = await this.store.revoke(orgId, kid, actor);
+    // Nesta instância, a revogação vale já.
+    this.cache.delete(kid);
+    if (!done) throw new OrgKeyError('not_found', 'Chave não encontrada ou já revogada.');
+  }
+
+  private async key(kid: string): Promise<OrgSigningKey | undefined> {
+    const now = this.nowMs();
+    const hit = this.cache.get(kid);
+    if (hit !== undefined && hit.until > now) return hit.key;
+    const key = await this.store.findActive(kid);
+    this.cache.set(kid, { key, until: now + (key === undefined ? MISS_CACHE_MS : KEY_CACHE_MS) });
+    return key;
+  }
+
+  /** Esquece os `jti` expirados e as entradas velhas da cache, no máximo uma vez por minuto. */
+  private sweep(now: number): void {
+    if (now - this.lastSweep < 60_000) return;
+    this.lastSweep = now;
+    for (const [id, until] of this.seenJti) if (until <= now) this.seenJti.delete(id);
+    for (const [kid, entry] of this.cache) if (entry.until <= now) this.cache.delete(kid);
+  }
+}

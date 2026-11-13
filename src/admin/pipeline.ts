@@ -114,7 +114,7 @@ const CONTROLS: Record<
     toolConfig: [],
     settings: [],
     overrides: [],
-    env: ['API_SECRET', 'MAX_BODY_BYTES'],
+    env: ['AUTH_MODE', 'ORG_KEY_ENCRYPTION_KEY', 'API_SECRET', 'MAX_BODY_BYTES'],
   },
   gate: { label: 'Ligada', toolConfig: ['enabled'], settings: [], overrides: [], env: [] },
   rate: {

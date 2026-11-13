@@ -1,4 +1,3 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { Type, type TObject } from '@sinclair/typebox';
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import type { FastifyError, FastifyRequest } from 'fastify';
@@ -8,13 +7,16 @@ import type { ToolDefinition } from '../../engine/tool.js';
 import type { PipelineStage } from '../../engine/pipeline.js';
 import { errorCodeOf, errorReasonOf, errorStageOf, resolveError } from '../error-handler.js';
 import { AppError, type ErrorBody } from '../errors.js';
+import { ownerOf, publicAuth, type PublicAuth } from '../auth.js';
 
-export interface ToolRoutesOptions {
+export { bearerAuth, unauthorized } from '../auth.js';
+
+/** `orgKeys` (tokens das orgs) ou `apiSecret` (segredo partilhado): ver src/http/auth.ts. */
+export type ToolRoutesOptions = PublicAuth & {
   engine: Engine;
-  apiSecret: string;
   /** Contadores agregados (sem conteúdo) para a API de administração. */
   metrics?: Metrics;
-}
+};
 
 /** Os erros anteriores ao motor (credencial, corpo) param no primeiro passo. */
 const REQUEST_CODES = new Set([
@@ -24,36 +26,19 @@ const REQUEST_CODES = new Set([
   'unsupported_media_type',
 ]);
 
-const sha256 = (value: string): Buffer => createHash('sha256').update(value).digest();
-
-/** Compara em tempo constante (os hashes têm sempre o mesmo tamanho). */
-function secretMatches(given: string, expected: string): boolean {
-  return timingSafeEqual(sha256(given), sha256(expected));
-}
-
-export const unauthorized = (): AppError =>
-  new AppError('unauthorized', 401, 'Credenciais inválidas.', [], {
-    'WWW-Authenticate': 'Bearer',
-  });
-
-/** Exige `Authorization: Bearer <segredo>`. Corre antes de se ler o corpo. */
-export function bearerAuth(secret: string) {
-  return async (request: FastifyRequest): Promise<void> => {
-    const match = /^Bearer (.+)$/.exec(request.headers.authorization ?? '');
-    if (match?.[1] === undefined || !secretMatches(match[1], secret)) throw unauthorized();
-  };
-}
-
-/** Campos comuns a todos os pedidos. Os ids vêm do Salesforce, sempre com 18 caracteres. */
+/**
+ * Quem chama, no modo do segredo partilhado. Os ids vêm do Salesforce, sempre com 18
+ * caracteres. Com tokens vêm do token e não podem vir no corpo.
+ */
 const Envelope = {
   orgId: Type.String({ pattern: '^00D[A-Za-z0-9]{15}$' }),
   userId: Type.String({ pattern: '^005[A-Za-z0-9]{15}$' }),
 };
 
-function bodySchema(tool: ToolDefinition): TObject {
+function bodySchema(tool: ToolDefinition, withIds: boolean): TObject {
   return Type.Object(
     {
-      ...Envelope,
+      ...(withIds && Envelope),
       version: Type.Optional(Type.Literal(tool.version)),
       // Resposta em streaming (SSE). Só as ferramentas com `stream` a aceitam.
       stream: Type.Optional(Type.Boolean()),
@@ -68,7 +53,8 @@ function bodySchema(tool: ToolDefinition): TObject {
  * A autenticação corre antes da validação do corpo: sem credencial não se revela nada.
  */
 export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (app, opts) => {
-  app.addHook('onRequest', bearerAuth(opts.apiSecret));
+  app.addHook('onRequest', publicAuth(opts));
+  const withIds = opts.orgKeys === undefined;
 
   // Tokens de cada pedido, para as métricas. Somem com o pedido.
   const usage = new WeakMap<
@@ -131,14 +117,14 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
   for (const tool of opts.engine.tools()) {
     app.post(
       `/v1/tools/${tool.name}`,
-      { schema: { body: bodySchema(tool) } },
+      { schema: { body: bodySchema(tool, withIds) } },
       async (request, reply) => {
         const body = request.body as Record<string, unknown> & {
-          orgId: string;
-          userId: string;
+          orgId?: string;
+          userId?: string;
           stream?: boolean;
         };
-        const { orgId, userId } = body;
+        const { orgId, userId } = ownerOf(request, body);
         // A entrada da ferramenta é o corpo sem os campos comuns.
         const input = Object.fromEntries(
           Object.entries(body).filter(

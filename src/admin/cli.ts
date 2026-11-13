@@ -5,16 +5,26 @@ import { EngineError } from '../engine/errors.js';
 import { AdminError, createOrgMemory, deleteMemoriesOf, deleteMemory } from './commands.js';
 import { listMemories } from './queries.js';
 import { validateMemoryId } from './validation.js';
+import { randomUUID } from 'node:crypto';
+import { OrgKeyError, OrgKeys } from '../auth/org-keys.js';
+import { signOrgToken } from '../auth/org-token.js';
+import { PgOrgKeyStore, SecretBox } from '../adapters/postgres-org-key-store.js';
 
 const USAGE = `Uso: admin <comando> [opções]
 
-Orgs e utilizadores gerem-se no StepAccess. Aqui só se gerem as memórias da IRIS.
+Orgs e utilizadores gerem-se no StepAccess. Aqui gerem-se as memórias e as chaves das orgs.
 
   list-memories     [--org-id <00D…>] [--user-id <005…>]
   add-org-memory    --org-id <00D…> --text "<regra da empresa>" [--tool <código>]…
   delete-memory     --id <uuid>
   delete-memories   --org-id <00D…> [--user-id <005…>]   (quando a org ou o utilizador sai)
   tui               interface interativa
+
+  create-org-key    --org-id <00D…> [--actor <quem>]   (mostra o segredo uma única vez)
+  list-org-keys     --org-id <00D…>
+  revoke-org-key    --org-id <00D…> --kid <k_…> [--actor <quem>]
+  sign-token        --org-id <00D…> --user-id <005…> --kid <k_…> --secret <segredo> [--ttl <s>]
+                    gera um token para testar (não precisa de base de dados)
 `;
 
 function required(value: string | undefined, flag: string): string {
@@ -37,9 +47,36 @@ async function main(): Promise<void> {
       text: { type: 'string' },
       tool: { type: 'string', multiple: true },
       id: { type: 'string' },
+      kid: { type: 'string' },
+      secret: { type: 'string' },
+      actor: { type: 'string' },
+      ttl: { type: 'string' },
     },
     strict: true,
   });
+
+  if (command === 'sign-token') {
+    const ttl = values.ttl === undefined ? 300 : Number(values.ttl);
+    if (!Number.isInteger(ttl) || ttl < 1 || ttl > 300) {
+      throw new AdminError('--ttl: entre 1 e 300 segundos.');
+    }
+    console.log(
+      signOrgToken(
+        {
+          kid: required(values.kid, 'kid'),
+          orgId: required(values['org-id'], 'org-id'),
+          secret: required(values.secret, 'secret'),
+        },
+        {
+          userId: required(values['user-id'], 'user-id'),
+          jti: randomUUID(),
+          iat: Math.floor(Date.now() / 1000),
+          ttlSeconds: ttl,
+        },
+      ),
+    );
+    return;
+  }
 
   const config = loadConfig();
   if (config.databaseUrl === undefined) throw new ConfigError(['DATABASE_URL: obrigatório']);
@@ -92,6 +129,40 @@ async function main(): Promise<void> {
         console.log(`${String(count)} ${count === 1 ? 'memória apagada' : 'memórias apagadas'}.`);
         break;
       }
+      case 'create-org-key':
+      case 'list-org-keys':
+      case 'revoke-org-key': {
+        if (config.orgKeyEncryptionKey === undefined) {
+          throw new ConfigError(['ORG_KEY_ENCRYPTION_KEY: obrigatório para as chaves das orgs']);
+        }
+        const keys = new OrgKeys(
+          new PgOrgKeyStore(pool, new SecretBox(config.orgKeyEncryptionKey)),
+        );
+        const orgId = required(values['org-id'], 'org-id');
+        const actor = values.actor ?? 'cli';
+        if (command === 'create-org-key') {
+          const k = await keys.create(orgId, actor);
+          console.log(`Chave criada para ${orgId}.\n  kid:     ${k.kid}\n  segredo: ${k.secret}`);
+          console.log('Guarde o segredo agora: não volta a ser mostrado.');
+        } else if (command === 'list-org-keys') {
+          const list = await keys.list(orgId);
+          if (list.length === 0) console.log('Sem chaves.');
+          else
+            console.table(
+              list.map((k) => ({
+                kid: k.kid,
+                estado: k.status,
+                criada: k.createdAt.toISOString(),
+                por: k.createdBy,
+                revogada: k.revokedAt?.toISOString() ?? '',
+              })),
+            );
+        } else {
+          await keys.revoke(orgId, required(values.kid, 'kid'), actor);
+          console.log('Chave revogada.');
+        }
+        break;
+      }
       case 'tui': {
         if (!process.stdin.isTTY || !process.stdout.isTTY) {
           throw new AdminError(
@@ -113,7 +184,12 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  if (err instanceof AdminError || err instanceof EngineError || err instanceof ConfigError) {
+  if (
+    err instanceof AdminError ||
+    err instanceof EngineError ||
+    err instanceof ConfigError ||
+    err instanceof OrgKeyError
+  ) {
     console.error(err.message);
   } else if (
     err instanceof Error &&

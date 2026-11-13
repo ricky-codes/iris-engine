@@ -31,6 +31,7 @@ import type { ModelInfo } from '../../adapters/openrouter-models.js';
 import type { BreakerStatus } from '../../engine/breaker.js';
 import type { Engine } from '../../engine/engine.js';
 import { MEMORY_CHARS_CAP } from '../../engine/memory.js';
+import { OrgKeyError, type OrgKeyInfo, type OrgKeys } from '../../auth/org-keys.js';
 import {
   fallbackChain,
   noOverrides,
@@ -76,6 +77,8 @@ export interface AdminRoutesOptions {
   modules: () => Promise<ModulesReport>;
   models: { list(): Promise<{ models: ModelInfo[]; fetchedAt: string }> };
   /** Sem dependências não há playground (falta base de dados ou OpenRouter). */
+  /** As chaves das orgs. Sem elas (falta ORG_KEY_ENCRYPTION_KEY), `/orgs/:orgId/keys` dá 503. */
+  orgKeys?: Pick<OrgKeys, 'create' | 'list' | 'revoke'> | undefined;
   playground:
     | {
         engine: Engine;
@@ -658,6 +661,75 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
         setActivePromptVersion(opts.pool, request.params.name, request.body.version),
       );
       return { tool: request.params.name, activeVersion: request.body.version };
+    },
+  );
+
+  // ---------- chaves das orgs ----------
+
+  const orgKeys = (): Pick<OrgKeys, 'create' | 'list' | 'revoke'> => {
+    if (opts.orgKeys === undefined) {
+      throw new AppError(
+        'service_unavailable',
+        503,
+        'As chaves das orgs não estão configuradas (falta ORG_KEY_ENCRYPTION_KEY).',
+      );
+    }
+    return opts.orgKeys;
+  };
+  const keyJson = (k: OrgKeyInfo) => ({
+    kid: k.kid,
+    orgId: k.orgId,
+    status: k.status,
+    createdAt: k.createdAt,
+    createdBy: k.createdBy,
+    revokedAt: k.revokedAt,
+    revokedBy: k.revokedBy,
+  });
+  const keyErrors = async <T>(fn: () => Promise<T>): Promise<T> => {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!(err instanceof OrgKeyError)) throw err;
+      throw err.kind === 'limit'
+        ? new AppError('invalid_request', 422, err.message)
+        : new AppError('not_found', 404, err.message);
+    }
+  };
+  const OrgParams = Type.Object({ orgId: OrgId });
+
+  app.get('/v1/admin/orgs/:orgId/keys', { schema: { params: OrgParams } }, async (request) => ({
+    keys: (await orgKeys().list(request.params.orgId)).map(keyJson),
+  }));
+
+  // O segredo só aparece nesta resposta: a IRIS guarda-o cifrado e nunca mais o mostra.
+  app.post(
+    '/v1/admin/orgs/:orgId/keys',
+    { schema: { params: OrgParams } },
+    async (request, reply) => {
+      const created = await keyErrors(() =>
+        orgKeys().create(request.params.orgId, actorOf(request) ?? 'desconhecido'),
+      );
+      reply.header('Cache-Control', 'no-store');
+      return reply.status(201).send({ ...keyJson(created), secret: created.secret });
+    },
+  );
+
+  app.delete(
+    '/v1/admin/orgs/:orgId/keys/:kid',
+    {
+      schema: {
+        params: Type.Object({ orgId: OrgId, kid: Type.String({ pattern: '^k_[0-9a-f]{16}$' }) }),
+      },
+    },
+    async (request, reply) => {
+      await keyErrors(() =>
+        orgKeys().revoke(
+          request.params.orgId,
+          request.params.kid,
+          actorOf(request) ?? 'desconhecido',
+        ),
+      );
+      return reply.status(204).send();
     },
   );
 

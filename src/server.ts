@@ -13,6 +13,9 @@ import { OpenRouterProvider } from './adapters/openrouter.js';
 import { PgMemoryStore } from './adapters/postgres-memory-store.js';
 import { PgEngineStore, syncToolCatalog } from './adapters/postgres-store.js';
 import { PgSettingsStore } from './adapters/postgres-settings-store.js';
+import { PgOrgKeyStore, SecretBox } from './adapters/postgres-org-key-store.js';
+import { OrgKeys } from './auth/org-keys.js';
+import type { PublicAuth } from './http/auth.js';
 import { StepAccessClient } from './adapters/stepaccess-access.js';
 import { StepAccessUsageReporter } from './adapters/stepaccess-usage.js';
 import type { AccessChecker } from './engine/access.js';
@@ -202,6 +205,7 @@ function runtimeFacts(
       access: sa === undefined ? 'missing' : typeof sa === 'string' ? sa : 'live',
       openRouter: cfg.openRouter === undefined ? 'missing' : 'configured',
       routes: { tools: engine.ready, memories: memoriesOn },
+      auth: cfg.authMode,
       checks: { database, stepAccess, openRouter },
     };
   };
@@ -218,6 +222,7 @@ function buildAdmin(
   countsUsage: boolean,
   settings: LiveSettings,
   traces: Traces | undefined,
+  orgKeys: OrgKeys | undefined,
 ): AdminRoutesOptions | undefined {
   if (config.adminApiSecret === undefined || pool === undefined) return undefined;
   const { engine: cfg } = config;
@@ -266,6 +271,7 @@ function buildAdmin(
         },
       });
     },
+    orgKeys,
     models: new ModelCatalog(cfg.openRouter?.baseUrl ?? 'https://openrouter.ai/api/v1'),
     playground: playground === undefined ? undefined : { engine: playground, countsUsage },
   };
@@ -315,23 +321,37 @@ async function main(): Promise<void> {
           orgKey: createHash('sha256').update(`iris-traces:${config.adminApiSecret}`).digest('hex'),
         });
   const core = buildEngine(config, pool, tools, access, metrics, settings, traces);
-  const missing = missingEngineConfig(config.engine, pool !== undefined);
+  const missing = missingEngineConfig(
+    config.engine,
+    pool !== undefined,
+    config.orgKeyEncryptionKey,
+  );
+  // As chaves das orgs: verificam os tokens das rotas públicas e gerem-se pela API de admin.
+  const orgKeys =
+    pool === undefined || config.orgKeyEncryptionKey === undefined
+      ? undefined
+      : new OrgKeys(new PgOrgKeyStore(pool, new SecretBox(config.orgKeyEncryptionKey)));
+  // Como as rotas públicas autenticam quem chama (ver AUTH_MODE).
+  const auth: PublicAuth | undefined =
+    config.engine.authMode === 'token'
+      ? orgKeys === undefined
+        ? undefined
+        : { orgKeys }
+      : config.engine.apiSecret === undefined
+        ? undefined
+        : { apiSecret: config.engine.apiSecret };
   // As rotas das ferramentas só se ligam com a configuração completa (incluindo o acesso).
   const engine =
-    core === undefined || missing.length > 0 || config.engine.apiSecret === undefined
+    core === undefined || missing.length > 0 || auth === undefined
       ? undefined
-      : {
-          engine: core,
-          apiSecret: config.engine.apiSecret,
-          metrics,
-        };
-  // As memórias só precisam da base de dados e do segredo do Salesforce, não do StepAccess.
+      : { ...auth, engine: core, metrics };
+  // As memórias só precisam da base de dados e da autenticação, não do StepAccess.
   const memories =
-    pool === undefined || config.engine.apiSecret === undefined
+    pool === undefined || auth === undefined
       ? undefined
       : {
+          ...auth,
           memories: new Memories(new PgMemoryStore(pool), () => memoryLimitsOf(settings.current())),
-          apiSecret: config.engine.apiSecret,
         };
 
   const engineState = { ready: engine !== undefined, missing };
@@ -359,6 +379,7 @@ async function main(): Promise<void> {
     typeof config.engine.stepAccess === 'object',
     settings,
     traces,
+    orgKeys,
   );
 
   const app = await buildApp({
@@ -394,7 +415,15 @@ async function main(): Promise<void> {
         'ACCESS_MODE=open: acesso só pelo API_SECRET, sem StepAccess; o custo fica nos logs',
       );
     }
-    app.log.info({ tools: core?.tools().map((t) => t.name) }, 'motor pronto');
+    if (config.engine.authMode === 'shared_secret') {
+      app.log.warn(
+        'AUTH_MODE=shared_secret: o orgId e o userId vêm no pedido, protegidos só pelo API_SECRET',
+      );
+    }
+    app.log.info(
+      { tools: core?.tools().map((t) => t.name), auth: config.engine.authMode },
+      'motor pronto',
+    );
   }
   if (memories !== undefined) app.log.info('memórias ligadas em /v1/memories');
   app.log.info(

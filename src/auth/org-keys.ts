@@ -11,6 +11,8 @@ import {
 export interface OrgKeyInfo {
   kid: string;
   orgId: string;
+  /** Etiqueta livre ("Produção", "Sandbox UAT"…). */
+  label: string | null;
   status: 'active' | 'revoked';
   createdAt: Date;
   createdBy: string;
@@ -23,7 +25,14 @@ export interface OrgKeyStore {
   /** A chave ativa com este id, ou `undefined` (não existe ou está revogada). */
   findActive(kid: string): Promise<OrgSigningKey | undefined>;
   /** Grava uma chave nova. `undefined` se a org já tem `maxActive` chaves ativas. */
-  insert(key: OrgSigningKey, actor: string, maxActive: number): Promise<OrgKeyInfo | undefined>;
+  insert(
+    key: OrgSigningKey,
+    actor: string,
+    maxActive: number,
+    label: string | null,
+  ): Promise<OrgKeyInfo | undefined>;
+  /** Muda a etiqueta. `undefined` se a chave não existe nesta org. */
+  setLabel(orgId: string, kid: string, label: string | null): Promise<OrgKeyInfo | undefined>;
   list(orgId: string): Promise<OrgKeyInfo[]>;
   /** `false` se a chave não existe nesta org ou já estava revogada. */
   revoke(orgId: string, kid: string, actor: string): Promise<boolean>;
@@ -79,13 +88,17 @@ export class OrgKeys {
   }
 
   /** Cria uma chave. O segredo só existe aqui: devolve-se uma vez e guarda-se cifrado. */
-  async create(orgId: string, actor: string): Promise<OrgKeyInfo & { secret: string }> {
+  async create(
+    orgId: string,
+    actor: string,
+    label: string | null = null,
+  ): Promise<OrgKeyInfo & { secret: string }> {
     const key: OrgSigningKey = {
       kid: `k_${randomBytes(8).toString('hex')}`,
       orgId,
       secret: randomBytes(32).toString('base64url'),
     };
-    const info = await this.store.insert(key, actor, MAX_ACTIVE_KEYS_PER_ORG);
+    const info = await this.store.insert(key, actor, MAX_ACTIVE_KEYS_PER_ORG, label);
     if (info === undefined) {
       throw new OrgKeyError(
         'limit',
@@ -98,6 +111,12 @@ export class OrgKeys {
 
   list(orgId: string): Promise<OrgKeyInfo[]> {
     return this.store.list(orgId);
+  }
+
+  async relabel(orgId: string, kid: string, label: string | null): Promise<OrgKeyInfo> {
+    const info = await this.store.setLabel(orgId, kid, label);
+    if (info === undefined) throw new OrgKeyError('not_found', 'Chave não encontrada.');
+    return info;
   }
 
   async revoke(orgId: string, kid: string, actor: string): Promise<void> {

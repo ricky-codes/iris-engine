@@ -1178,6 +1178,65 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
       ]);
     });
 
+    it('etiqueta: opcional ao criar, alterável e removível', async () => {
+      const org = sfId('00D');
+      const created = await app!.inject({
+        method: 'POST',
+        url: base(org),
+        headers: WRITE,
+        payload: { label: 'Sandbox UAT' },
+      });
+      expect(created.statusCode).toBe(201);
+      const { kid } = created.json<{ kid: string; label: string }>();
+      expect(created.json()).toMatchObject({ label: 'Sandbox UAT' });
+
+      const renamed = await app!.inject({
+        method: 'PATCH',
+        url: `${base(org)}/${kid}`,
+        headers: WRITE,
+        payload: { label: 'Produção' },
+      });
+      expect(renamed.statusCode).toBe(200);
+      expect(renamed.json()).toMatchObject({ kid, label: 'Produção' });
+      expect(JSON.stringify(renamed.json())).not.toContain('secret');
+
+      const cleared = await app!.inject({
+        method: 'PATCH',
+        url: `${base(org)}/${kid}`,
+        headers: WRITE,
+        payload: { label: null },
+      });
+      expect(cleared.json()).toMatchObject({ label: null });
+
+      // Sem corpo: sem etiqueta.
+      const plain = await app!.inject({ method: 'POST', url: base(org), headers: WRITE });
+      expect(plain.statusCode).toBe(201);
+      expect(plain.json()).toMatchObject({ label: null });
+    });
+
+    it('etiqueta: recusa vazia, com espaços à volta ou longa; 404 noutra org', async () => {
+      const org = sfId('00D');
+      for (const label of ['', ' Produção', 'x'.repeat(101)]) {
+        const res = await app!.inject({
+          method: 'POST',
+          url: base(org),
+          headers: WRITE,
+          payload: { label },
+        });
+        expect(res.statusCode).toBe(422);
+      }
+      const { kid } = (await app!.inject({ method: 'POST', url: base(org), headers: WRITE })).json<{
+        kid: string;
+      }>();
+      const other = await app!.inject({
+        method: 'PATCH',
+        url: `${base(sfId('00D'))}/${kid}`,
+        headers: WRITE,
+        payload: { label: 'X' },
+      });
+      expect(other.statusCode).toBe(404);
+    });
+
     it('criar e revogar exigem quem faz a alteração', async () => {
       const res = await app!.inject({ method: 'POST', url: base(sfId('00D')), headers: READ });
       expect(res.statusCode).toBe(422);

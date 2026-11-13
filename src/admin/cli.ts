@@ -20,7 +20,8 @@ Orgs e utilizadores gerem-se no StepAccess. Aqui gerem-se as memórias e as chav
   delete-memories   --org-id <00D…> [--user-id <005…>]   (quando a org ou o utilizador sai)
   tui               interface interativa
 
-  create-org-key    --org-id <00D…> [--actor <quem>]   (mostra o segredo uma única vez)
+  create-org-key    --org-id <00D…> [--label <etiqueta>] [--actor <quem>]
+                    (mostra o segredo uma única vez)
   list-org-keys     --org-id <00D…>
   revoke-org-key    --org-id <00D…> --kid <k_…> [--actor <quem>]
   sign-token        --org-id <00D…> --user-id <005…> --kid <k_…> --secret <segredo> [--ttl <s>]
@@ -51,6 +52,7 @@ async function main(): Promise<void> {
       secret: { type: 'string' },
       actor: { type: 'string' },
       ttl: { type: 'string' },
+      label: { type: 'string' },
     },
     strict: true,
   });
@@ -141,7 +143,7 @@ async function main(): Promise<void> {
         const orgId = required(values['org-id'], 'org-id');
         const actor = values.actor ?? 'cli';
         if (command === 'create-org-key') {
-          const k = await keys.create(orgId, actor);
+          const k = await keys.create(orgId, actor, values.label?.trim() || null);
           console.log(`Chave criada para ${orgId}.\n  kid:     ${k.kid}\n  segredo: ${k.secret}`);
           console.log('Guarde o segredo agora: não volta a ser mostrado.');
         } else if (command === 'list-org-keys') {
@@ -151,6 +153,7 @@ async function main(): Promise<void> {
             console.table(
               list.map((k) => ({
                 kid: k.kid,
+                etiqueta: k.label ?? '',
                 estado: k.status,
                 criada: k.createdAt.toISOString(),
                 por: k.createdBy,

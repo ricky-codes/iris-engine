@@ -34,17 +34,19 @@ export class SecretBox {
 interface Row {
   org_key_id: string;
   sf_org_ref: string;
+  label: string | null;
   created_at: Date;
   created_by: string;
   revoked_at: Date | null;
   revoked_by: string | null;
 }
 
-const COLUMNS = 'org_key_id, sf_org_ref, created_at, created_by, revoked_at, revoked_by';
+const COLUMNS = 'org_key_id, sf_org_ref, label, created_at, created_by, revoked_at, revoked_by';
 
 const info = (r: Row): OrgKeyInfo => ({
   kid: r.org_key_id,
   orgId: r.sf_org_ref,
+  label: r.label,
   status: r.revoked_at === null ? 'active' : 'revoked',
   createdAt: r.created_at,
   createdBy: r.created_by,
@@ -73,6 +75,7 @@ export class PgOrgKeyStore implements OrgKeyStore {
     key: OrgSigningKey,
     actor: string,
     maxActive: number,
+    label: string | null,
   ): Promise<OrgKeyInfo | undefined> {
     const client = await this.pool.connect();
     try {
@@ -88,9 +91,9 @@ export class PgOrgKeyStore implements OrgKeyStore {
         return undefined;
       }
       const { rows } = await client.query<Row>(
-        `INSERT INTO org_key (org_key_id, sf_org_ref, secret_enc, created_by)
-         VALUES ($1, $2, $3, $4) RETURNING ${COLUMNS}`,
-        [key.kid, key.orgId, this.box.seal(key.secret), actor],
+        `INSERT INTO org_key (org_key_id, sf_org_ref, secret_enc, created_by, label)
+         VALUES ($1, $2, $3, $4, $5) RETURNING ${COLUMNS}`,
+        [key.kid, key.orgId, this.box.seal(key.secret), actor, label],
       );
       await client.query('COMMIT');
       return rows[0] === undefined ? undefined : info(rows[0]);
@@ -109,6 +112,18 @@ export class PgOrgKeyStore implements OrgKeyStore {
       [orgId],
     );
     return rows.map(info);
+  }
+
+  async setLabel(
+    orgId: string,
+    kid: string,
+    label: string | null,
+  ): Promise<OrgKeyInfo | undefined> {
+    const { rows } = await this.pool.query<Row>(
+      `UPDATE org_key SET label = $3 WHERE org_key_id = $1 AND sf_org_ref = $2 RETURNING ${COLUMNS}`,
+      [kid, orgId, label],
+    );
+    return rows[0] === undefined ? undefined : info(rows[0]);
   }
 
   async revoke(orgId: string, kid: string, actor: string): Promise<boolean> {

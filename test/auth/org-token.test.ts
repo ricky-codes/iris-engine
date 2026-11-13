@@ -129,6 +129,7 @@ function memoryStore() {
       const info: OrgKeyInfo = {
         kid: key.kid,
         orgId: key.orgId,
+        label: null,
         status: 'active',
         createdAt: new Date(),
         createdBy: actor,
@@ -138,6 +139,7 @@ function memoryStore() {
       return info;
     },
     list: async () => [],
+    setLabel: async () => undefined,
     revoke: async (orgId, kid) => {
       const k = keys.get(kid);
       if (k === undefined || k.orgId !== orgId || k.revoked) return false;

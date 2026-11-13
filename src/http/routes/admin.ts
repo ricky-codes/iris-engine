@@ -78,7 +78,7 @@ export interface AdminRoutesOptions {
   models: { list(): Promise<{ models: ModelInfo[]; fetchedAt: string }> };
   /** Sem dependências não há playground (falta base de dados ou OpenRouter). */
   /** As chaves das orgs. Sem elas (falta ORG_KEY_ENCRYPTION_KEY), `/orgs/:orgId/keys` dá 503. */
-  orgKeys?: Pick<OrgKeys, 'create' | 'list' | 'revoke'> | undefined;
+  orgKeys?: Pick<OrgKeys, 'create' | 'list' | 'relabel' | 'revoke'> | undefined;
   playground:
     | {
         engine: Engine;
@@ -666,7 +666,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
 
   // ---------- chaves das orgs ----------
 
-  const orgKeys = (): Pick<OrgKeys, 'create' | 'list' | 'revoke'> => {
+  const orgKeys = (): Pick<OrgKeys, 'create' | 'list' | 'relabel' | 'revoke'> => {
     if (opts.orgKeys === undefined) {
       throw new AppError(
         'service_unavailable',
@@ -679,6 +679,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
   const keyJson = (k: OrgKeyInfo) => ({
     kid: k.kid,
     orgId: k.orgId,
+    label: k.label,
     status: k.status,
     createdAt: k.createdAt,
     createdBy: k.createdBy,
@@ -696,6 +697,16 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
     }
   };
   const OrgParams = Type.Object({ orgId: OrgId });
+  const KeyParams = Type.Object({
+    orgId: OrgId,
+    kid: Type.String({ pattern: '^k_[0-9a-f]{16}$' }),
+  });
+  // Sem espaços à volta (a base de dados também o exige); vazio não é etiqueta.
+  const Label = Type.String({ minLength: 1, maxLength: 100, pattern: '^\\S(.*\\S)?$' });
+  const CreateKeyBody = Type.Object(
+    { label: Type.Optional(Label) },
+    { additionalProperties: false },
+  );
 
   app.get('/v1/admin/orgs/:orgId/keys', { schema: { params: OrgParams } }, async (request) => ({
     keys: (await orgKeys().list(request.params.orgId)).map(keyJson),
@@ -704,23 +715,54 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
   // O segredo só aparece nesta resposta: a IRIS guarda-o cifrado e nunca mais o mostra.
   app.post(
     '/v1/admin/orgs/:orgId/keys',
-    { schema: { params: OrgParams } },
+    {
+      schema: {
+        params: OrgParams,
+      },
+    },
     async (request, reply) => {
+      // O corpo é opcional (sem ele, a chave fica sem etiqueta), por isso valida-se aqui: o
+      // esquema do Fastify recusaria um pedido sem corpo.
+      const body = request.body ?? {};
+      if (!Value.Check(CreateKeyBody, body)) {
+        throw new AppError('invalid_request', 422, 'O pedido não é válido.', [
+          { path: 'body.label', issue: 'texto de 1 a 100 caracteres, sem espaços à volta' },
+        ]);
+      }
       const created = await keyErrors(() =>
-        orgKeys().create(request.params.orgId, actorOf(request) ?? 'desconhecido'),
+        orgKeys().create(
+          request.params.orgId,
+          actorOf(request) ?? 'desconhecido',
+          body.label ?? null,
+        ),
       );
       reply.header('Cache-Control', 'no-store');
       return reply.status(201).send({ ...keyJson(created), secret: created.secret });
     },
   );
 
-  app.delete(
+  app.patch(
     '/v1/admin/orgs/:orgId/keys/:kid',
     {
       schema: {
-        params: Type.Object({ orgId: OrgId, kid: Type.String({ pattern: '^k_[0-9a-f]{16}$' }) }),
+        params: KeyParams,
+        body: Type.Object(
+          { label: Type.Union([Label, Type.Null()]) },
+          { additionalProperties: false },
+        ),
       },
     },
+    async (request) =>
+      keyJson(
+        await keyErrors(() =>
+          orgKeys().relabel(request.params.orgId, request.params.kid, request.body.label),
+        ),
+      ),
+  );
+
+  app.delete(
+    '/v1/admin/orgs/:orgId/keys/:kid',
+    { schema: { params: KeyParams } },
     async (request, reply) => {
       await keyErrors(() =>
         orgKeys().revoke(

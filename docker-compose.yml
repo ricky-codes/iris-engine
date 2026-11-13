@@ -56,6 +56,10 @@ services:
     build: .
     image: iris-engine:local
     entrypoint: ['node', 'dist/admin/cli.js']
+    # As chaves das orgs precisam da ORG_KEY_ENCRYPTION_KEY do .env.
+    env_file:
+      - path: .env
+        required: false
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://iris:iris@postgres:5432/iris

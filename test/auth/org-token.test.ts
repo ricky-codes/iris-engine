@@ -114,6 +114,7 @@ describe('verifyOrgToken', () => {
 function memoryStore() {
   const keys = new Map<string, OrgSigningKey & { revoked: boolean }>();
   let reads = 0;
+  const touched: string[] = [];
   const store: OrgKeyStore = {
     findActive: async (kid) => {
       reads++;
@@ -135,11 +136,15 @@ function memoryStore() {
         createdBy: actor,
         revokedAt: null,
         revokedBy: null,
+        lastUsedAt: null,
       };
       return info;
     },
     list: async () => [],
     setLabel: async () => undefined,
+    touch: async (kid) => {
+      touched.push(kid);
+    },
     revoke: async (orgId, kid) => {
       const k = keys.get(kid);
       if (k === undefined || k.orgId !== orgId || k.revoked) return false;
@@ -147,7 +152,7 @@ function memoryStore() {
       return true;
     },
   };
-  return { store, reads: () => reads };
+  return { store, reads: () => reads, touched };
 }
 
 describe('OrgKeys', () => {
@@ -194,5 +199,25 @@ describe('OrgKeys', () => {
     const keys = new OrgKeys(memoryStore().store);
     const k = await keys.create(ORG, 'a');
     await expect(keys.revoke(OTHER_ORG, k.kid, 'a')).rejects.toMatchObject({ kind: 'not_found' });
+  });
+
+  it('grava o último uso no máximo uma vez por minuto por chave, e só com tokens aceites', async () => {
+    let now = NOW * 1000;
+    const { store, touched } = memoryStore();
+    const keys = new OrgKeys(store, () => now);
+    const k = await keys.create(ORG, 'a');
+    const sign = (jti: string) =>
+      signOrgToken(k, { userId: USER, jti, iat: Math.floor(now / 1000) });
+
+    await keys.verify(sign('pedido-0001'));
+    await keys.verify(sign('pedido-0002'));
+    expect(touched).toEqual([k.kid]);
+    // Um token recusado não conta como uso.
+    await keys.verify(sign('pedido-0002'));
+    expect(touched).toHaveLength(1);
+
+    now += 61_000;
+    await keys.verify(sign('pedido-0003'));
+    expect(touched).toEqual([k.kid, k.kid]);
   });
 });

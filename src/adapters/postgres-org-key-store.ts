@@ -39,9 +39,11 @@ interface Row {
   created_by: string;
   revoked_at: Date | null;
   revoked_by: string | null;
+  last_used_at: Date | null;
 }
 
-const COLUMNS = 'org_key_id, sf_org_ref, label, created_at, created_by, revoked_at, revoked_by';
+const COLUMNS =
+  'org_key_id, sf_org_ref, label, created_at, created_by, revoked_at, revoked_by, last_used_at';
 
 const info = (r: Row): OrgKeyInfo => ({
   kid: r.org_key_id,
@@ -52,6 +54,7 @@ const info = (r: Row): OrgKeyInfo => ({
   createdBy: r.created_by,
   revokedAt: r.revoked_at,
   revokedBy: r.revoked_by,
+  lastUsedAt: r.last_used_at,
 });
 
 /** As chaves das orgs na tabela `org_key` (migração 0013). */
@@ -124,6 +127,10 @@ export class PgOrgKeyStore implements OrgKeyStore {
       [kid, orgId, label],
     );
     return rows[0] === undefined ? undefined : info(rows[0]);
+  }
+
+  async touch(kid: string): Promise<void> {
+    await this.pool.query('UPDATE org_key SET last_used_at = now() WHERE org_key_id = $1', [kid]);
   }
 
   async revoke(orgId: string, kid: string, actor: string): Promise<boolean> {

@@ -1137,6 +1137,16 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
       );
       expect(await orgKeys.verify(token)).toMatchObject({ ok: true });
 
+      // O último uso grava-se em segundo plano.
+      const lastUsed = async () => {
+        const res = await app!.inject({ method: 'GET', url: base(org), headers: READ });
+        return res.json<{ keys: { lastUsedAt: string | null }[] }>().keys[0]?.lastUsedAt;
+      };
+      for (let i = 0; i < 20 && (await lastUsed()) == null; i++) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(await lastUsed()).toEqual(expect.any(String));
+
       const list = await app!.inject({ method: 'GET', url: base(org), headers: READ });
       expect(list.json()).toEqual({ keys: [expect.objectContaining({ kid: body.kid })] });
       expect(JSON.stringify(list.json())).not.toContain(body.secret);

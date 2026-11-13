@@ -157,6 +157,7 @@ async function main(): Promise<void> {
                 estado: k.status,
                 criada: k.createdAt.toISOString(),
                 por: k.createdBy,
+                usada: k.lastUsedAt?.toISOString() ?? 'nunca',
                 revogada: k.revokedAt?.toISOString() ?? '',
               })),
             );

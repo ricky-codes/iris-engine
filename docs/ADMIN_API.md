@@ -1093,9 +1093,12 @@ Formato de uma chave (nunca com o segredo):
   "createdAt": "2026-11-13T00:09:22.439Z",
   "createdBy": "ricardo@stepahead.pt",
   "revokedAt": null,
-  "revokedBy": null
+  "revokedBy": null,
+  "lastUsedAt": "2026-11-13T10:41:05.120Z"
 }
 ```
+
+`lastUsedAt`: última vez que a IRIS aceitou um token assinado com a chave (`null` se nunca). É gravado no máximo uma vez por minuto por chave, por isso pode ter até um minuto de atraso. Conta como uso um token válido, mesmo que o StepAccess recuse depois o pedido por falta de licença ou de plano. Na rotação, só se revoga a chave antiga quando a nova já tem `lastUsedAt` e a antiga deixou de avançar.
 
 | Rota                                     | O que faz                                                                                                                                                              |
 | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

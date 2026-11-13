@@ -685,6 +685,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
     createdBy: k.createdBy,
     revokedAt: k.revokedAt,
     revokedBy: k.revokedBy,
+    lastUsedAt: k.lastUsedAt,
   });
   const keyErrors = async <T>(fn: () => Promise<T>): Promise<T> => {
     try {

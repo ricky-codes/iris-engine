@@ -330,7 +330,15 @@ async function main(): Promise<void> {
   const orgKeys =
     pool === undefined || config.orgKeyEncryptionKey === undefined
       ? undefined
-      : new OrgKeys(new PgOrgKeyStore(pool, new SecretBox(config.orgKeyEncryptionKey)));
+      : new OrgKeys(
+          new PgOrgKeyStore(pool, new SecretBox(config.orgKeyEncryptionKey)),
+          undefined,
+          (err) => {
+            warn('chaves das orgs: falhou a gravação do último uso', {
+              err: err instanceof Error ? err.message : String(err),
+            });
+          },
+        );
   // Como as rotas públicas autenticam quem chama (ver AUTH_MODE).
   const auth: PublicAuth | undefined =
     config.engine.authMode === 'token'

@@ -117,6 +117,24 @@ Pedido ─▶ IRIS: verifica o token ─▶ org e utilizador provados
        ─▶ memórias, modelo, resposta
 ```
 
+### O corpo do pedido
+
+Com tokens, o corpo de `POST /v1/tools/<nome>` só aceita os campos da ferramenta, mais `version` e `stream` opcionais. **Qualquer outro campo dá 422**, não só `orgId` e `userId` (por exemplo `orgUrl`, `chatSession` ou `sessionId`). Os campos de cada ferramenta estão em `src/tools/` e em `GET /v1/admin/tools/<nome>`.
+
+### Respostas de erro para quem integra
+
+| Estado    | `error.code`                                               | Quando                                                                                       | O que mostrar                     |
+| --------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------- |
+| 401       | `unauthorized`                                             | Token inválido, expirado, repetido, de outra org, ou chave revogada (a razão fica só no log) | "Chave IRIS inválida ou revogada" |
+| 403       | `access_denied`                                            | O StepAccess diz que a org ou o utilizador não têm licença                                   | "Sem licença"                     |
+| 429       | `quota_exceeded`                                           | O StepAccess diz que o plano chegou ao limite (`LIMIT_REACHED`)                              | "Limite do plano atingido"        |
+| 429       | `rate_limited`                                             | Limite de pedidos por minuto da própria IRIS; traz `Retry-After`                             | "Tente daqui a pouco"             |
+| 422       | `invalid_request`                                          | Corpo inválido (campos a mais, em falta ou mal formados)                                     | Erro de integração                |
+| 503       | `service_unavailable` / `tool_disabled`                    | StepAccess indisponível / ferramenta desligada                                               | "Serviço indisponível"            |
+| 502 / 504 | `provider_unavailable`, `invalid_model_output` / `timeout` | Problema no modelo                                                                           | "Erro temporário"                 |
+
+O motivo do StepAccess (por exemplo `LIMIT_REACHED`) vem em `error.details[0].issue`, com `path: "access"`.
+
 ### O token
 
 JWT HS256, um por pedido, enviado em `Authorization: Bearer <token>`:
@@ -156,8 +174,10 @@ String token = header + '.' + payload + '.' + signature;
 - Criam-se em `POST /v1/admin/orgs/<orgId>/keys` (ou `admin create-org-key --org-id 00D…`). O segredo aparece **uma única vez**; a IRIS guarda-o cifrado (AES-256-GCM com `ORG_KEY_ENCRYPTION_KEY`).
 - Cada chave pode ter uma **etiqueta** (`label`, por exemplo "Produção" ou "Sandbox UAT"), dada ao criar ou mudada depois com `PATCH /v1/admin/orgs/<orgId>/keys/<kid>`.
 - No máximo **2 chaves ativas** por org, para rodar sem interrupção: cria-se a nova, passa-se a usá-la, revoga-se a antiga.
+- Cada chave mostra o **último uso** (`lastUsedAt`, gravado no máximo uma vez por minuto), para rodar sem revogar às cegas.
 - Revogar (`DELETE /v1/admin/orgs/<orgId>/keys/<kid>`) vale logo na instância que recebe o pedido; nas outras, até 30 s (a cache das chaves).
-- Os `jti` já usados ficam em memória por instância: com várias instâncias, um token repetido noutra instância não é apanhado (vive no máximo 5 minutos).
+- Os `jti` já usados ficam em memória por instância: com várias instâncias, um token repetido noutra instância não é apanhado (vive no máximo 5 minutos). **Requisito para quando houver mais de uma instância:** guardar os `jti` num sítio partilhado (Postgres ou Redis) até ao `exp` de cada token.
+- Cada nova tentativa de um pedido precisa de um token novo (outro `jti`).
 - Mudar a `ORG_KEY_ENCRYPTION_KEY` invalida todas as chaves: é preciso emiti-las de novo.
 
 ### Experimentar
@@ -283,6 +303,7 @@ PostgreSQL 16, 3.ª forma normal. As migrações são ficheiros SQL em `migratio
 | `0010`–`0012`                       | Modelos de recurso e definições alteráveis sem reiniciar                |
 | `0013_chaves_das_orgs.sql`          | Chaves das orgs (`org_key`), com o segredo cifrado                      |
 | `0014_etiqueta_das_chaves.sql`      | Etiqueta opcional de cada chave                                         |
+| `0015_ultimo_uso_das_chaves.sql`    | Último uso de cada chave                                                |
 
 Ficam 15 tabelas: catálogos (`tool`, `ai_provider`, `memory_scope`, `memory_source`), memórias (`memory`, `org_memory`, `user_memory`, `memory_tool`), configuração (`llm_model`, `tool_config`, `tool_config_fallback`, `prompt`, `prompt_version`, `engine_setting`) e chaves das orgs (`org_key`).
 

@@ -18,6 +18,8 @@ export interface OrgKeyInfo {
   createdBy: string;
   revokedAt: Date | null;
   revokedBy: string | null;
+  /** Última vez que a IRIS aceitou um token desta chave (com até um minuto de atraso). */
+  lastUsedAt: Date | null;
 }
 
 /** Onde as chaves vivem. O segredo é guardado cifrado (ver src/adapters/postgres-org-key-store.ts). */
@@ -34,6 +36,8 @@ export interface OrgKeyStore {
   /** Muda a etiqueta. `undefined` se a chave não existe nesta org. */
   setLabel(orgId: string, kid: string, label: string | null): Promise<OrgKeyInfo | undefined>;
   list(orgId: string): Promise<OrgKeyInfo[]>;
+  /** Regista que a chave foi usada agora. */
+  touch(kid: string): Promise<void>;
   /** `false` se a chave não existe nesta org ou já estava revogada. */
   revoke(orgId: string, kid: string, actor: string): Promise<boolean>;
 }
@@ -42,6 +46,8 @@ export interface OrgKeyStore {
 export const MAX_ACTIVE_KEYS_PER_ORG = 2;
 /** Quanto tempo uma chave lida fica em memória. É o atraso máximo de uma revogação noutras instâncias. */
 export const KEY_CACHE_MS = 30_000;
+/** De quanto em quanto tempo, no máximo, se grava o último uso de uma chave. */
+export const LAST_USED_WRITE_MS = 60_000;
 /** Um `kid` que não existe fica em memória menos tempo, para uma chave nova aparecer depressa. */
 const MISS_CACHE_MS = 5_000;
 
@@ -66,11 +72,14 @@ export class OrgKeyError extends Error {
 export class OrgKeys {
   private readonly cache = new Map<string, { key: OrgSigningKey | undefined; until: number }>();
   private readonly seenJti = new Map<string, number>();
+  private readonly lastTouch = new Map<string, number>();
   private lastSweep = 0;
 
   constructor(
     private readonly store: OrgKeyStore,
     private readonly nowMs: () => number = () => Date.now(),
+    /** Falhas ao gravar o último uso: não afetam o pedido, só se registam. */
+    private readonly onTouchError: (err: unknown) => void = () => undefined,
   ) {}
 
   /** Verifica um token. Nunca lança por causa do token; só se a base de dados falhar. */
@@ -79,12 +88,22 @@ export class OrgKeys {
     const key = kid === undefined ? undefined : await this.key(kid);
     const now = this.nowMs();
     this.sweep(now);
-    return verifyOrgToken(token, key, Math.floor(now / 1000), (orgId, jti, exp) => {
+    const check = verifyOrgToken(token, key, Math.floor(now / 1000), (orgId, jti, exp) => {
       const id = `${orgId}:${jti}`;
       if (this.seenJti.has(id)) return true;
       this.seenJti.set(id, (exp + TOKEN_CLOCK_SKEW_SECONDS) * 1000);
       return false;
     });
+    if (check.ok) this.touch(check.kid, now);
+    return check;
+  }
+
+  /** Grava o último uso em segundo plano, no máximo uma vez por minuto por chave. */
+  private touch(kid: string, now: number): void {
+    const last = this.lastTouch.get(kid);
+    if (last !== undefined && now - last < LAST_USED_WRITE_MS) return;
+    this.lastTouch.set(kid, now);
+    this.store.touch(kid).catch(this.onTouchError);
   }
 
   /** Cria uma chave. O segredo só existe aqui: devolve-se uma vez e guarda-se cifrado. */
@@ -141,5 +160,7 @@ export class OrgKeys {
     this.lastSweep = now;
     for (const [id, until] of this.seenJti) if (until <= now) this.seenJti.delete(id);
     for (const [kid, entry] of this.cache) if (entry.until <= now) this.cache.delete(kid);
+    for (const [kid, at] of this.lastTouch)
+      if (now - at >= LAST_USED_WRITE_MS) this.lastTouch.delete(kid);
   }
 }

@@ -4,7 +4,8 @@
  * o pedido parou, para as métricas e o diagrama da consola (`GET /v1/admin/tools/:name/pipeline`).
  */
 export const PIPELINE_STAGES = [
-  'request', // credencial, corpo e entrada da ferramenta
+  'auth', // credencial: token da org (ou segredo partilhado)
+  'request', // corpo e entrada da ferramenta
   'gate', // configuração lida: ligada ou desligada, streaming permitido
   'rate', // limite de pedidos por minuto
   'access', // StepAccess (conta utilização)
@@ -45,6 +46,7 @@ export const emptyTimings = (): StageTimings => ({
  * Não muda o código que o cliente recebe (`/v1/tools` continua com os códigos de sempre).
  */
 export type FailureReason =
+  | AuthFailureReason
   | 'tool_disabled'
   | 'rate_limited'
   | 'access_denied'
@@ -54,6 +56,25 @@ export type FailureReason =
   | 'provider_error'
   | 'all_models_failed'
   | 'invalid_output';
+
+/** Porque é que a credencial foi recusada (todas dão 401 `unauthorized` a quem chama). */
+export const AUTH_FAILURE_REASONS = [
+  'auth_missing',
+  'auth_bad_secret',
+  'token_malformed',
+  'token_unsupported_alg',
+  'token_unknown_key',
+  'token_bad_signature',
+  'token_wrong_org',
+  'token_bad_claims',
+  'token_wrong_audience',
+  'token_not_yet_valid',
+  'token_expired',
+  'token_ttl_too_long',
+  'token_replayed',
+] as const;
+
+export type AuthFailureReason = (typeof AUTH_FAILURE_REASONS)[number];
 
 const reasons = new WeakMap<object, FailureReason>();
 

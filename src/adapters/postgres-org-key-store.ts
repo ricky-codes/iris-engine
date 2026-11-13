@@ -142,3 +142,21 @@ export class PgOrgKeyStore implements OrgKeyStore {
     return rowCount === 1;
   }
 }
+
+/** Números das chaves para a topologia: ativas, orgs com chave e o último uso. */
+export async function orgKeySummary(
+  pool: pg.Pool,
+): Promise<{ activeKeys: number; orgsWithKeys: number; lastUsedAt: string | null }> {
+  const { rows } = await pool.query<{ active: number; orgs: number; last_used: Date | null }>(
+    `SELECT count(*) FILTER (WHERE revoked_at IS NULL)::int AS active,
+            count(DISTINCT sf_org_ref) FILTER (WHERE revoked_at IS NULL)::int AS orgs,
+            max(last_used_at) AS last_used
+     FROM org_key`,
+  );
+  const r = rows[0];
+  return {
+    activeKeys: r?.active ?? 0,
+    orgsWithKeys: r?.orgs ?? 0,
+    lastUsedAt: r?.last_used?.toISOString() ?? null,
+  };
+}

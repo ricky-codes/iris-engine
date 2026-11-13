@@ -16,6 +16,7 @@ export type Scalar = string | number | boolean | null;
 
 /** O tipo de passo, para o dashboard escolher o desenho. */
 export type StageKind =
+  | 'auth'
   | 'request'
   | 'gate'
   | 'rate'
@@ -109,12 +110,19 @@ const CONTROLS: Record<
     env: string[];
   }
 > = {
+  auth: {
+    label: 'Token',
+    toolConfig: [],
+    settings: [],
+    overrides: [],
+    env: ['AUTH_MODE', 'ORG_KEY_ENCRYPTION_KEY', 'API_SECRET'],
+  },
   request: {
     label: 'Pedido',
     toolConfig: [],
     settings: [],
     overrides: [],
-    env: ['AUTH_MODE', 'ORG_KEY_ENCRYPTION_KEY', 'API_SECRET', 'MAX_BODY_BYTES'],
+    env: ['MAX_BODY_BYTES'],
   },
   gate: { label: 'Ligada', toolConfig: ['enabled'], settings: [], overrides: [], env: [] },
   rate: {
@@ -216,8 +224,25 @@ export function buildPipeline(input: PipelineInput, now: Date = new Date()): Pip
   ): { status: NodeStatus; summary: string; details: Record<string, Scalar> } => {
     const c = counts[stage];
     switch (stage) {
+      case 'auth': {
+        const keys = node('core.orgKeys');
+        const mode = keys?.details['mode'] ?? 'shared_secret';
+        const status = keys?.status ?? 'off';
+        return {
+          status: tooMany(c.stopped, c.reached) && status === 'ok' ? 'warning' : status,
+          summary:
+            mode === 'token'
+              ? (keys?.summary ?? 'Token da org (JWT HS256)')
+              : 'Segredo partilhado (API_SECRET): o orgId e o userId vêm no pedido',
+          details: {
+            mode: typeof mode === 'string' ? mode : null,
+            activeKeys: keys?.details['activeKeys'] ?? null,
+            maxTokenTtlSeconds: mode === 'token' ? 300 : null,
+          },
+        };
+      }
       case 'request':
-        return { status: 'ok', summary: 'Credencial, corpo e entrada validados', details: {} };
+        return { status: 'ok', summary: 'Corpo e entrada da ferramenta validados', details: {} };
       case 'gate':
         return input.enabled
           ? {

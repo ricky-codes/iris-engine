@@ -425,7 +425,7 @@ export class Metrics {
     const last =
       stop === undefined || stop === 'response'
         ? ENGINE_STAGES.length
-        : stop === 'request'
+        : stop === 'request' || stop === 'auth'
           ? -1
           : ENGINE_STAGES.indexOf(stop);
     ENGINE_STAGES.forEach((stage, i) => {

@@ -5,8 +5,10 @@ import { memoryLimitsOf, type RuntimeSettings } from '../settings/settings.js';
 import type { ToolDefinition } from '../engine/tool.js';
 import { memoriesIn } from './commands.js';
 import { listToolCatalog, type ToolCatalogRow } from './tools.js';
+import { orgKeySummary } from '../adapters/postgres-org-key-store.js';
 import {
   buildTopology,
+  type OrgKeysFact,
   type BreakerFact,
   type RuntimeFacts,
   type ToolFact,
@@ -23,6 +25,8 @@ export interface TopologySourceDeps {
   settings: () => RuntimeSettings;
   metrics: Metrics;
   breakers: () => BreakerFact[];
+  /** As chaves das orgs; sem elas (falta ORG_KEY_ENCRYPTION_KEY) o nó fica desligado. */
+  orgKeys?: { stats(): { accepted: number; rejected: number } } | undefined;
 }
 
 /**
@@ -33,7 +37,9 @@ export async function collectTopology(d: TopologySourceDeps): Promise<Topology> 
   const registered = new Map(d.tools.map((t) => [t.name, t]));
   const settings = d.settings();
   const memories = d.pool === undefined ? undefined : memoriesIn(d.pool);
-  const [runtime, catalog, org, user] = await Promise.all([
+  const keyCounts =
+    d.pool === undefined || d.orgKeys === undefined ? undefined : orgKeySummary(d.pool);
+  const [runtime, catalog, org, user, counts] = await Promise.all([
     d.runtime(),
     d.pool === undefined
       ? Promise.resolve<ToolCatalogRow[]>(
@@ -47,7 +53,13 @@ export async function collectTopology(d: TopologySourceDeps): Promise<Topology> 
       : listToolCatalog(d.pool),
     memories?.count({ scope: 'org' }) ?? 0,
     memories?.count({ scope: 'user' }) ?? 0,
+    keyCounts,
   ]);
+  const stats = d.orgKeys?.stats();
+  const orgKeys: OrgKeysFact | undefined =
+    counts === undefined || stats === undefined
+      ? undefined
+      : { ...counts, tokensAccepted: stats.accepted, tokensRejected: stats.rejected };
   const usage = new Map(d.metrics.snapshot().byTool.map((t) => [t.tool, t]));
   const tools: ToolFact[] = catalog.map((row) => {
     const code = registered.get(row.name);
@@ -76,6 +88,7 @@ export async function collectTopology(d: TopologySourceDeps): Promise<Topology> 
   });
   return buildTopology({
     runtime,
+    orgKeys,
     tools,
     breakers: d.breakers(),
     memories: {

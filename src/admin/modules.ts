@@ -2,7 +2,7 @@ import type { SettingKey, SettingView } from '../settings/settings.js';
 import type { NodeStatus, Topology } from './topology.js';
 
 /**
- * Os cinco adaptadores que ligam o motor ao mundo, descritos para a consola: o que fazem, o que
+ * Os seis adaptadores que ligam o motor ao mundo, descritos para a consola: o que fazem, o que
  * acontece quando falham, que definições têm hoje (e onde se mudam) e o que ainda falta para
  * poderem ser configurados pela API de administração. Os valores são os que estão em vigor;
  * nunca inclui segredos.
@@ -58,6 +58,8 @@ export interface ModulesInput {
   stepAccess: { origin: string | null; componentUuid: string | null };
   openRouter: { baseUrl: string | null; configured: boolean };
   memories: { org: number; user: number };
+  /** Como as rotas públicas autenticam e se a chave mestra das chaves das orgs existe. */
+  auth: { mode: 'token' | 'shared_secret'; orgKeysConfigured: boolean };
 }
 
 export interface ModulesReport {
@@ -236,6 +238,84 @@ export function describeModules(input: ModulesInput): ModulesReport {
         label: 'Validade das memórias de utilizador',
         description: 'Apagar as que não são usadas há N dias (hoje ficam para sempre).',
         suggested: 'sem validade',
+      },
+    ],
+  };
+
+  const keysNode = input.topology.nodes.find((n) => n.id === 'core.orgKeys')?.details ?? {};
+  const pgOrgKeyStore: ModuleInfo = {
+    id: 'adapter.pgOrgKeyStore',
+    className: 'PgOrgKeyStore',
+    file: 'src/adapters/postgres-org-key-store.ts',
+    port: 'OrgKeyStore',
+    status: node('adapter.pgOrgKeyStore'),
+    active: input.auth.orgKeysConfigured,
+    summary: 'Guarda as chaves das orgs no Postgres, com o segredo cifrado.',
+    description:
+      'Cada org assina os seus pedidos (JWT HS256) com uma chave própria; a IRIS tira daí o orgId ' +
+      'e o userId. Este adaptador cria, lista, etiqueta e revoga chaves, grava o último uso e lê a ' +
+      'chave de cada token, decifrando o segredo com a ORG_KEY_ENCRYPTION_KEY (AES-256-GCM). As ' +
+      'chaves lidas ficam 30 s em memória.',
+    onFailure:
+      'Com AUTH_MODE=token, sem base de dados nenhum token se verifica: os pedidos dão 500. Sem ' +
+      'ORG_KEY_ENCRYPTION_KEY as rotas públicas ficam desligadas e /v1/admin/orgs/:orgId/keys dá 503.',
+    settings: [
+      {
+        key: 'authMode',
+        label: 'Autenticação das rotas públicas',
+        description: '`token` (chave por org) ou `shared_secret` (API_SECRET, ids no pedido).',
+        value: input.auth.mode,
+        source: ENV,
+        adminPath: null,
+      },
+      {
+        key: 'orgKeyEncryptionKey',
+        label: 'Chave mestra',
+        description: 'Cifra os segredos das orgs. Só se mostra se está definida.',
+        value: input.auth.orgKeysConfigured,
+        source: ENV,
+        adminPath: null,
+      },
+      {
+        key: 'activeKeys',
+        label: 'Chaves ativas',
+        description: 'Criam-se e revogam-se pela API de administração.',
+        value: typeof keysNode['activeKeys'] === 'number' ? keysNode['activeKeys'] : null,
+        source: DB,
+        adminPath: '/v1/admin/orgs/:orgId/keys',
+      },
+      {
+        key: 'maxActiveKeysPerOrg',
+        label: 'Chaves ativas por org',
+        description: 'Duas: a atual e a próxima, durante uma rotação.',
+        value: 2,
+        source: CODE,
+        adminPath: null,
+      },
+      {
+        key: 'keyCacheSeconds',
+        label: 'Cache das chaves',
+        description: 'Atraso máximo de uma revogação nas outras instâncias.',
+        value: 30,
+        source: CODE,
+        adminPath: null,
+      },
+      {
+        key: 'maxTokenTtlSeconds',
+        label: 'Validade máxima de um token',
+        description: 'exp − iat; com 30 s de tolerância de relógio.',
+        value: 300,
+        source: CODE,
+        adminPath: null,
+      },
+    ],
+    proposed: [
+      {
+        key: 'sharedJtiStore',
+        label: 'Tokens usados partilhados entre instâncias',
+        description:
+          'Hoje os jti usados ficam em memória por instância. Com mais de uma instância, guardá-los no Postgres ou Redis até ao exp.',
+        suggested: 'Postgres',
       },
     ],
   };
@@ -446,6 +526,13 @@ export function describeModules(input: ModulesInput): ModulesReport {
 
   return {
     generatedAt: input.topology.generatedAt,
-    modules: [pgEngineStore, pgMemoryStore, stepAccessClient, usageReporter, openRouter],
+    modules: [
+      pgEngineStore,
+      pgMemoryStore,
+      pgOrgKeyStore,
+      stepAccessClient,
+      usageReporter,
+      openRouter,
+    ],
   };
 }

@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { FastifyRequest } from 'fastify';
 import type { Caller, TokenCheck } from '../auth/org-token.js';
+import { markReason, markStage, type AuthFailureReason } from '../engine/pipeline.js';
 import { AppError } from './errors.js';
 
 /** Quem verifica os tokens das orgs (ver src/auth/org-keys.ts). */
@@ -31,6 +32,10 @@ export const unauthorized = (): AppError =>
     'WWW-Authenticate': 'Bearer',
   });
 
+/** O 401 de sempre, marcado com o passo `auth` e a razão (só para as métricas, nunca para quem chama). */
+const rejected = (reason: AuthFailureReason): unknown =>
+  markStage(markReason(unauthorized(), reason), 'auth');
+
 const bearerOf = (request: FastifyRequest): string | undefined =>
   /^Bearer (.+)$/.exec(request.headers.authorization ?? '')?.[1];
 
@@ -38,7 +43,8 @@ const bearerOf = (request: FastifyRequest): string | undefined =>
 export function bearerAuth(secret: string) {
   return async (request: FastifyRequest): Promise<void> => {
     const given = bearerOf(request);
-    if (given === undefined || !secretMatches(given, secret)) throw unauthorized();
+    if (given === undefined) throw rejected('auth_missing');
+    if (!secretMatches(given, secret)) throw rejected('auth_bad_secret');
   };
 }
 
@@ -53,11 +59,11 @@ export function publicAuth(auth: PublicAuth) {
   const verifier = auth.orgKeys;
   return async (request: FastifyRequest): Promise<void> => {
     const token = bearerOf(request);
-    if (token === undefined) throw unauthorized();
+    if (token === undefined) throw rejected('auth_missing');
     const check = await verifier.verify(token);
     if (!check.ok) {
       request.log.info({ reason: check.reason }, 'token recusado');
-      throw unauthorized();
+      throw rejected(`token_${check.reason}`);
     }
     callers.set(request, check.caller);
   };

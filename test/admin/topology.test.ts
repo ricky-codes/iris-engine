@@ -21,6 +21,7 @@ function runtime(over: Partial<RuntimeFacts> = {}): RuntimeFacts {
     access: 'live',
     openRouter: 'configured',
     routes: { tools: true, memories: true },
+    auth: 'token',
     checks: {
       database: OK,
       stepAccess: OK,
@@ -64,6 +65,13 @@ function topology(over: Partial<TopologyInput> = {}) {
       tools: [sentiment, reply],
       breakers: [],
       memories: { org: 3, user: 7, limits: { chars: 500, perOrg: 50, perUser: 20 } },
+      orgKeys: {
+        activeKeys: 3,
+        orgsWithKeys: 2,
+        lastUsedAt: '2026-11-02T11:59:00.000Z',
+        tokensAccepted: 40,
+        tokensRejected: 1,
+      },
       ...over,
     },
     new Date('2026-11-02T12:00:00.000Z'),
@@ -96,6 +104,55 @@ describe('buildTopology', () => {
       summary: '3 da org · 7 de utilizadores',
       configure: { where: 'admin_api', path: '/v1/admin/memories' },
     });
+  });
+
+  it('chaves das orgs: nó, interface, adaptador e ligações a partir das rotas públicas', () => {
+    const t = topology();
+    expect(node(t, 'core.orgKeys')).toMatchObject({
+      status: 'ok',
+      summary: '3 chave(s) ativa(s) em 2 org(s)',
+      details: { mode: 'token', activeKeys: 3, tokensRejected: 1 },
+      configure: { where: 'admin_api', path: '/v1/admin/orgs/:orgId/keys' },
+    });
+    expect(node(t, 'adapter.pgOrgKeyStore').status).toBe('ok');
+    expect(hasEdge(t, 'http.tools', 'core.orgKeys')).toBe(true);
+    expect(hasEdge(t, 'http.memories', 'core.orgKeys')).toBe(true);
+    expect(hasEdge(t, 'http.admin', 'core.orgKeys')).toBe(true);
+    expect(hasEdge(t, 'adapter.pgOrgKeyStore', 'external.postgres')).toBe(true);
+    expect(node(t, 'http.tools').details).toMatchObject({ auth: 'token da org (JWT)' });
+  });
+
+  it('chaves das orgs: sem chave mestra é erro; sem chaves ou muitas recusas é aviso', () => {
+    const missing = topology({ orgKeys: undefined });
+    expect(node(missing, 'core.orgKeys')).toMatchObject({
+      status: 'error',
+      configure: { where: 'env', keys: ['AUTH_MODE', 'ORG_KEY_ENCRYPTION_KEY'] },
+    });
+    expect(node(missing, 'adapter.pgOrgKeyStore').status).toBe('off');
+
+    const none = {
+      activeKeys: 0,
+      orgsWithKeys: 0,
+      lastUsedAt: null,
+      tokensAccepted: 0,
+      tokensRejected: 0,
+    };
+    expect(node(topology({ orgKeys: none }), 'core.orgKeys').status).toBe('warning');
+    const rejecting = {
+      ...none,
+      activeKeys: 1,
+      orgsWithKeys: 1,
+      tokensAccepted: 4,
+      tokensRejected: 4,
+    };
+    expect(node(topology({ orgKeys: rejecting }), 'core.orgKeys').status).toBe('warning');
+  });
+
+  it('segredo partilhado: aviso, e as rotas públicas não passam pelas chaves', () => {
+    const t = topology({ runtime: runtime({ auth: 'shared_secret' }) });
+    expect(node(t, 'core.orgKeys').status).toBe('warning');
+    expect(hasEdge(t, 'http.tools', 'core.orgKeys')).toBe(false);
+    expect(node(t, 'http.tools').details).toMatchObject({ auth: 'API_SECRET' });
   });
 
   it('modo aberto: sem StepAccess, sem envio de custo, e isso não é um erro', () => {

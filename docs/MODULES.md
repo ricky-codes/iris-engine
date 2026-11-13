@@ -1,14 +1,15 @@
-# Os cinco adaptadores da IRIS
+# Os seis adaptadores da IRIS
 
 O motor (`src/engine/`) não sabe de Postgres, StepAccess nem OpenRouter: fala com interfaces. Cada uma tem um **adaptador** em `src/adapters/`, montado em `src/server.ts`. A API de administração descreve-os em `GET /v1/admin/modules` (ver `src/admin/modules.ts`); os valores em vigor vêm de lá.
 
-| Adaptador                 | Interface do motor | Ficheiro                                | Usado em modo `open`?     |
-| ------------------------- | ------------------ | --------------------------------------- | ------------------------- |
-| `PgEngineStore`           | `EngineStore`      | `src/adapters/postgres-store.ts`        | sim                       |
-| `PgMemoryStore`           | `MemoryStore`      | `src/adapters/postgres-memory-store.ts` | sim                       |
-| `StepAccessClient`        | `AccessChecker`    | `src/adapters/stepaccess-access.ts`     | não (`OpenAccessChecker`) |
-| `StepAccessUsageReporter` | `UsageReporter`    | `src/adapters/stepaccess-usage.ts`      | não                       |
-| `OpenRouterProvider`      | `LlmProvider`      | `src/adapters/openrouter.ts`            | sim                       |
+| Adaptador                 | Interface do motor             | Ficheiro                                 | Usado em modo `open`?     |
+| ------------------------- | ------------------------------ | ---------------------------------------- | ------------------------- |
+| `PgEngineStore`           | `EngineStore`                  | `src/adapters/postgres-store.ts`         | sim                       |
+| `PgMemoryStore`           | `MemoryStore`                  | `src/adapters/postgres-memory-store.ts`  | sim                       |
+| `PgOrgKeyStore`           | `OrgKeyStore` (de `src/auth/`) | `src/adapters/postgres-org-key-store.ts` | sim                       |
+| `StepAccessClient`        | `AccessChecker`                | `src/adapters/stepaccess-access.ts`      | não (`OpenAccessChecker`) |
+| `StepAccessUsageReporter` | `UsageReporter`                | `src/adapters/stepaccess-usage.ts`       | não                       |
+| `OpenRouterProvider`      | `LlmProvider`                  | `src/adapters/openrouter.ts`             | sim                       |
 
 Legenda das definições: **API** = muda-se pela API de administração sem reiniciar · **env** = `.env`, exige reiniciar · **código** = constante.
 
@@ -39,6 +40,21 @@ Legenda das definições: **API** = muda-se pela API de administração sem rein
 | Limites: 500 caracteres, 50 por org, 20 por utilizador | **API** `PATCH /v1/admin/settings` (aplicados também pela base de dados) |
 
 **Falta controlar pela API:** limites próprios por org, desligar memórias pessoais por org, validade das memórias de utilizador.
+
+## PgOrgKeyStore
+
+**O que é.** As chaves das orgs, na tabela `org_key`, com o segredo cifrado (AES-256-GCM, chave mestra `ORG_KEY_ENCRYPTION_KEY`). Com `AUTH_MODE=token`, cada pedido às rotas públicas traz um token assinado com a chave da org; `OrgKeys` (`src/auth/org-keys.ts`) lê a chave do `kid` (30 s em cache), verifica o token, recusa `jti` repetidos e grava o último uso (no máximo uma vez por minuto). Cria, lista, etiqueta e revoga chaves para a API de administração.
+
+**Se falhar:** sem base de dados nenhum token se verifica (500). Sem `ORG_KEY_ENCRYPTION_KEY` e com `AUTH_MODE=token`, as rotas públicas ficam desligadas e `/v1/admin/orgs/:orgId/keys` dá 503.
+
+| Definição                                                                                               | Hoje                                         |
+| ------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| Modo de autenticação                                                                                    | env `AUTH_MODE` (`token` ou `shared_secret`) |
+| Chave mestra                                                                                            | env `ORG_KEY_ENCRYPTION_KEY` (nunca na API)  |
+| Criar, etiquetar, revogar chaves                                                                        | **API** `/v1/admin/orgs/:orgId/keys`         |
+| Chaves ativas por org (2), cache (30 s), validade máxima do token (300 s), tolerância de relógio (30 s) | **código**                                   |
+
+**Falta controlar pela API:** os `jti` usados partilhados entre instâncias (hoje em memória, por instância), para quando houver mais de uma.
 
 ## StepAccessClient
 

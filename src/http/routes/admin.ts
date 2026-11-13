@@ -78,7 +78,7 @@ export interface AdminRoutesOptions {
   models: { list(): Promise<{ models: ModelInfo[]; fetchedAt: string }> };
   /** Sem dependências não há playground (falta base de dados ou OpenRouter). */
   /** As chaves das orgs. Sem elas (falta ORG_KEY_ENCRYPTION_KEY), `/orgs/:orgId/keys` dá 503. */
-  orgKeys?: Pick<OrgKeys, 'create' | 'list' | 'relabel' | 'revoke'> | undefined;
+  orgKeys?: Pick<OrgKeys, 'create' | 'list' | 'relabel' | 'revoke' | 'stats'> | undefined;
   playground:
     | {
         engine: Engine;
@@ -205,7 +205,11 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
 
   app.get('/v1/admin/status', async () => opts.status());
 
-  app.get('/v1/admin/metrics', async () => opts.metrics.snapshot());
+  // `auth`: tokens aceites e recusados por razão nesta instância (só contagens); `null` sem chaves.
+  app.get('/v1/admin/metrics', async () => ({
+    ...opts.metrics.snapshot(),
+    auth: opts.orgKeys?.stats() ?? null,
+  }));
 
   // Os módulos da IRIS, como estão ligados e o estado de cada um, para a consola desenhar.
   app.get('/v1/admin/topology', async () => opts.topology());
@@ -666,7 +670,7 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
 
   // ---------- chaves das orgs ----------
 
-  const orgKeys = (): Pick<OrgKeys, 'create' | 'list' | 'relabel' | 'revoke'> => {
+  const orgKeys = (): Pick<OrgKeys, 'create' | 'list' | 'relabel' | 'revoke' | 'stats'> => {
     if (opts.orgKeys === undefined) {
       throw new AppError(
         'service_unavailable',

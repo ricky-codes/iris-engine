@@ -607,6 +607,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
       expect(p.tool).toBe('diagnostic');
       expect(p.since).toBe(metrics.since);
       expect(p.stages.map((x) => x.id)).toEqual([
+        'auth',
         'request',
         'gate',
         'rate',
@@ -733,6 +734,9 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
         modelChain: { model: string; role: string; order: number; breaker: string }[];
       }>();
       expect(p.stages.find((x) => x.id === 'models')).toMatchObject({ kind: 'model' });
+      const auth = p.stages.find((x) => x.id === 'auth');
+      expect(auth).toMatchObject({ kind: 'auth' });
+      expect(auth?.exits.map((e) => e.code)).toContain('token_expired');
       expect(p.stages.find((x) => x.id === 'access')?.exits.map((e) => e.code)).toEqual([
         'access_denied',
         'quota_exceeded',
@@ -1149,6 +1153,10 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
 
       const list = await app!.inject({ method: 'GET', url: base(org), headers: READ });
       expect(list.json()).toEqual({ keys: [expect.objectContaining({ kid: body.kid })] });
+
+      // As métricas contam o token aceite (só contagens).
+      const m = await app!.inject({ method: 'GET', url: '/v1/admin/metrics', headers: READ });
+      expect(m.json<{ auth: { accepted: number } }>().auth.accepted).toBeGreaterThanOrEqual(1);
       expect(JSON.stringify(list.json())).not.toContain(body.secret);
     });
 

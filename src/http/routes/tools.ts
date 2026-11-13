@@ -19,12 +19,7 @@ export type ToolRoutesOptions = PublicAuth & {
 };
 
 /** Os erros anteriores ao motor (credencial, corpo) param no primeiro passo. */
-const REQUEST_CODES = new Set([
-  'unauthorized',
-  'invalid_request',
-  'payload_too_large',
-  'unsupported_media_type',
-]);
+const REQUEST_CODES = new Set(['invalid_request', 'payload_too_large', 'unsupported_media_type']);
 
 /**
  * Quem chama, no modo do segredo partilhado. Os ids vêm do Salesforce, sempre com 18
@@ -77,7 +72,12 @@ export const toolRoutes: FastifyPluginAsyncTypebox<ToolRoutesOptions> = async (a
     const stage: PipelineStage | undefined =
       errorCode === undefined
         ? undefined
-        : (errorStageOf(request) ?? (REQUEST_CODES.has(errorCode) ? 'request' : 'response'));
+        : (errorStageOf(request) ??
+          (errorCode === 'unauthorized'
+            ? 'auth'
+            : REQUEST_CODES.has(errorCode)
+              ? 'request'
+              : 'response'));
     opts.metrics.record({
       tool,
       errorCode,

@@ -59,8 +59,20 @@ export interface BreakerFact {
   openUntil: string;
 }
 
+/** As chaves das orgs. `undefined`: sem `ORG_KEY_ENCRYPTION_KEY` (ou sem base de dados). */
+export interface OrgKeysFact {
+  activeKeys: number;
+  orgsWithKeys: number;
+  /** O último uso de qualquer chave (ISO), ou `null`. */
+  lastUsedAt: string | null;
+  /** Tokens aceites e recusados nesta instância, desde o arranque. */
+  tokensAccepted: number;
+  tokensRejected: number;
+}
+
 export interface TopologyInput {
   runtime: RuntimeFacts;
+  orgKeys?: OrgKeysFact | undefined;
   tools: ToolFact[];
   breakers: BreakerFact[];
   memories: {
@@ -110,6 +122,9 @@ export interface Topology {
   nodes: TopologyNode[];
   edges: TopologyEdge[];
 }
+
+/** Pelo menos 5 tokens e 20% deles recusados. */
+const tooManyRejected = (part: number, whole: number): boolean => whole >= 5 && part / whole >= 0.2;
 
 const LAYERS: Layer[] = ['client', 'http', 'core', 'port', 'adapter', 'external', 'tool'];
 const RANK: Record<NodeStatus, number> = { off: 0, ok: 1, warning: 2, error: 3 };
@@ -242,6 +257,26 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
   const engine: NodeStatus = rt.engine.ready ? 'ok' : 'error';
   const usageLive = rt.access === 'live';
   const publicAuth = rt.auth === 'token' ? 'token da org (JWT)' : 'API_SECRET';
+  const keys = input.orgKeys;
+  const tokenMode = rt.auth === 'token';
+  const keysStatus: NodeStatus = !tokenMode
+    ? 'warning'
+    : keys === undefined
+      ? 'error'
+      : keys.activeKeys === 0 ||
+          tooManyRejected(keys.tokensRejected, keys.tokensAccepted + keys.tokensRejected)
+        ? 'warning'
+        : db === 'error'
+          ? 'error'
+          : 'ok';
+  const keysSummary = !tokenMode
+    ? 'Segredo partilhado: o orgId e o userId vêm no pedido, sem prova'
+    : keys === undefined
+      ? 'Desligado: falta ORG_KEY_ENCRYPTION_KEY'
+      : keys.activeKeys === 0
+        ? 'Sem chaves ativas: nenhuma org consegue fazer pedidos'
+        : `${String(keys.activeKeys)} chave(s) ativa(s) em ${String(keys.orgsWithKeys)} org(s)`;
+  const keyStore: NodeStatus = keys === undefined ? 'off' : db;
 
   const nodes: TopologyNode[] = [
     // quem chama
@@ -335,6 +370,28 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
       },
       configure: { where: 'admin_api', path: '/v1/admin/memories' },
     },
+    {
+      id: 'core.orgKeys',
+      layer: 'core',
+      label: 'OrgKeys',
+      status: keysStatus,
+      summary: keysSummary,
+      details: {
+        mode: rt.auth ?? 'shared_secret',
+        activeKeys: keys?.activeKeys ?? null,
+        orgsWithKeys: keys?.orgsWithKeys ?? null,
+        lastUsedAt: keys?.lastUsedAt ?? null,
+        tokensAccepted: keys?.tokensAccepted ?? null,
+        tokensRejected: keys?.tokensRejected ?? null,
+        maxActiveKeysPerOrg: 2,
+        maxTokenTtlSeconds: 300,
+        keyCacheSeconds: 30,
+      },
+      configure:
+        keys === undefined
+          ? { where: 'env', keys: ['AUTH_MODE', 'ORG_KEY_ENCRYPTION_KEY'] }
+          : { where: 'admin_api', path: '/v1/admin/orgs/:orgId/keys' },
+    },
     // interfaces do núcleo
     {
       id: 'port.engineStore',
@@ -378,6 +435,15 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
       label: 'LlmProvider',
       status: openRouter,
       summary: 'Fornecedor de modelos',
+      details: {},
+      configure: null,
+    },
+    {
+      id: 'port.orgKeyStore',
+      layer: 'port',
+      label: 'OrgKeyStore',
+      status: keyStore,
+      summary: 'Onde vivem as chaves das orgs',
       details: {},
       configure: null,
     },
@@ -441,6 +507,18 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
       },
       configure: ENV_OPENROUTER,
     },
+    {
+      id: 'adapter.pgOrgKeyStore',
+      layer: 'adapter',
+      label: 'PgOrgKeyStore',
+      status: keyStore,
+      summary:
+        keys === undefined
+          ? 'Desligado: falta ORG_KEY_ENCRYPTION_KEY'
+          : 'Chaves no Postgres, com o segredo cifrado (AES-256-GCM)',
+      details: { encryption: 'aes-256-gcm' },
+      configure: { where: 'env', keys: ['ORG_KEY_ENCRYPTION_KEY'] },
+    },
     // serviços externos
     {
       id: 'external.postgres',
@@ -483,6 +561,16 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
     { from: 'client.salesforce', to: 'http.tools' },
     { from: 'client.salesforce', to: 'http.memories' },
     { from: 'client.console', to: 'http.admin' },
+    ...(tokenMode
+      ? [
+          { from: 'http.tools', to: 'core.orgKeys', label: 'verifica o token' },
+          { from: 'http.memories', to: 'core.orgKeys', label: 'verifica o token' },
+        ]
+      : []),
+    { from: 'http.admin', to: 'core.orgKeys', label: 'cria, etiqueta e revoga chaves' },
+    { from: 'core.orgKeys', to: 'port.orgKeyStore' },
+    { from: 'port.orgKeyStore', to: 'adapter.pgOrgKeyStore' },
+    { from: 'adapter.pgOrgKeyStore', to: 'external.postgres' },
     { from: 'http.tools', to: 'core.engine', label: 'run' },
     { from: 'http.memories', to: 'core.memories' },
     { from: 'http.admin', to: 'core.memories' },

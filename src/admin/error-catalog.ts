@@ -1,4 +1,4 @@
-import type { PipelineStage } from '../engine/pipeline.js';
+import type { AuthFailureReason, PipelineStage } from '../engine/pipeline.js';
 
 /**
  * Os códigos estáveis de cada saída do caminho de um pedido, com o passo e o estado HTTP. São as
@@ -13,14 +13,38 @@ export interface ErrorCatalogEntry {
   label: string;
 }
 
+/** As razões finas de um 401. Quem chama recebe sempre `unauthorized`, com a mesma mensagem. */
+const AUTH_LABELS: Record<AuthFailureReason, string> = {
+  auth_missing: 'Sem credencial',
+  auth_bad_secret: 'Segredo partilhado errado',
+  token_malformed: 'Token mal formado',
+  token_unsupported_alg: 'Algoritmo do token não aceite (só HS256)',
+  token_unknown_key: 'Chave desconhecida ou revogada',
+  token_bad_signature: 'Assinatura do token errada',
+  token_wrong_org: 'O token é de outra org que não a da chave',
+  token_bad_claims: 'Campos do token em falta ou inválidos',
+  token_wrong_audience: 'Token para outro serviço (aud)',
+  token_not_yet_valid: 'Token emitido no futuro (relógio adiantado)',
+  token_expired: 'Token expirado',
+  token_ttl_too_long: 'Validade do token acima de 300 s',
+  token_replayed: 'Token já usado (jti repetido)',
+};
+
 export const ERROR_CATALOG: ErrorCatalogEntry[] = [
   {
     code: 'unauthorized',
-    stage: 'request',
+    stage: 'auth',
     httpStatus: 401,
     publicCode: 'unauthorized',
-    label: 'Sem credencial ou credencial errada',
+    label: 'Credencial recusada',
   },
+  ...Object.entries(AUTH_LABELS).map(([code, label]) => ({
+    code,
+    stage: 'auth' as const,
+    httpStatus: 401,
+    publicCode: 'unauthorized',
+    label,
+  })),
   {
     code: 'invalid_request',
     stage: 'request',

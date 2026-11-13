@@ -37,16 +37,18 @@ function input(over: Partial<ModulesInput> = {}): ModulesInput {
     },
     openRouter: { baseUrl: 'https://openrouter.ai/api/v1', configured: true },
     memories: { org: 1, user: 2 },
+    auth: { mode: 'token', orgKeysConfigured: true },
     ...over,
   };
 }
 
 describe('describeModules', () => {
-  it('descreve os cinco adaptadores, cada um ligado a um nó da topologia', () => {
+  it('descreve os seis adaptadores, cada um ligado a um nó da topologia', () => {
     const report = describeModules(input());
     expect(report.modules.map((m) => m.className)).toEqual([
       'PgEngineStore',
       'PgMemoryStore',
+      'PgOrgKeyStore',
       'StepAccessClient',
       'StepAccessUsageReporter',
       'OpenRouterProvider',
@@ -55,6 +57,7 @@ describe('describeModules', () => {
     for (const n of [
       'adapter.pgEngineStore',
       'adapter.pgMemoryStore',
+      'adapter.pgOrgKeyStore',
       'adapter.access',
       'adapter.usage',
       'adapter.llm',
@@ -153,7 +156,7 @@ describe('GET /v1/admin/modules', () => {
       headers: { authorization: `Bearer ${SECRET}` },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json<{ modules: unknown[] }>().modules).toHaveLength(5);
+    expect(res.json<{ modules: unknown[] }>().modules).toHaveLength(6);
     await app.close();
   });
 });

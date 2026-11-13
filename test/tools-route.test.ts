@@ -420,7 +420,8 @@ describe('limite de pedidos e interruptor de streaming', () => {
     expect((await post(app, { message: 5 })).statusCode).toBe(422);
     await app.inject({ method: 'POST', url: '/v1/tools/diagnostic', payload: BODY });
     expect(metrics.pipeline('diagnostic').stops).toMatchObject({
-      request: { invalid_request: 1, unauthorized: 1 },
+      auth: { unauthorized: 1 },
+      request: { invalid_request: 1 },
       rate: { rate_limited: 1 },
     });
   });

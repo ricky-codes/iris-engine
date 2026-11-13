@@ -198,15 +198,16 @@ Com `AUTH_MODE=shared_secret`, há um único `API_SECRET` para todos e o `orgId`
 
 Um pedido `POST /v1/tools/<nome>` passa sempre por estes passos, por esta ordem (os mesmos ids de `src/engine/pipeline.ts`, que a consola mostra em `GET /v1/admin/tools/:name/pipeline`):
 
-1. **Pedido** (`request`): `Authorization: Bearer <token da org>`, verificado antes de olhar para o corpo (falha: **401**); o `orgId` e o `userId` saem do token (ver [Autenticação](#autenticação)). Depois `version` opcional e os campos da ferramenta. Campos a mais são recusados. Falha: **422**, sem gastar utilização. Com `AUTH_MODE=shared_secret`: `Bearer <API_SECRET>`, comparado em tempo constante, e `orgId` (`00D…`, 18 caracteres) e `userId` (`005…`, 18 caracteres) no corpo.
-2. **Ligada** (`gate`): modelo, temperatura, limites e prompt. A base de dados (`tool_config`, versão ativa em `prompt_version`) substitui os valores do código. Ferramenta desativada: **503** `tool_disabled`. `stream: true` com o streaming desligado (na ferramenta ou em geral): **422**.
-3. **Limite de pedidos** (`rate`): pedidos por minuto e por org, por instância. Com um limite próprio da ferramenta, conta à parte (por org e ferramenta). Acima: **429** `rate_limited`, com `Retry-After`.
-4. **Acesso** (`access`): `GET /v1/access` ao StepAccess com org, utilizador e o componente IRIS. Conta utilização. Sem acesso: **403** `access_denied`; limite atingido: **429** `quota_exceeded`; StepAccess indisponível ou resposta inesperada: **503** `service_unavailable` (falha fechada).
-5. **Memórias** (`memories`): as da org (regras da empresa, prevalecem) e as do utilizador, que valham para esta ferramenta.
-6. **Prompt** (`prompt`): as memórias entram no prompt numa secção própria, uma por linha.
-7. **Cadeia de modelos** (`models`, OpenRouter): resposta em JSON com o esquema da ferramenta, só em fornecedores que não guardam nem treinam com os dados (`data_collection: deny`); modelos de recurso e disjuntor por modelo. Indisponível: **502** `provider_unavailable`; tempo esgotado: **504** `timeout`.
-8. **Validação** (`validate`): se a resposta não cumprir o esquema, tenta de novo no mesmo modelo (`maxAttempts`, 2 por omissão) e depois passa ao seguinte; no fim: **502** `invalid_model_output`.
-9. **Resposta** (`response`): JSON ou SSE; o custo vai para o StepAccess em segundo plano.
+1. **Token** (`auth`): `Authorization: Bearer <token da org>`, verificado antes de olhar para o corpo; o `orgId` e o `userId` saem do token (ver [Autenticação](#autenticação)). Falha: **401**. Com `AUTH_MODE=shared_secret`: `Bearer <API_SECRET>`, comparado em tempo constante.
+2. **Pedido** (`request`): `version` opcional e os campos da ferramenta (com `shared_secret`, também `orgId` e `userId`). Campos a mais são recusados. Falha: **422**, sem gastar utilização.
+3. **Ligada** (`gate`): modelo, temperatura, limites e prompt. A base de dados (`tool_config`, versão ativa em `prompt_version`) substitui os valores do código. Ferramenta desativada: **503** `tool_disabled`. `stream: true` com o streaming desligado (na ferramenta ou em geral): **422**.
+4. **Limite de pedidos** (`rate`): pedidos por minuto e por org, por instância. Com um limite próprio da ferramenta, conta à parte (por org e ferramenta). Acima: **429** `rate_limited`, com `Retry-After`.
+5. **Acesso** (`access`): `GET /v1/access` ao StepAccess com org, utilizador e o componente IRIS. Conta utilização. Sem acesso: **403** `access_denied`; limite atingido: **429** `quota_exceeded`; StepAccess indisponível ou resposta inesperada: **503** `service_unavailable` (falha fechada).
+6. **Memórias** (`memories`): as da org (regras da empresa, prevalecem) e as do utilizador, que valham para esta ferramenta.
+7. **Prompt** (`prompt`): as memórias entram no prompt numa secção própria, uma por linha.
+8. **Cadeia de modelos** (`models`, OpenRouter): resposta em JSON com o esquema da ferramenta, só em fornecedores que não guardam nem treinam com os dados (`data_collection: deny`); modelos de recurso e disjuntor por modelo. Indisponível: **502** `provider_unavailable`; tempo esgotado: **504** `timeout`.
+9. **Validação** (`validate`): se a resposta não cumprir o esquema, tenta de novo no mesmo modelo (`maxAttempts`, 2 por omissão) e depois passa ao seguinte; no fim: **502** `invalid_model_output`.
+10. **Resposta** (`response`): JSON ou SSE; o custo vai para o StepAccess em segundo plano.
 
 Resposta: `{ "tool": "<nome>", "version": <n>, "result": { … } }`. Nada é guardado: dos pedidos ficam só linhas de log com id, ferramenta, modelo, tokens, número de memórias e duração e, em memória, os metadados dos últimos pedidos por ferramenta para o dashboard (passos, tempos, modelos e um id opaco da org; `src/traces/traces.ts`).
 

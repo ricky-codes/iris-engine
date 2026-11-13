@@ -269,6 +269,7 @@ function buildAdmin(
           org: typeof mem?.['org'] === 'number' ? mem['org'] : 0,
           user: typeof mem?.['user'] === 'number' ? mem['user'] : 0,
         },
+        auth: { mode: cfg.authMode, orgKeysConfigured: orgKeys !== undefined },
       });
     },
     orgKeys,
@@ -373,6 +374,7 @@ async function main(): Promise<void> {
       settings: () => settings.current(),
       metrics,
       breakers: () => core?.openBreakers() ?? [],
+      orgKeys,
     });
 
   const admin = buildAdmin(

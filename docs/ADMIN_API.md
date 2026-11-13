@@ -373,7 +373,8 @@ Resposta `200`:
 }
 ```
 
-- `stages.<id>`: `entered` = os que chegaram ao passo; `passed` = `entered − stopped`; `byCode` usa os códigos do catálogo (5.8) quando o passo os tem, senão o código da resposta. `avgMs` = tempo médio no passo (`null` em `request` e `response`, que não se medem, e sem pedidos). Em `access`, só os pedidos que de facto perguntaram ao StepAccess.
+- `auth`: os tokens das orgs verificados nesta instância desde o arranque, `{ "accepted": 118, "rejected": 3, "rejectedByReason": { "expired": 2, "unknown_key": 1 } }` (razões: `malformed`, `unsupported_alg`, `unknown_key`, `bad_signature`, `wrong_org`, `bad_claims`, `wrong_audience`, `not_yet_valid`, `expired`, `ttl_too_long`, `replayed`). Só contagens, sem tokens nem ids. `null` sem chave mestra. Conta os pedidos a `/v1/tools` e a `/v1/memories`.
+- `stages.<id>`: `entered` = os que chegaram ao passo; `passed` = `entered − stopped`; `byCode` usa os códigos do catálogo (5.8) quando o passo os tem, senão o código da resposta. `avgMs` = tempo médio no passo (`null` em `auth`, `request` e `response`, que não se medem, e sem pedidos). Em `access`, só os pedidos que de facto perguntaram ao StepAccess.
 - `models`: as chamadas desta ferramenta a cada modelo. `p95Ms` sobre as últimas 500 chamadas; `fallbackFrom` = vezes que o modelo foi chamado como recurso.
 - `retries`: novas tentativas no mesmo modelo depois de uma resposta inválida. `fallbackPairs`: passagens de um modelo para o seguinte, por par.
 - `p50Ms`/`p95Ms`: duração dos pedidos, sobre os últimos 1000. `recent`: os últimos 60 minutos, por minuto (UTC), só os minutos com pedidos.
@@ -474,11 +475,19 @@ Resposta `200` (excerto):
 
 Modelos (`adapter.llm`): `details.chain` é a cadeia de modelos (sem o fornecedor, ex.: `"gemini-2.5-flash → gpt-4.1-mini"`) quando é igual em todas as ferramentas implementadas, ou `"várias"`; `details.fallbacks` é o total de pedidos servidos por um modelo de recurso desde o arranque; `details.openBreakers` é **quantos** modelos têm o disjuntor aberto (`0` se nenhum; o estado de cada um está em `GET /v1/admin/breakers`, 5.7). Fica `warning` com ≥ 20% dos pedidos (mínimo 5) servidos por recurso, ou com algum disjuntor aberto. Cada `tool.<nome>` tem `details.fallbacks` e `details.chain`.
 
+Chaves das orgs (`core.orgKeys`, `port.orgKeyStore`, `adapter.pgOrgKeyStore`): a autenticação das rotas públicas.
+
+- `core.orgKeys.details`: `mode` (`token` ou `shared_secret`), `activeKeys`, `orgsWithKeys`, `lastUsedAt` (o último uso de qualquer chave), `tokensAccepted` e `tokensRejected` (nesta instância, desde o arranque), e as constantes `maxActiveKeysPerOrg` (2), `maxTokenTtlSeconds` (300) e `keyCacheSeconds` (30). Os números ficam `null` sem chave mestra.
+- Estado: `error` com `AUTH_MODE=token` e sem `ORG_KEY_ENCRYPTION_KEY` (as rotas públicas ficam desligadas); `warning` sem chaves ativas, com ≥ 20% dos tokens recusados (mínimo 5) ou com `AUTH_MODE=shared_secret`; senão `ok`.
+- `configure`: `{ "where": "admin_api", "path": "/v1/admin/orgs/:orgId/keys" }` (7.8), ou as variáveis do `.env` quando falta a chave mestra.
+- Ligações: `http.tools → core.orgKeys` e `http.memories → core.orgKeys` ("verifica o token", só com `AUTH_MODE=token`), `http.admin → core.orgKeys` ("cria, etiqueta e revoga chaves"), `core.orgKeys → port.orgKeyStore → adapter.pgOrgKeyStore → external.postgres`.
+- `http.tools.details.auth` e `http.memories.details.auth` dizem a credencial: `"token da org (JWT)"` ou `"API_SECRET"`.
+
 Os módulos e as ligações mudam com a configuração: em `ACCESS_MODE=open` o adaptador de acesso é `OpenAccessChecker`, o StepAccess fica `off` e não há ligações para ele; ferramentas do catálogo sem implementação aparecem `off` e sem ligação ao núcleo.
 
 ### 5.5 `GET /v1/admin/modules`
 
-Os cinco adaptadores que ligam o motor ao mundo, para a consola mostrar o que cada um faz e o que se pode configurar. Os mesmos que aparecem como nós `adapter.*` na topologia. Descrição completa em [`MODULES.md`](MODULES.md).
+Os seis adaptadores que ligam o motor ao mundo, para a consola mostrar o que cada um faz e o que se pode configurar. Os mesmos que aparecem como nós `adapter.*` na topologia. Descrição completa em [`MODULES.md`](MODULES.md).
 
 ```jsonc
 {
@@ -881,11 +890,12 @@ O caminho de um pedido a esta ferramenta, **pela ordem do código** (`src/engine
 }
 ```
 
-**Os passos** (sempre os nove, por esta ordem):
+**Os passos** (sempre os dez, por esta ordem):
 
 | `id`       | O que faz                                                  | Pára com                                                 | Controlado por                                                                                                                                                                                         | `details`                                                                      |
 | ---------- | ---------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
-| `request`  | Credencial, corpo e entrada da ferramenta                  | `unauthorized`, `invalid_request`, `payload_too_large`   | env `API_SECRET`, `MAX_BODY_BYTES`                                                                                                                                                                     | —                                                                              |
+| `auth`     | Credencial: token da org (ou segredo partilhado)           | `unauthorized` (razões finas `auth_*` e `token_*`, 5.8)  | env `AUTH_MODE`, `ORG_KEY_ENCRYPTION_KEY`, `API_SECRET`; chaves em 7.8                                                                                                                                 | `mode` (`token`/`shared_secret`), `activeKeys`, `maxTokenTtlSeconds`           |
+| `request`  | Corpo e entrada da ferramenta                              | `invalid_request`, `payload_too_large`                   | env `MAX_BODY_BYTES`                                                                                                                                                                                   | —                                                                              |
 | `gate`     | Lê a configuração: ligada? streaming permitido?            | `tool_disabled`, `invalid_request` (`body.stream`)       | `enabled`                                                                                                                                                                                              | `enabled`, `streamSupported`                                                   |
 | `rate`     | Limite de pedidos por minuto                               | `rate_limited`                                           | `rateLimitPerMinute` (global e por ferramenta)                                                                                                                                                         | `limitPerMinute`, `source` (`tool`/`engine`)                                   |
 | `access`   | StepAccess (conta utilização)                              | `access_denied`, `quota_exceeded`, `service_unavailable` | `stepAccessTimeoutMs`; env `ACCESS_MODE`, `STEPACCESS_*`                                                                                                                                               | `mode`, `latencyMs` (da última verificação de um pedido com resposta)          |
@@ -896,9 +906,9 @@ O caminho de um pedido a esta ferramenta, **pela ordem do código** (`src/engine
 | `response` | JSON ou SSE; custo para o StepAccess em segundo plano      | `internal_error`                                         | `streamEnabled` (global e por ferramenta), `stepAccessUsageTimeoutMs`                                                                                                                                  | `succeeded`, `avgDurationMs`, `stream`, `streamSource`                         |
 
 - `counts.passed` de um passo = os que lá chegaram menos os que lá pararam; o primeiro recebe todos os pedidos à ferramenta. `response.passed` = respostas com sucesso.
-- `status`: `gate` fica `off` com a ferramenta desligada; `access` e `memories` seguem o nó correspondente da topologia (`adapter.access`, `adapter.pgMemoryStore`); `models` fica `warning` com um disjuntor aberto na cadeia e `error` com todos; `rate`, `validate` e `response` ficam `warning` com ≥ 20% (mínimo 5) parados, inválidos ou falhados.
+- `status`: `auth` segue o nó `core.orgKeys` da topologia (e fica `warning` com ≥ 20% dos pedidos recusados, mínimo 5); `gate` fica `off` com a ferramenta desligada; `access` e `memories` seguem o nó correspondente da topologia (`adapter.access`, `adapter.pgMemoryStore`); `models` fica `warning` com um disjuntor aberto na cadeia e `error` com todos; `rate`, `validate` e `response` ficam `warning` com ≥ 20% (mínimo 5) parados, inválidos ou falhados.
 - `models`: a cadeia em vigor, por ordem, com o disjuntor de cada modelo (5.7) e as chamadas feitas **por esta ferramenta**. `failedByReason.skipped_breaker` conta os saltos (não são chamadas).
-- Cada passo traz também `kind` (o tipo de desenho: `request`, `gate`, `rate`, `access`, `memories`, `prompt`, `model`, `validate`, `response`) e `exits`: as saídas possíveis nesse passo, `[{ code, httpStatus, label }]`, do catálogo (5.8).
+- Cada passo traz também `kind` (o tipo de desenho: `auth`, `request`, `gate`, `rate`, `access`, `memories`, `prompt`, `model`, `validate`, `response`) e `exits`: as saídas possíveis nesse passo, `[{ code, httpStatus, label }]`, do catálogo (5.8).
 - `modelChain`: a cadeia no formato curto, `[{ model, role, order, breaker: "closed" | "open" | "half_open", openedAt?, reopensAt? }]`.
 - Nunca inclui segredos, valores do `.env`, ids de org ou de utilizador, nem conteúdo de pedidos.
 

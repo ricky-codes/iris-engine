@@ -64,6 +64,7 @@ describe('buildPipeline', () => {
     const p = buildPipeline(input(m));
     const counts = Object.fromEntries(p.stages.map((s) => [s.id, s.counts]));
     expect(counts).toEqual({
+      auth: { passed: 11, stopped: 0 },
       request: { passed: 10, stopped: 1 },
       gate: { passed: 10, stopped: 0 },
       rate: { passed: 8, stopped: 2 },

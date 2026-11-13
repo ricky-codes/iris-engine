@@ -5,6 +5,7 @@ import {
   verifyOrgToken,
   type OrgSigningKey,
   type TokenCheck,
+  type TokenRejection,
 } from './org-token.js';
 
 /** Uma chave como a API de administração a mostra: nunca o segredo. */
@@ -73,6 +74,8 @@ export class OrgKeys {
   private readonly cache = new Map<string, { key: OrgSigningKey | undefined; until: number }>();
   private readonly seenJti = new Map<string, number>();
   private readonly lastTouch = new Map<string, number>();
+  private accepted = 0;
+  private readonly rejected = new Map<TokenRejection, number>();
   private lastSweep = 0;
 
   constructor(
@@ -94,7 +97,12 @@ export class OrgKeys {
       this.seenJti.set(id, (exp + TOKEN_CLOCK_SKEW_SECONDS) * 1000);
       return false;
     });
-    if (check.ok) this.touch(check.kid, now);
+    if (check.ok) {
+      this.accepted++;
+      this.touch(check.kid, now);
+    } else {
+      this.rejected.set(check.reason, (this.rejected.get(check.reason) ?? 0) + 1);
+    }
     return check;
   }
 
@@ -104,6 +112,15 @@ export class OrgKeys {
     if (last !== undefined && now - last < LAST_USED_WRITE_MS) return;
     this.lastTouch.set(kid, now);
     this.store.touch(kid).catch(this.onTouchError);
+  }
+
+  /** Tokens aceites e recusados (por razão) nesta instância, desde o arranque. Só contagens. */
+  stats(): { accepted: number; rejected: number; rejectedByReason: Record<string, number> } {
+    const rejectedByReason = Object.fromEntries(
+      [...this.rejected].sort(([a], [b]) => a.localeCompare(b)),
+    );
+    const rejected = [...this.rejected.values()].reduce((a, b) => a + b, 0);
+    return { accepted: this.accepted, rejected, rejectedByReason };
   }
 
   /** Cria uma chave. O segredo só existe aqui: devolve-se uma vez e guarda-se cifrado. */

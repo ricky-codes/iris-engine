@@ -220,4 +220,18 @@ describe('OrgKeys', () => {
     await keys.verify(sign('pedido-0003'));
     expect(touched).toEqual([k.kid, k.kid]);
   });
+
+  it('conta os tokens aceites e os recusados por razão', async () => {
+    const keys = new OrgKeys(memoryStore().store, () => NOW * 1000);
+    const k = await keys.create(ORG, 'a');
+    const t = signOrgToken(k, { userId: USER, jti: 'pedido-0001', iat: NOW });
+    await keys.verify(t);
+    await keys.verify(t);
+    await keys.verify('lixo');
+    expect(keys.stats()).toEqual({
+      accepted: 1,
+      rejected: 2,
+      rejectedByReason: { malformed: 1, replayed: 1 },
+    });
+  });
 });

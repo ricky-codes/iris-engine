@@ -1088,6 +1088,7 @@ Formato de uma chave (nunca com o segredo):
 {
   "kid": "k_115ff92b875192f6",
   "orgId": "00DgL00000O7vLVUAZ",
+  "label": "Produção",
   "status": "active",
   "createdAt": "2026-11-13T00:09:22.439Z",
   "createdBy": "ricardo@stepahead.pt",
@@ -1096,11 +1097,14 @@ Formato de uma chave (nunca com o segredo):
 }
 ```
 
-| Rota                                     | O que faz                                                                                                                 |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `GET /v1/admin/orgs/:orgId/keys`         | `{ keys: [...] }`: ativas primeiro, mais recentes primeiro                                                                |
-| `POST /v1/admin/orgs/:orgId/keys`        | **201** com a chave e `"secret"`. O segredo só aparece aqui (`Cache-Control: no-store`). **422** se a org já tem 2 ativas |
-| `DELETE /v1/admin/orgs/:orgId/keys/:kid` | **204**. **404** se a chave não existe nessa org ou já estava revogada                                                    |
+| Rota                                     | O que faz                                                                                                                                                              |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /v1/admin/orgs/:orgId/keys`         | `{ keys: [...] }`: ativas primeiro, mais recentes primeiro                                                                                                             |
+| `POST /v1/admin/orgs/:orgId/keys`        | Corpo opcional `{ "label": "Sandbox UAT" }`. **201** com a chave e `"secret"`; o segredo só aparece aqui (`Cache-Control: no-store`). **422** se a org já tem 2 ativas |
+| `PATCH /v1/admin/orgs/:orgId/keys/:kid`  | `{ "label": "Produção" }` muda a etiqueta; `{ "label": null }` tira-a. **200** com a chave (sem segredo). **404** se a chave não é dessa org                           |
+| `DELETE /v1/admin/orgs/:orgId/keys/:kid` | **204**. **404** se a chave não existe nessa org ou já estava revogada                                                                                                 |
+
+`label`: opcional, 1 a 100 caracteres, sem espaços no início nem no fim (senão **422**). Serve para distinguir as chaves da mesma org (produção, rotação) e lembrar que cada sandbox é uma org à parte, com a sua chave.
 
 - O StepAccess deve mostrar o segredo uma vez a quem cria a chave e **não o guardar**.
 - Rodar uma chave: criar a nova, configurá-la na org, revogar a antiga. A revogação vale logo na instância que a recebe e, nas outras, até 30 s.

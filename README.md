@@ -154,6 +154,7 @@ String token = header + '.' + payload + '.' + signature;
 ### As chaves
 
 - Criam-se em `POST /v1/admin/orgs/<orgId>/keys` (ou `admin create-org-key --org-id 00D…`). O segredo aparece **uma única vez**; a IRIS guarda-o cifrado (AES-256-GCM com `ORG_KEY_ENCRYPTION_KEY`).
+- Cada chave pode ter uma **etiqueta** (`label`, por exemplo "Produção" ou "Sandbox UAT"), dada ao criar ou mudada depois com `PATCH /v1/admin/orgs/<orgId>/keys/<kid>`.
 - No máximo **2 chaves ativas** por org, para rodar sem interrupção: cria-se a nova, passa-se a usá-la, revoga-se a antiga.
 - Revogar (`DELETE /v1/admin/orgs/<orgId>/keys/<kid>`) vale logo na instância que recebe o pedido; nas outras, até 30 s (a cache das chaves).
 - Os `jti` já usados ficam em memória por instância: com várias instâncias, um token repetido noutra instância não é apanhado (vive no máximo 5 minutos).
@@ -281,6 +282,7 @@ PostgreSQL 16, 3.ª forma normal. As migrações são ficheiros SQL em `migratio
 | `0009_identidade_no_stepaccess.sql` | Sem clientes, orgs, utilizadores nem chaves; memórias por id Salesforce |
 | `0010`–`0012`                       | Modelos de recurso e definições alteráveis sem reiniciar                |
 | `0013_chaves_das_orgs.sql`          | Chaves das orgs (`org_key`), com o segredo cifrado                      |
+| `0014_etiqueta_das_chaves.sql`      | Etiqueta opcional de cada chave                                         |
 
 Ficam 15 tabelas: catálogos (`tool`, `ai_provider`, `memory_scope`, `memory_source`), memórias (`memory`, `org_memory`, `user_memory`, `memory_tool`), configuração (`llm_model`, `tool_config`, `tool_config_fallback`, `prompt`, `prompt_version`, `engine_setting`) e chaves das orgs (`org_key`).
 

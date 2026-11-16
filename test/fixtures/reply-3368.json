@@ -1,0 +1,161 @@
+{
+  "contactContextFields": [],
+  "accountContextFields": [],
+  "caseContextFields": [],
+  "organizationContext": null,
+  "payload": {
+    "replySettings": { "houseRules": [], "hasSignature": true, "hasGreeting": true },
+    "toneParams": { "formalidade": 50, "simpatia": 70, "tom": 50 },
+    "selectedItem": {
+      "createdDate": "2026-07-19T08:35:13.000Z",
+      "incoming": true,
+      "metaLabel": "Entrada · 19/07/2026 01:35 · cliente@exemplo.pt",
+      "preview": "Bom dia, Detetei um movimento de 1.250€ na minha conta que não reconheço. Foi feito ontem via transferência. Podem verificar e bloquear se for fraude? Obrigado.",
+      "body": "Bom dia,\n\nDetetei um movimento de 1.250€ na minha conta que não reconheço. Foi feito ontem via transferência. Podem verificar e bloquear se for fraude?\n\nObrigado.",
+      "title": "RE: Movimento não reconhecido — possível fraude",
+      "id": "02sgL0000042fZRQAY",
+      "itemType": "emailMessage"
+    }
+  },
+  "emailMessages": [
+    {
+      "status": "3",
+      "messageDate": "2026-10-25T12:04:54.000Z",
+      "toAddress": "agente@exemplo.pt",
+      "fromAddress": "agente@exemplo.pt",
+      "incoming": false,
+      "textBody": "Caro(a) Rose\n\nCompreendemos perfeitamente a sua preocupação em relação à transferência de 1.250€ que não reconhece na sua conta. A segurança dos nossos clientes é uma prioridade para nós.\n\nConfirmamos a receção do seu alerta. O seu pedido já se encontra em análise pela nossa equipa especializada para verificarmos a legitimidade desta operação. Caso se confirme tratar-se de uma situação de fraude, avançaremos de imediato com as medidas de bloqueio e proteção necessárias.\n\nEntraremos em contacto com a maior brevidade possível assim que tivermos atualizações sobre este processo.\n\nCom os melhores cumprimentos, Agente Exemplo",
+      "subject": "RE: Movimento não reconhecido — possível fraude",
+      "id": "02sgL00000532yTQAQ"
+    },
+    {
+      "status": "3",
+      "messageDate": "2026-10-25T12:03:03.000Z",
+      "toAddress": "agente@exemplo.pt",
+      "fromAddress": "agente@exemplo.pt",
+      "incoming": false,
+      "textBody": "Caro(a) Rose\n\nCompreendemos perfeitamente a sua preocupação em relação à transferência de 1.250€ que não reconhece.\n\nInformamos que o seu pedido já se encontra registado e a nossa equipa está a analisar a situação com a máxima urgência para verificar a possibilidade de fraude.\n\nTomaremos as medidas necessárias para analisar este movimento e garantir a segurança da sua conta. Entraremos em contacto consigo o mais brevemente possível com uma atualização sobre este caso ou caso sejam necessários detalhes adicionais.\n\nCom os melhores cumprimentos, Agente Exemplo",
+      "subject": "Re: Movimento não reconhecido — possível fraude",
+      "id": "02sgL00000532wrQAA"
+    },
+    {
+      "status": "3",
+      "messageDate": "2026-10-23T02:02:25.000Z",
+      "toAddress": "agente@exemplo.pt",
+      "fromAddress": "agente@exemplo.pt",
+      "incoming": false,
+      "textBody": "Caro(a) RoseCompreendemos perfeitamente a sua preocupação em relação à transferência não reconhecida no valor de 1.250€.Queremos assegurar-lhe que levamos estas situações com a máxima seriedade. O seu pedido já foi encaminhado para a nossa equipa especializada, que está a analisar detalhadamente o movimento para apurar o sucedido e aplicar as medidas de segurança adequadas, incluindo o bloqueio, caso se confirme tratar-se de uma fraude.Assim que tivermos mais informações sobre o resultado desta análise, entraremos imediatamente em contacto consigo.Com os melhores cumprimentos, Agente Exemplo\nthread::vcS9l1LGA26vxOCCkVpNkxo::",
+      "subject": "RE: Movimento não reconhecido — possível fraude",
+      "id": "02sgL000005272XQAQ"
+    },
+    {
+      "status": "3",
+      "messageDate": "2026-10-20T07:40:05.000Z",
+      "toAddress": "cliente@exemplo.pt",
+      "fromAddress": "agente@exemplo.pt",
+      "incoming": false,
+      "textBody": "Caro(a) Rose\nInformamos que a situação já se encontra em análise pela nossa equipa especializada. Estamos a verificar o processo detalhadamente para apurar a possibilidade de fraude. Caso se confirme, aplicaremos de imediato as medidas de bloqueio e segurança necessárias.Contamos ter uma atualização e voltar a contactá-la nas próximas 24 horas com mais informações sobre o estado do seu pedido.\nCom os melhores cumprimento, Agente Exemplo\nthread::vcS9l1LGA26vxOCCkVpNkxo::",
+      "subject": "RE: Movimento não reconhecido — possível fraude",
+      "id": "02sgL0000050f3VQAQ"
+    },
+    {
+      "status": "3",
+      "messageDate": "2026-10-20T07:38:53.000Z",
+      "toAddress": "cliente@exemplo.pt",
+      "fromAddress": "agente@exemplo.pt",
+      "incoming": false,
+      "textBody": "Caro(a) Rose\nCompreendemos perfeitamente a sua preocupação face ao movimento de 1.250€ que não reconhece. A segurança da sua conta é a nossa principal prioridade.Informamos que a situação já se encontra em análise pela nossa equipa especializada. Estamos a verificar o processo ao detalhe para apurar a possibilidade de fraude e, caso se confirme, aplicaremos de imediato as medidas de bloqueio e segurança necessárias.Contamos ter uma atualização e voltar a contactar nas próximas 24 horas com mais informações sobre o estado do seu pedido.\nCom os melhores cumprimento, Agente Exemplo\nthread::vcS9l1LGA26vxOCCkVpNkxo::",
+      "subject": "RE: Movimento não reconhecido — possível fraude",
+      "id": "02sgL0000050ex3QAA"
+    },
+    {
+      "status": "3",
+      "messageDate": "2026-07-19T12:35:13.000Z",
+      "toAddress": "cliente@exemplo.pt",
+      "fromAddress": "apoio@iris-demo.example",
+      "incoming": false,
+      "textBody": "Exmo(a). Cliente,\n\nRecebemos o seu pedido e estamos a proceder à tipificação e análise.\nAssim que tivermos novidades, contactamo-lo.\n\nCom os melhores cumprimentos,\nApoio Iris Demo",
+      "subject": "RE: Movimento não reconhecido — possível fraude",
+      "id": "02sgL0000042fZSQAY"
+    },
+    {
+      "status": "1",
+      "messageDate": "2026-07-19T08:35:13.000Z",
+      "toAddress": "apoio@iris-demo.example",
+      "fromAddress": "cliente@exemplo.pt",
+      "incoming": true,
+      "textBody": "Bom dia,\n\nDetetei um movimento de 1.250€ na minha conta que não reconheço. Foi feito ontem via transferência. Podem verificar e bloquear se for fraude?\n\nObrigado.",
+      "subject": "RE: Movimento não reconhecido — possível fraude",
+      "id": "02sgL0000042fZRQAY"
+    }
+  ],
+  "caseComments": [
+    {
+      "createdDate": "2026-07-19T14:35:13.000Z",
+      "isPublished": true,
+      "body": "Atualização ao cliente: estamos a analisar o pedido e voltamos a contactar em 24h.",
+      "id": "00agL00000EXIR8QAP"
+    }
+  ],
+  "relatedCases": [
+    {
+      "closedDate": null,
+      "createdDate": "2026-07-19T14:35:13.000Z",
+      "type": "Other",
+      "origin": "Email",
+      "priority": "Medium",
+      "status": "Working",
+      "subject": "Iris Demo: Erro na APP OMPD — pagamento MB WAY",
+      "caseNumber": "00001027",
+      "id": "500gL00001HzOO6QAN"
+    },
+    {
+      "closedDate": null,
+      "createdDate": "2026-03-25T09:17:42.000Z",
+      "type": "Electrical",
+      "origin": "Phone",
+      "priority": "High",
+      "status": "Working",
+      "subject": "Starting generator after electrical failure",
+      "caseNumber": "00001000",
+      "id": "500gL00000q2jYgQAI"
+    }
+  ],
+  "contact": {
+    "title": "SVP, Procurement",
+    "mobilePhone": "(512) 757-9340",
+    "phone": "(512) 757-6000",
+    "email": "cliente@exemplo.pt",
+    "lastName": "Gonzalez",
+    "firstName": "Rose",
+    "name": "Rose Gonzalez",
+    "id": "003gL00000YhJBtQAN"
+  },
+  "account": {
+    "billingCountry": "United States",
+    "billingCity": "Austin",
+    "phone": "(512) 757-6000",
+    "industry": "Electronics",
+    "type": "Customer - Direct",
+    "name": "Edge Communications",
+    "id": "001gL00000mX3LFQA0"
+  },
+  "case": {
+    "irisSubClassificacao": "Pedido de bloqueio",
+    "irisClassificacao": "Operação não reconhecida",
+    "irisSubTipo": "Transferência SEPA",
+    "irisTipo": "Pedido",
+    "contactId": "003gL00000YhJBtQAN",
+    "accountId": "001gL00000mX3LFQA0",
+    "closedDate": null,
+    "createdDate": "2026-07-19T14:35:13.000Z",
+    "type": "Other",
+    "origin": "Email",
+    "priority": "High",
+    "status": "New",
+    "description": "Cliente identificou transferência SEPA de 1.250€ que não autorizou. Canal: APP OMPD. Pede análise de fraude e bloqueio.",
+    "subject": "Iris Demo: Movimento não reconhecido — possível fraude",
+    "caseNumber": "00001026",
+    "id": "500gL00001HzOO5QAN"
+  }
+}

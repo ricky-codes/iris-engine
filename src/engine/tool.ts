@@ -33,6 +33,12 @@ export interface ToolDefinition<I extends TObject = TObject, O extends TObject =
   stream?: { field: string };
   /** Constrói a mensagem do utilizador a partir da entrada validada. */
   buildUserMessage: (input: Static<I>) => string;
+  /**
+   * Opcional: transforma a resposta já validada antes de a devolver (limpar o texto, juntar
+   * campos que se calculam no código em vez de os pedir ao modelo). O que devolve é o `result`
+   * que o cliente recebe, também no fim do streaming.
+   */
+  finalize?: (output: Static<O>, input: Static<I>) => Record<string, unknown>;
 }
 
 /** Ajuda a manter os tipos de entrada e saída ligados ao definir uma ferramenta. */

@@ -448,6 +448,12 @@ export async function callModel(
   return { result: undefined, attempts, error: error ?? budgetError() };
 }
 
+/** A resposta final da ferramenta: a do modelo, passada pelo `finalize` da ferramenta se o tiver. */
+export function finalizeResult(tool: ToolDefinition, result: unknown, input: unknown): unknown {
+  if (tool.finalize === undefined) return result;
+  return tool.finalize(result as never, input as never);
+}
+
 /** Soma valores opcionais (tokens, custo); `undefined` se nenhum vier preenchido. */
 const sumTokens = (values: (number | undefined)[]): number | undefined =>
   values.every((v) => v === undefined)
@@ -522,7 +528,7 @@ export async function runTool(
     throw markStage(failure, last.code === 'invalid_model_output' ? 'validate' : 'models');
   }
   return {
-    result,
+    result: finalizeResult(tool, result, request.input),
     meta: {
       model: served.model,
       fallback: served.fallback,

@@ -26,6 +26,7 @@ import {
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_TOTAL_TIMEOUT_MS,
   callModel,
+  finalizeResult,
   prepareRun,
   runTool,
   type EngineDeps,
@@ -430,7 +431,13 @@ export function createEngine(options: EngineOptions): Engine {
         breaker,
         now,
       });
-      return { prepared, result, attempts, error, timings: prepared.timings };
+      return {
+        prepared,
+        result: result === undefined ? undefined : finalizeResult(tool, result, request.input),
+        attempts,
+        error,
+        timings: prepared.timings,
+      };
     },
   };
 }

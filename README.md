@@ -213,9 +213,35 @@ Resposta: `{ "tool": "<nome>", "version": <n>, "result": { … } }`. Nada é gua
 
 Uma ferramenta é um módulo em `src/tools/` (ver `src/tools/diagnostic.ts`): nome, versão, entrada, saída, prompt de origem e valores por omissão. O motor regista-a no catálogo `tool` ao arrancar.
 
+### Ferramenta `reply`
+
+Proposta de resposta ao email do cliente que o agente selecionou. A IRIS nunca envia nada: o agente revê, completa os marcadores e envia no Salesforce.
+
+**Entrada** (a mesma forma que o pacote já enviava ao n8n, sem o envelope de ids): `payload.selectedItem` (obrigatório: `body`; também `title`, `id`, `createdDate`), `payload.toneParams` (`tom`, `simpatia`, `formalidade`, de 0 a 100), `payload.replySettings` (`hasGreeting`, `hasSignature`, `houseRules[]`), `organizationContext`, `case`, `account`, `contact`, `caseContextFields`, `accountContextFields`, `contactContextFields` (`[{field, label, value}]`), `caseComments`, `emailMessages`. `relatedCases` é aceite mas ignorado: não ajuda a escrever a resposta.
+
+**Saída:**
+
+```json
+{
+  "reply": "texto simples, parágrafos separados por linha em branco",
+  "subject": "RE: <assunto original>",
+  "recommendedTone": "tom equilibrado · empático · formalidade média",
+  "missingInfo": ["Resultado da análise de fraude"],
+  "placeholders": ["[DATA]"]
+}
+```
+
+O modelo só escreve `reply` e `missingInfo`. O resto faz-se no código (`src/tools/reply-text.ts`):
+
+- **Mensagem para o modelo**, em vez do JSON inteiro: a mensagem do cliente primeiro; formato (saudação e assinatura) e tom em palavras; regras da empresa; o Case só com estado, prioridade, origem, tipo, tipificação (`irisTipo` › `irisSubTipo` › `irisClassificacao` › `irisSubClassificacao`), assunto e descrição; o nome do cliente e da conta (sem contactos); os campos extra como `rótulo: valor`; a conversa sem o email selecionado, do mais recente para o mais antigo, com o histórico citado, as referências `thread::…::`, as saudações e as despedidas cortados, e as respostas seguidas da equipa juntadas na mais recente; quantas vezes a equipa já respondeu, para o modelo não repetir; as notas da equipa marcadas como internas. Nunca leva ids, emails, telefones nem moradas. No pedido real da execução #3368 do n8n, a mensagem passou de 7,5 KB de JSON para 2 KB.
+- **Resposta:** tira o markdown; com `hasGreeting`/`hasSignature`, tira a saudação ou a despedida que o modelo tenha escrito na mesma; `subject` é `RE: ` mais o assunto do email (sem repetir prefixos); `recommendedTone` é o tom pedido, em palavras (compatibilidade com o n8n); `placeholders` são os marcadores entre parênteses retos que o agente tem de preencher.
+- **Streaming** do campo `reply`. Os `delta` são o texto do modelo antes da limpeza: só o `result` final vem com a saudação e a assinatura tratadas.
+
+Por omissão: temperatura 0,3, até 900 tokens de saída, e o modelo por omissão do motor. Para a escrita, convém escolher um modelo mais forte em `PUT /v1/admin/tools/reply/config`.
+
 ### Streaming
 
-Algumas ferramentas têm um campo de texto livre na resposta (declaram `stream: { field }` em `src/tools/`). O pedido escolhe se quer a resposta em streaming, com `"stream": true` no corpo; sem isso, ou com `false`, a resposta é o JSON de sempre. `GET /v1/tools` diz quais as ferramentas que o aceitam (`streaming: true`); noutras, `stream: true` dá **422**. Hoje só a `diagnostic`. O streaming desliga-se em geral (`streamEnabled`) ou só numa ferramenta (`PUT /v1/admin/tools/:name/config`).
+Algumas ferramentas têm um campo de texto livre na resposta (declaram `stream: { field }` em `src/tools/`). O pedido escolhe se quer a resposta em streaming, com `"stream": true` no corpo; sem isso, ou com `false`, a resposta é o JSON de sempre. `GET /v1/tools` diz quais as ferramentas que o aceitam (`streaming: true`); noutras, `stream: true` dá **422**. Hoje a `diagnostic` e a `reply` (campo `reply`). O streaming desliga-se em geral (`streamEnabled`) ou só numa ferramenta (`PUT /v1/admin/tools/:name/config`).
 
 ```bash
 curl -N -X POST localhost:8080/v1/tools/diagnostic \
@@ -374,6 +400,10 @@ src/
   tools/
     index.ts              as ferramentas ativas
     diagnostic.ts         ferramenta de teste de ligação
+    sentiment.ts          análise de sentimento de um Case
+    reply.ts              proposta de resposta ao email do cliente
+    reply-text.ts         tratamento da reply: mensagem para o modelo e limpeza da resposta
+    case-text.ts          limpeza dos dados de um Case (contactos, tamanhos)
   admin/
     commands.ts           criar, alterar e apagar memórias (valida os ids do Salesforce e passa ao motor)
     tools.ts              configuração das ferramentas e versões dos prompts

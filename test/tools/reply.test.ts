@@ -11,6 +11,7 @@ import {
   conversation,
   placeholdersIn,
   removeClosing,
+  relevantRelated,
   removeGreeting,
   replySubject,
   stripMarkdown,
@@ -96,6 +97,92 @@ describe('reply: a mensagem para o modelo', () => {
         { field: 'N__c', label: 'Número', value: 3 },
       ]),
     ).toEqual(['Segmento: Premium', 'Número: 3']);
+  });
+});
+
+describe('reply: Cases relacionados (reincidência)', () => {
+  const current = {
+    id: '500CURRENT',
+    subject: 'Movimento não reconhecido — possível fraude',
+    irisTipo: 'Pedido',
+    irisSubTipo: 'Transferência SEPA',
+    irisClassificacao: 'Operação não reconhecida',
+    createdDate: '2026-07-19T14:35:13.000Z',
+  };
+  const ref = new Date('2026-07-19T14:35:13.000Z').getTime();
+  const rel = (over: Record<string, unknown>) => ({
+    id: `500${String(Math.random()).slice(2, 8)}`,
+    caseNumber: '00009999',
+    status: 'Closed',
+    subject: 'Outro assunto',
+    createdDate: '2026-07-01T10:00:00.000Z',
+    ...over,
+  });
+
+  it('entram só os da mesma tipificação, recentes, no máximo 3, sem números', () => {
+    const same = { irisClassificacao: 'Operação não reconhecida' };
+    const out = relevantRelated(
+      [
+        rel({ ...same, subject: 'Transferência estranha', createdDate: '2026-07-10T00:00:00Z' }),
+        rel({ ...same, createdDate: '2026-06-01T00:00:00Z' }),
+        rel({ ...same, createdDate: '2026-05-01T00:00:00Z' }),
+        rel({ ...same, createdDate: '2026-04-30T00:00:00Z' }),
+        // Mais de 90 dias antes.
+        rel({ ...same, createdDate: '2026-01-01T00:00:00Z' }),
+        // Outra tipificação, mesmo com um assunto parecido.
+        rel({ irisClassificacao: 'Erro na app', subject: 'Movimento não reconhecido' }),
+        // O próprio Case.
+        { ...current },
+      ],
+      current,
+      ref,
+    );
+    expect(out).toHaveLength(3);
+    expect(out[0]).toEqual({
+      date: '10/07/2026',
+      status: 'Closed',
+      subject: 'Transferência estranha',
+      typification: 'Operação não reconhecida',
+    });
+    expect(JSON.stringify(out)).not.toContain('00009999');
+  });
+
+  it('o mesmo tipo e subtipo também contam; sem tipificação, compara o assunto', () => {
+    expect(
+      relevantRelated(
+        [rel({ irisTipo: 'Pedido', irisSubTipo: 'Transferência SEPA' })],
+        current,
+        ref,
+      ),
+    ).toHaveLength(1);
+    expect(
+      relevantRelated(
+        [
+          rel({ subject: 'Novo movimento não reconhecido na conta' }),
+          rel({ subject: 'Starting generator after electrical failure' }),
+        ],
+        current,
+        ref,
+      ).map((r) => r.subject),
+    ).toEqual(['Novo movimento não reconhecido na conta']);
+  });
+
+  it('na mensagem: uma secção própria, com a instrução de não citar', () => {
+    const msg = buildReplyMessage({
+      ...FIXTURE,
+      relatedCases: [
+        rel({
+          irisClassificacao: 'Operação não reconhecida',
+          subject: 'Débito desconhecido',
+          createdDate: '2026-07-05T00:00:00Z',
+        }),
+      ],
+    });
+    expect(msg).toContain(
+      'CASES ANTERIORES DO CLIENTE SOBRE O MESMO TEMA (só para reconhecer a reincidência; não cites números nem detalhes desses Cases):\n[05/07/2026, Closed] Débito desconhecido · Operação não reconhecida',
+    );
+    // No #3368 nenhum é do mesmo tema: a secção não aparece.
+    expect(buildReplyMessage(FIXTURE)).not.toContain('CASES ANTERIORES');
   });
 });
 

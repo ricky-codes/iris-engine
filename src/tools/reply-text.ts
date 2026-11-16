@@ -183,6 +183,105 @@ function personName(contact: Obj | null | undefined): string | undefined {
   );
 }
 
+// ---------- Cases relacionados ----------
+
+/** Cases anteriores com mais de 90 dias não contam como reincidência. */
+export const RELATED_MAX_AGE_DAYS = 90;
+export const RELATED_MAX = 3;
+
+const STOP_WORDS = new Set([
+  'para',
+  'pelo',
+  'pela',
+  'como',
+  'mais',
+  'sobre',
+  'entre',
+  'esta',
+  'este',
+  'isto',
+  'demo',
+  'iris',
+  'with',
+  'from',
+  'that',
+  'this',
+  'após',
+  'apos',
+  'após',
+]);
+
+const subjectWords = (text: string): Set<string> =>
+  new Set(
+    text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 3 && !STOP_WORDS.has(w)),
+  );
+
+/** Assuntos sobre o mesmo tema: pelo menos 2 palavras com significado em comum. */
+export function sameSubject(a: string | undefined, b: string | undefined): boolean {
+  if (a === undefined || b === undefined) return false;
+  const x = subjectWords(a);
+  let common = 0;
+  for (const w of subjectWords(b)) if (x.has(w)) common++;
+  return common >= 2;
+}
+
+/** A mesma tipificação IRIS: a mesma classificação, ou o mesmo tipo e subtipo. */
+export function sameTypification(a: Obj, b: Obj): boolean {
+  const eq = (k: string) => {
+    const x = str(a[k]);
+    return x !== undefined && x.toLowerCase() === str(b[k])?.toLowerCase();
+  };
+  return eq('irisClassificacao') || (eq('irisTipo') && eq('irisSubTipo'));
+}
+
+export interface RelatedView {
+  date: string | undefined;
+  status: string | undefined;
+  subject: string | undefined;
+  typification: string | undefined;
+}
+
+/**
+ * Os Cases relacionados que mostram reincidência: sobre o mesmo tema que o atual (a mesma
+ * tipificação IRIS ou, sem ela, um assunto parecido), dos últimos 90 dias antes da mensagem,
+ * no máximo 3, do mais recente para o mais antigo. Sem números nem ids.
+ */
+export function relevantRelated(
+  related: Obj[] | null | undefined,
+  current: Obj,
+  reference: number,
+): RelatedView[] {
+  const maxAge = RELATED_MAX_AGE_DAYS * 86_400_000;
+  return (related ?? [])
+    .filter((r) => {
+      if (str(r['id']) !== undefined && r['id'] === current['id']) return false;
+      const at = time(r['createdDate']);
+      if (at === 0 || (reference > 0 && (at > reference || reference - at > maxAge))) return false;
+      const typified = TYPIFICATION.some((k) => str(r[k]) !== undefined);
+      return typified
+        ? sameTypification(r, current)
+        : sameSubject(str(r['subject']), str(current['subject']));
+    })
+    .sort((a, b) => time(b['createdDate']) - time(a['createdDate']))
+    .slice(0, RELATED_MAX)
+    .map((r) => {
+      const typification = TYPIFICATION.map((k) => str(r[k])).filter(
+        (v): v is string => v !== undefined,
+      );
+      return {
+        date: day(r['createdDate']),
+        status: str(r['status']),
+        subject: str(r['subject']) === undefined ? undefined : mask(String(r['subject'])),
+        typification: typification.length === 0 ? undefined : typification.join(' › '),
+      };
+    });
+}
+
 // ---------- a mensagem ----------
 
 export interface ReplyInputView {
@@ -199,6 +298,7 @@ export interface ReplyInputView {
   accountContextFields?: Obj[] | null | undefined;
   contactContextFields?: Obj[] | null | undefined;
   caseComments?: Obj[] | null | undefined;
+  relatedCases?: Obj[] | null | undefined;
   emailMessages?: Obj[] | null | undefined;
 }
 
@@ -308,7 +408,21 @@ export function buildReplyMessage(input: ReplyInputView): string {
     }
   }
 
-  // 6. Notas da equipa: contexto, nunca para citar.
+  // 6. Reincidência: Cases anteriores do cliente sobre o mesmo tema.
+  const reference = Math.max(selectedAt, time(c['createdDate']));
+  const related = relevantRelated(input.relatedCases, c, reference);
+  if (related.length > 0) {
+    out.push(
+      '',
+      'CASES ANTERIORES DO CLIENTE SOBRE O MESMO TEMA (só para reconhecer a reincidência; não cites números nem detalhes desses Cases):',
+    );
+    for (const r of related)
+      out.push(
+        `[${r.date ?? 's/ data'}${r.status === undefined ? '' : `, ${r.status}`}] ${[r.subject, r.typification].filter(Boolean).join(' · ')}`,
+      );
+  }
+
+  // 7. Notas da equipa: contexto, nunca para citar.
   const comments = (input.caseComments ?? [])
     .map((cm) => ({
       at: time(cm['createdDate']),

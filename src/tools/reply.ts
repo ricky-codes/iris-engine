@@ -20,8 +20,8 @@ const nullable = <T extends ReturnType<typeof Type.Object> | ReturnType<typeof T
 
 /**
  * A mesma forma que o pacote Salesforce já envia ao n8n, sem o envelope (ids da org, do
- * utilizador e da sessão, que vêm do token). `relatedCases` aceita-se por compatibilidade,
- * mas não vai para o modelo: não ajuda a escrever a resposta.
+ * utilizador e da sessão, que vêm do token). Dos `relatedCases` só entram os que mostram
+ * reincidência (a mesma tipificação IRIS, ou um assunto parecido, nos últimos 90 dias).
  */
 const replyInput = Type.Object({
   payload: Type.Object(
@@ -85,6 +85,7 @@ export const replyTool = defineTool({
     '- Nunca digas que uma ação já foi feita (bloqueio, reembolso, envio, alteração…) sem que o contexto o confirme. Se ainda não foi, diz que o pedido foi recebido e está a ser tratado.',
     '- Quando faltar um dado concreto que a resposta precisa, escreve um marcador entre parênteses retos em maiúsculas (por exemplo [DATA], [VALOR]) e acrescenta-o a missingInfo, dito por palavras.',
     '- Se a equipa já respondeu a esta mensagem, não repitas o mesmo texto: traz algo novo se o contexto o tiver; se não tiver, sê breve e põe em missingInfo o que o agente precisa de saber para avançar (por exemplo, o resultado de uma análise).',
+    '- Se houver CASES ANTERIORES SOBRE O MESMO TEMA, reconhece com naturalidade que a situação se repete, sem citar números nem detalhes desses Cases.',
     '- As NOTAS DA EQUIPA são internas: usa-as para perceber o caso, mas nunca as cites nem reveles.',
     '- Segue sempre as REGRAS DA EMPRESA. Se uma regra impedir o que o cliente pede, responde de forma útil dentro dela.',
     '- Não prometas o que o contexto não suporta, não admitas culpa nem responsabilidade legal, não peças dados sensíveis (palavras-passe, códigos, PIN).',

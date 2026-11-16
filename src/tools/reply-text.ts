@@ -28,16 +28,16 @@ export const LIMITS = {
   houseRules: 20,
 } as const;
 
-const str = (v: unknown): string | undefined =>
+export const str = (v: unknown): string | undefined =>
   typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
 
-const cut = (text: string, max: number): string =>
+export const cut = (text: string, max: number): string =>
   text.length > max ? `${text.slice(0, max).trimEnd()}…` : text;
 
-const mask = (text: string): string => text.replace(EMAIL_IN_TEXT, '[email]');
+export const mask = (text: string): string => text.replace(EMAIL_IN_TEXT, '[email]');
 
 /** `dd/mm/aaaa`, ou `undefined` sem data válida. */
-function day(v: unknown): string | undefined {
+export function day(v: unknown): string | undefined {
   const s = str(v);
   if (s === undefined) return undefined;
   const d = new Date(s);
@@ -46,7 +46,7 @@ function day(v: unknown): string | undefined {
   return `${pad(d.getUTCDate())}/${pad(d.getUTCMonth() + 1)}/${String(d.getUTCFullYear())}`;
 }
 
-const time = (v: unknown): number => {
+export const time = (v: unknown): number => {
   const t = new Date(str(v) ?? '').getTime();
   return Number.isNaN(t) ? 0 : t;
 };
@@ -143,9 +143,9 @@ const level = (v: unknown, low: string, mid: string, high: string): string | und
 export function toneText(tone: Obj | null | undefined): string {
   const t = tone ?? {};
   const parts = [
-    level(t['tom'] ?? t['tone'], 'tom neutro', 'tom equilibrado', 'tom caloroso'),
-    level(t['simpatia'] ?? t['empathy'], 'direto', 'simpatia moderada', 'empático'),
-    level(t['formalidade'] ?? t['formality'], 'informal', 'formalidade média', 'formal'),
+    level(t['tone'], 'tom neutro', 'tom equilibrado', 'tom caloroso'),
+    level(t['empathy'], 'direto', 'simpatia moderada', 'empático'),
+    level(t['formality'], 'informal', 'formalidade média', 'formal'),
   ].filter((p): p is string => p !== undefined);
   return parts.length === 0 ? 'profissional e cordial' : parts.join(' · ');
 }
@@ -158,7 +158,19 @@ const CASE_FIELDS: [key: string, label: string][] = [
   ['origin', 'Origem'],
   ['type', 'Tipo'],
 ];
-const TYPIFICATION = ['irisTipo', 'irisSubTipo', 'irisClassificacao', 'irisSubClassificacao'];
+/**
+ * A tipificação de um Case: `typification`, uma lista de níveis do mais geral para o mais fino
+ * (por exemplo `["Pedido", "Transferência SEPA", "Operação não reconhecida"]`). Não depende
+ * dos nomes dos campos de cada org.
+ */
+export function typificationOf(c: Obj | null | undefined): string[] {
+  const t = c?.['typification'];
+  if (!Array.isArray(t)) return [];
+  return t
+    .map((v) => (typeof v === 'string' ? v.trim() : ''))
+    .filter((v) => v !== '')
+    .slice(0, 6);
+}
 
 /** Campos extra do administrador (`[{ field, label, value }]`) como `label: valor`. */
 export function contextFields(list: Obj[] | null | undefined): string[] {
@@ -230,13 +242,16 @@ export function sameSubject(a: string | undefined, b: string | undefined): boole
   return common >= 2;
 }
 
-/** A mesma tipificação IRIS: a mesma classificação, ou o mesmo tipo e subtipo. */
-export function sameTypification(a: Obj, b: Obj): boolean {
-  const eq = (k: string) => {
-    const x = str(a[k]);
-    return x !== undefined && x.toLowerCase() === str(b[k])?.toLowerCase();
-  };
-  return eq('irisClassificacao') || (eq('irisTipo') && eq('irisSubTipo'));
+/**
+ * O mesmo tema pela tipificação: os dois primeiros níveis iguais (tipo e subtipo); com um só
+ * nível num deles, a tipificação inteira igual.
+ */
+export function sameTypification(a: string[], b: string[]): boolean {
+  if (a.length === 0 || b.length === 0) return false;
+  const depth = Math.min(a.length, b.length) >= 2 ? 2 : Math.max(a.length, b.length);
+  if (a.length < depth || b.length < depth) return false;
+  for (let i = 0; i < depth; i++) if (a[i]?.toLowerCase() !== b[i]?.toLowerCase()) return false;
+  return true;
 }
 
 export interface RelatedView {
@@ -247,8 +262,8 @@ export interface RelatedView {
 }
 
 /**
- * Os Cases relacionados que mostram reincidência: sobre o mesmo tema que o atual (a mesma
- * tipificação IRIS ou, sem ela, um assunto parecido), dos últimos 90 dias antes da mensagem,
+ * Os Cases relacionados que mostram reincidência: sobre o mesmo tema que o atual (o mesmo tipo e
+ * subtipo na tipificação ou, sem ela, um assunto parecido), dos últimos 90 dias antes da mensagem,
  * no máximo 3, do mais recente para o mais antigo. Sem números nem ids.
  */
 export function relevantRelated(
@@ -262,17 +277,16 @@ export function relevantRelated(
       if (str(r['id']) !== undefined && r['id'] === current['id']) return false;
       const at = time(r['createdDate']);
       if (at === 0 || (reference > 0 && (at > reference || reference - at > maxAge))) return false;
-      const typified = TYPIFICATION.some((k) => str(r[k]) !== undefined);
-      return typified
-        ? sameTypification(r, current)
+      const own = typificationOf(r);
+      const theirs = typificationOf(current);
+      return own.length > 0 && theirs.length > 0
+        ? sameTypification(own, theirs)
         : sameSubject(str(r['subject']), str(current['subject']));
     })
     .sort((a, b) => time(b['createdDate']) - time(a['createdDate']))
     .slice(0, RELATED_MAX)
     .map((r) => {
-      const typification = TYPIFICATION.map((k) => str(r[k])).filter(
-        (v): v is string => v !== undefined,
-      );
+      const typification = typificationOf(r);
       return {
         date: day(r['createdDate']),
         status: str(r['status']),
@@ -362,9 +376,7 @@ export function buildReplyMessage(input: ReplyInputView): string {
     ...CASE_FIELDS.map(([k, l]) => (str(c[k]) === undefined ? undefined : `${l}: ${String(c[k])}`)),
   ].filter((p): p is string => p !== undefined);
   out.push(head.join(' · '));
-  const typification = TYPIFICATION.map((k) => str(c[k])).filter(
-    (v): v is string => v !== undefined,
-  );
+  const typification = typificationOf(c);
   if (typification.length > 0) out.push(`Tipificação: ${typification.join(' › ')}`);
   const subject = str(c['subject']);
   if (subject !== undefined) out.push(`Assunto do Case: ${mask(subject)}`);

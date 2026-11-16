@@ -15,7 +15,7 @@ import {
   type EngineStore,
   type ToolSettings,
 } from './store.js';
-import type { ToolDefinition } from './tool.js';
+import type { ToolContext, ToolDefinition } from './tool.js';
 import type { UsageReporter } from './usage.js';
 
 export interface EngineDeps {
@@ -35,6 +35,8 @@ export interface EngineDeps {
   rateLimitPerMinute?: number;
   /** `false` recusa o streaming em todas as ferramentas. Por omissão, `true`. */
   streamEnabled?: boolean;
+  /** Confiança mínima para as ferramentas marcarem um valor como sugerido. Por omissão, 0,6. */
+  suggestThreshold?: number;
   /** Conta os pedidos para o limite por minuto. Sem ele, não há limite. */
   rateLimiter?: RateLimiter;
   /** Salta modelos que estão a falhar. Sem ele, todos os modelos são sempre experimentados. */
@@ -59,6 +61,8 @@ export interface RunRequest {
 
 /** Tudo o que vai para o modelo, já montado. */
 export interface PreparedRun {
+  /** A entrada validada da ferramenta (para `check` e `finalize`). */
+  input: Record<string, unknown>;
   settings: ToolSettings;
   memories: RequestMemories;
   system: string;
@@ -128,6 +132,7 @@ export interface RunResult {
 
 export const DEFAULT_MAX_ATTEMPTS = 2;
 export const DEFAULT_TOTAL_TIMEOUT_MS = 30_000;
+export const DEFAULT_SUGGEST_THRESHOLD = 0.6;
 /** Não se começa uma tentativa com menos tempo do que isto no orçamento. */
 export const MIN_ATTEMPT_MS = 1000;
 
@@ -257,6 +262,7 @@ export async function prepareRun(
   const prepared = await atStage('prompt', () => {
     const base = opts.systemPromptOverride ?? settings.systemPrompt ?? tool.systemPrompt;
     return {
+      input: request.input,
       settings,
       memories,
       system: buildSystemPrompt(base, memories),
@@ -312,6 +318,19 @@ export async function callModel(
   const chain = [prepared.settings.model, ...prepared.settings.fallbackModels];
   const attempts: ModelAttempt[] = [];
   let error: EngineError | undefined;
+  // Os problemas da última resposta recusada (formato ou `tool.check`), para dizer ao modelo.
+  let feedback: string[] = [];
+  // A última resposta com o formato certo que só falhou `tool.check`. Se nenhuma passar, é esta
+  // que se devolve: a ferramenta (`finalize`) retira o que não é válido e diz o que retirou.
+  let shapeValid: { parsed: unknown; attempt: ModelAttempt } | undefined;
+  const giveUp = (
+    err: EngineError,
+  ): { result: unknown; attempts: ModelAttempt[]; error: EngineError | undefined } => {
+    if (shapeValid === undefined) return { result: undefined, attempts, error: err };
+    shapeValid.attempt.valid = true;
+    shapeValid.attempt.reason = 'ok';
+    return { result: shapeValid.parsed, attempts, error: undefined };
+  };
   const streaming =
     opts.stream !== undefined && tool.stream !== undefined ? opts.stream : undefined;
   // Texto já enviado ao cliente por uma tentativa anterior: a seguinte começa por o anular.
@@ -349,7 +368,7 @@ export async function callModel(
 
     for (let i = 1; i <= maxAttempts; i++) {
       const remaining = deadline - now();
-      if (remaining < MIN_ATTEMPT_MS) return { result: undefined, attempts, error: budgetError() };
+      if (remaining < MIN_ATTEMPT_MS) return giveUp(budgetError());
 
       const started = now();
       let attempt: ModelAttempt;
@@ -376,7 +395,10 @@ export async function callModel(
         const response = await llm.complete({
           model,
           system: prepared.system,
-          user: prepared.user,
+          user:
+            feedback.length === 0
+              ? prepared.user
+              : `${prepared.user}\n\nA TUA RESPOSTA ANTERIOR FOI RECUSADA. Corrige estes problemas:\n${feedback.map((f) => `- ${f}`).join('\n')}`,
           temperature: prepared.settings.temperature,
           maxOutputTokens: prepared.settings.maxOutputTokens,
           timeoutMs: Math.min(prepared.settings.timeoutMs, remaining),
@@ -387,7 +409,12 @@ export async function callModel(
         opts.breaker?.recordSuccess(model);
         const validated = performance.now();
         const parsed = parseModelJson(response.text);
-        const valid = parsed !== undefined && Value.Check(tool.output, parsed);
+        const shapeOk = parsed !== undefined && Value.Check(tool.output, parsed);
+        const issues = shapeOk
+          ? (tool.check?.(parsed, prepared.input) ?? [])
+          : ['a resposta não cumpre o formato JSON pedido'];
+        const valid = issues.length === 0;
+        feedback = valid ? [] : issues.slice(0, 10);
         timings.validate += elapsed(validated);
         attempt = {
           text: response.text,
@@ -402,6 +429,7 @@ export async function callModel(
           costUsd: response.costUsd,
         };
         attempts.push(attempt);
+        if (shapeOk && !valid) shapeValid = { parsed, attempt };
         opts.onCall?.({
           tool: tool.name,
           model,
@@ -445,13 +473,18 @@ export async function callModel(
       }
     }
   }
-  return { result: undefined, attempts, error: error ?? budgetError() };
+  return giveUp(error ?? budgetError());
 }
 
 /** A resposta final da ferramenta: a do modelo, passada pelo `finalize` da ferramenta se o tiver. */
-export function finalizeResult(tool: ToolDefinition, result: unknown, input: unknown): unknown {
+export function finalizeResult(
+  tool: ToolDefinition,
+  result: unknown,
+  input: unknown,
+  ctx: ToolContext,
+): unknown {
   if (tool.finalize === undefined) return result;
-  return tool.finalize(result as never, input as never);
+  return tool.finalize(result as never, input as never, ctx);
 }
 
 /** Soma valores opcionais (tokens, custo); `undefined` se nenhum vier preenchido. */
@@ -528,7 +561,9 @@ export async function runTool(
     throw markStage(failure, last.code === 'invalid_model_output' ? 'validate' : 'models');
   }
   return {
-    result: finalizeResult(tool, result, request.input),
+    result: finalizeResult(tool, result, request.input, {
+      suggestThreshold: deps.suggestThreshold ?? DEFAULT_SUGGEST_THRESHOLD,
+    }),
     meta: {
       model: served.model,
       fallback: served.fallback,

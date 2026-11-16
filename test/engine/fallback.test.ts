@@ -49,6 +49,7 @@ function scripted(script: Record<string, Step[]>, clock = { now: 0 }, ms = 100) 
 
 function prepared(model: string, fallbackModels: string[], timeoutMs = 20_000): PreparedRun {
   return {
+    input: {},
     settings: {
       model,
       fallbackModels,

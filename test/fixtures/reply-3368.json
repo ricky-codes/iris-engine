@@ -4,8 +4,16 @@
   "caseContextFields": [],
   "organizationContext": null,
   "payload": {
-    "replySettings": { "houseRules": [], "hasSignature": true, "hasGreeting": true },
-    "toneParams": { "formalidade": 50, "simpatia": 70, "tom": 50 },
+    "replySettings": {
+      "houseRules": [],
+      "hasSignature": true,
+      "hasGreeting": true
+    },
+    "toneParams": {
+      "formality": 50,
+      "empathy": 70,
+      "tone": 50
+    },
     "selectedItem": {
       "createdDate": "2026-07-19T08:35:13.000Z",
       "incoming": true,
@@ -141,10 +149,6 @@
     "id": "001gL00000mX3LFQA0"
   },
   "case": {
-    "irisSubClassificacao": "Pedido de bloqueio",
-    "irisClassificacao": "Operação não reconhecida",
-    "irisSubTipo": "Transferência SEPA",
-    "irisTipo": "Pedido",
     "contactId": "003gL00000YhJBtQAN",
     "accountId": "001gL00000mX3LFQA0",
     "closedDate": null,
@@ -156,6 +160,12 @@
     "description": "Cliente identificou transferência SEPA de 1.250€ que não autorizou. Canal: APP OMPD. Pede análise de fraude e bloqueio.",
     "subject": "Iris Demo: Movimento não reconhecido — possível fraude",
     "caseNumber": "00001026",
-    "id": "500gL00001HzOO5QAN"
+    "id": "500gL00001HzOO5QAN",
+    "typification": [
+      "Pedido",
+      "Transferência SEPA",
+      "Operação não reconhecida",
+      "Pedido de bloqueio"
+    ]
   }
 }

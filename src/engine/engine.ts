@@ -24,6 +24,7 @@ import type { LlmProvider } from './llm.js';
 import { Memories, type MemoryStore } from './memory.js';
 import {
   DEFAULT_MAX_ATTEMPTS,
+  DEFAULT_SUGGEST_THRESHOLD,
   DEFAULT_TOTAL_TIMEOUT_MS,
   callModel,
   finalizeResult,
@@ -58,6 +59,8 @@ export interface EngineSettings {
   streamEnabled?: boolean;
   /** Pedidos por minuto e por org (0 = sem limite). Por omissão, sem limite. */
   rateLimitPerMinute?: number;
+  /** Confiança mínima (0 a 1) para as ferramentas marcarem um valor como sugerido. Por omissão, 0,6. */
+  suggestThreshold?: number;
 }
 
 /** O que aconteceu num pedido a uma ferramenta. Só metadados, nunca conteúdo. */
@@ -207,9 +210,14 @@ function checkSettings(settings: EngineSettings): Required<EngineSettings> {
   if (!Number.isInteger(rateLimitPerMinute) || rateLimitPerMinute < 0) {
     throw new Error('Configuração do motor: rateLimitPerMinute tem de ser um inteiro ≥ 0.');
   }
+  const suggestThreshold = settings.suggestThreshold ?? DEFAULT_SUGGEST_THRESHOLD;
+  if (!Number.isFinite(suggestThreshold) || suggestThreshold < 0 || suggestThreshold > 1) {
+    throw new Error('Configuração do motor: suggestThreshold tem de ser um número de 0 a 1.');
+  }
   return {
     streamEnabled: settings.streamEnabled ?? true,
     rateLimitPerMinute,
+    suggestThreshold,
     defaultModel: settings.defaultModel,
     fallbackModels,
     maxAttempts,
@@ -246,6 +254,12 @@ function checkInput(tool: ToolDefinition, input: Record<string, unknown>): void 
     path: ['input', ...e.path.split('/').filter(Boolean)].join('.'),
     issue: e.message,
   }));
+  // As regras próprias da ferramenta só fazem sentido com o esquema cumprido.
+  if (details.length === 0 && tool.validateInput !== undefined) {
+    for (const d of tool.validateInput(input)) {
+      details.push({ path: d.path === '' ? 'input' : `input.${d.path}`, issue: d.issue });
+    }
+  }
   if (details.length > 0) {
     throw new EngineError('invalid_request', 'A entrada da ferramenta não é válida.', details);
   }
@@ -291,6 +305,7 @@ export function createEngine(options: EngineOptions): Engine {
       totalTimeoutMs: s.totalTimeoutMs,
       rateLimitPerMinute: s.rateLimitPerMinute,
       streamEnabled: s.streamEnabled,
+      suggestThreshold: s.suggestThreshold,
       rateLimiter,
       breaker,
       now,
@@ -433,7 +448,12 @@ export function createEngine(options: EngineOptions): Engine {
       });
       return {
         prepared,
-        result: result === undefined ? undefined : finalizeResult(tool, result, request.input),
+        result:
+          result === undefined
+            ? undefined
+            : finalizeResult(tool, result, request.input, {
+                suggestThreshold: current().suggestThreshold,
+              }),
         attempts,
         error,
         timings: prepared.timings,

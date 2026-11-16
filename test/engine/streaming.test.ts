@@ -89,7 +89,7 @@ describe('Engine.run com streaming', () => {
 
   it('o registo recusa um stream.field que não seja texto da saída', () => {
     const bad = defineTool({
-      ...(diagnosticTool as Omit<typeof diagnosticTool, 'finalize'>),
+      ...(diagnosticTool as Omit<typeof diagnosticTool, 'finalize' | 'check'>),
       name: 'bad',
       output: Type.Object({ n: Type.Number() }, { additionalProperties: false }),
       stream: { field: 'n' },

@@ -217,10 +217,10 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
     };
     const byKey = (body: Settings) => new Map(body.settings.map((v) => [v.key, v]));
 
-    it('lista as quinze definições, com o valor em vigor e de onde vem', async () => {
+    it('lista as dezasseis definições, com o valor em vigor e de onde vem', async () => {
       const body = (await get('/v1/admin/settings')).json<Settings>();
       expect(body.refreshSeconds).toBe(30);
-      expect(body.settings).toHaveLength(15);
+      expect(body.settings).toHaveLength(16);
       expect(byKey(body).get('defaultModel')).toMatchObject({
         value: 'google/gemini-2.5-flash',
         source: 'env',

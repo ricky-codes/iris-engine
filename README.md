@@ -211,13 +211,23 @@ Um pedido `POST /v1/tools/<nome>` passa sempre por estes passos, por esta ordem 
 
 Resposta: `{ "tool": "<nome>", "version": <n>, "result": { … } }`. Nada é guardado: dos pedidos ficam só linhas de log com id, ferramenta, modelo, tokens, número de memórias e duração e, em memória, os metadados dos últimos pedidos por ferramenta para o dashboard (passos, tempos, modelos e um id opaco da org; `src/traces/traces.ts`).
 
-Uma ferramenta é um módulo em `src/tools/` (ver `src/tools/diagnostic.ts`): nome, versão, entrada, saída, prompt de origem e valores por omissão. O motor regista-a no catálogo `tool` ao arrancar.
+Uma ferramenta é um módulo em `src/tools/` (ver `src/tools/diagnostic.ts`): nome, versão, entrada, saída, prompt de origem e valores por omissão. O motor regista-a no catálogo `tool` ao arrancar. **Todos os campos de entrada e de saída são em inglês**; o texto para o agente (resumos, respostas) vem em português de Portugal. Opcionalmente, uma ferramenta pode ter:
 
-### Ferramenta `reply`
+- `validateInput`: regras da entrada que o esquema não exprime (dão **422**, antes de contar utilização);
+- `check`: validação da resposta que depende do pedido (por exemplo, valores que têm de estar numa lista da entrada). Com problemas, a resposta conta como inválida e o motor volta a pedir, **dizendo ao modelo o que estava errado**. Se nenhuma tentativa passar, devolve-se a última com o formato certo;
+- `finalize`: transforma a resposta validada antes de a devolver (limpar texto, juntar campos calculados no código). Recebe as definições que lhe dizem respeito (`suggestThreshold`).
+
+Hoje há quatro: `diagnostic` (teste de ligação), `sentiment`, `reply` e `tipification`.
+
+### Ferramenta `sentiment` (versão 2)
+
+Análise de sentimento de um Case. Saída: `sentiment` (`positive`, `neutral`, `negative`, `very_negative`, `mixed`), `score` (0–1), `summary`, `signals[]`, `urgency` (`low`, `medium`, `high`) e `recommendedTone`. Os códigos são em inglês; o Salesforce mostra-os traduzidos. O texto (`summary`, `signals`, `recommendedTone`) vem em português de Portugal, ou na língua do cliente.
+
+### Ferramenta `reply` (versão 2)
 
 Proposta de resposta ao email do cliente que o agente selecionou. A IRIS nunca envia nada: o agente revê, completa os marcadores e envia no Salesforce.
 
-**Entrada** (a mesma forma que o pacote já enviava ao n8n, sem o envelope de ids): `payload.selectedItem` (obrigatório: `body`; também `title`, `id`, `createdDate`), `payload.toneParams` (`tom`, `simpatia`, `formalidade`, de 0 a 100), `payload.replySettings` (`hasGreeting`, `hasSignature`, `houseRules[]`), `organizationContext`, `case`, `account`, `contact`, `caseContextFields`, `accountContextFields`, `contactContextFields` (`[{field, label, value}]`), `caseComments`, `emailMessages`, `relatedCases` (de preferência com a tipificação IRIS de cada um: `irisTipo`, `irisSubTipo`, `irisClassificacao`, `irisSubClassificacao`).
+**Entrada** (a mesma forma que o pacote já enviava ao n8n, sem o envelope de ids): `payload.selectedItem` (obrigatório: `body`; também `title`, `id`, `createdDate`), `payload.toneParams` (`tone`: neutro → caloroso, `empathy`: direto → empático, `formality`: informal → formal, de 0 a 100; outros nomes dão 422), `payload.replySettings` (`hasGreeting`, `hasSignature`, `houseRules[]`), `organizationContext`, `case`, `account`, `contact`, `caseContextFields`, `accountContextFields`, `contactContextFields` (`[{field, label, value}]`), `caseComments`, `emailMessages`, `relatedCases`. A tipificação do Case e de cada relacionado vai em `typification`: uma lista de níveis do mais geral para o mais fino, por exemplo `["Pedido", "Transferência SEPA", "Operação não reconhecida"]`, sem depender dos nomes dos campos de cada org.
 
 **Saída:**
 
@@ -233,11 +243,73 @@ Proposta de resposta ao email do cliente que o agente selecionou. A IRIS nunca e
 
 O modelo só escreve `reply` e `missingInfo`. O resto faz-se no código (`src/tools/reply-text.ts`):
 
-- **Mensagem para o modelo**, em vez do JSON inteiro: a mensagem do cliente primeiro; formato (saudação e assinatura) e tom em palavras; regras da empresa; o Case só com estado, prioridade, origem, tipo, tipificação (`irisTipo` › `irisSubTipo` › `irisClassificacao` › `irisSubClassificacao`), assunto e descrição; o nome do cliente e da conta (sem contactos); os campos extra como `rótulo: valor`; a conversa sem o email selecionado, do mais recente para o mais antigo, com o histórico citado, as referências `thread::…::`, as saudações e as despedidas cortados, e as respostas seguidas da equipa juntadas na mais recente; quantas vezes a equipa já respondeu, para o modelo não repetir; os Cases relacionados que mostram reincidência (a mesma classificação IRIS, ou o mesmo tipo e subtipo; sem tipificação, um assunto com pelo menos 2 palavras em comum; dos últimos 90 dias; no máximo 3; uma linha cada, sem números), com a instrução de só reconhecer a reincidência; as notas da equipa marcadas como internas. Nunca leva ids, emails, telefones nem moradas. No pedido real da execução #3368 do n8n, a mensagem passou de 7,5 KB de JSON para 2 KB.
+- **Mensagem para o modelo**, em vez do JSON inteiro: a mensagem do cliente primeiro; formato (saudação e assinatura) e tom em palavras; regras da empresa; o Case só com estado, prioridade, origem, tipo, tipificação (`typification`), assunto e descrição; o nome do cliente e da conta (sem contactos); os campos extra como `rótulo: valor`; a conversa sem o email selecionado, do mais recente para o mais antigo, com o histórico citado, as referências `thread::…::`, as saudações e as despedidas cortados, e as respostas seguidas da equipa juntadas na mais recente; quantas vezes a equipa já respondeu, para o modelo não repetir; os Cases relacionados que mostram reincidência (os dois primeiros níveis de `typification` iguais; sem tipificação, um assunto com pelo menos 2 palavras em comum; dos últimos 90 dias; no máximo 3; uma linha cada, sem números), com a instrução de só reconhecer a reincidência; as notas da equipa marcadas como internas. Nunca leva ids, emails, telefones nem moradas. No pedido real da execução #3368 do n8n, a mensagem passou de 7,5 KB de JSON para 2 KB.
 - **Resposta:** tira o markdown; com `hasGreeting`/`hasSignature`, tira a saudação ou a despedida que o modelo tenha escrito na mesma; `subject` é `RE: ` mais o assunto do email (sem repetir prefixos); `recommendedTone` é o tom pedido, em palavras (compatibilidade com o n8n); `placeholders` são os marcadores entre parênteses retos que o agente tem de preencher.
 - **Streaming** do campo `reply`. Os `delta` são o texto do modelo antes da limpeza: só o `result` final vem com a saudação e a assinatura tratadas.
 
 Por omissão: temperatura 0,3, até 900 tokens de saída, e o modelo por omissão do motor. Para a escrita, convém escolher um modelo mais forte em `PUT /v1/admin/tools/reply/config`.
+
+### Ferramenta `tipification`
+
+Propõe valores para os campos de tipificação do Case (picklists, incluindo dependentes), escolhendo **só** entre os valores permitidos. Os campos, as opções e as dependências vêm em cada pedido, por isso serve a qualquer org.
+
+**Entrada:**
+
+```jsonc
+{
+  "fields": [                                   // 1 a 10
+    {
+      "name": "SubType__c",                     // API name no Case
+      "label": "Subtipo",
+      "instructions": "…",                      // opcional, do administrador
+      "currentValue": "Transfer",               // opcional, gravado no Case
+      "controllingField": "Type__c",            // opcional: o campo de que depende
+      "options": [                              // 1 a 500
+        { "value": "Transfer", "label": "Transferência", "description": "…", "validFor": ["Request"] }
+      ]
+    }
+  ],
+  "currentSelection": { "Type__c": "Request" }, // opcional: o que está no ecrã
+  "case": {...}, "caseComments": [...], "emailMessages": [...], "relatedCases": [...],
+  "organizationContext": "…", "caseContextFields": [...], "accountContextFields": [...], "contactContextFields": [...]
+}
+```
+
+Dão **422**: campos ou opções repetidos, um campo que depende de si próprio e dependências em círculo. O valor de partida de cada campo é o de `currentSelection` ou, sem ele, `currentValue`.
+
+**Saída:**
+
+```jsonc
+{
+  "fields": [
+    // todos os campos da entrada, pela mesma ordem
+    {
+      "name": "Type__c",
+      "value": "Request",
+      "label": "Pedido",
+      "confidence": 0.92,
+      "suggested": true,
+      "changed": true,
+    },
+  ],
+  "confidence": 0.8,
+  "summary": "…", // para o agente, em português
+  "discarded": [
+    // propostas do modelo que não eram válidas, com o motivo
+    {
+      "name": "SubType__c",
+      "value": "Fees",
+      "reason": "\"Fees\" em SubType__c não vale com Type__c = \"Request\"",
+    },
+  ],
+}
+```
+
+- `value` é sempre uma opção do campo e, nos dependentes, válida para o valor do campo de que depende (verificado no código, por toda a cadeia). Sem proposta, ou com uma proposta inválida, fica o valor de partida, se ainda for válido, com `confidence: 0`.
+- `suggested`: `value` não vazio e `confidence` ≥ `suggestThreshold` (definição, 0,6 por omissão). O Salesforce preenche só os sugeridos.
+- `changed`: diferente do valor de partida.
+- Uma proposta inválida faz o motor voltar a pedir ao modelo, com o erro concreto. Se nenhuma tentativa for válida, a resposta segue na mesma, com os valores inválidos em `discarded`.
+- A mensagem para o modelo leva os campos pela ordem das dependências, com as opções dos dependentes agrupadas pelo valor do campo de que dependem, e o Case limpo como na `reply` (sem ids nem contactos), incluindo os Cases anteriores sobre o mesmo tema.
 
 ### Streaming
 
@@ -403,6 +475,7 @@ src/
     sentiment.ts          análise de sentimento de um Case
     reply.ts              proposta de resposta ao email do cliente
     reply-text.ts         tratamento da reply: mensagem para o modelo e limpeza da resposta
+    tipification.ts       tipificação: valores permitidos, dependências e validação
     case-text.ts          limpeza dos dados de um Case (contactos, tamanhos)
   admin/
     commands.ts           criar, alterar e apagar memórias (valida os ids do Salesforce e passa ao motor)

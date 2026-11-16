@@ -529,23 +529,24 @@ Nunca inclui segredos: o StepAccess aparece só com a origem do URL, e a chave d
 
 As definições que se mudam **sem reiniciar**. Cada uma nasce no `.env` (ou numa constante do código, nas memórias) e pode ser substituída na base de dados (tabela `engine_setting`). O valor gravado prevalece; `null` apaga-o e volta ao inicial. A instância que recebe a alteração aplica-a logo; as outras voltam a ler a tabela a cada `refreshSeconds` (30 s). Os segredos, as ligações (URLs, utilizadores, componente), o `ACCESS_MODE`, o `STEPACCESS_BYPASS` e a ferramenta de diagnóstico **continuam só no `.env`**, de propósito.
 
-| `key`                      | Grupo        | Valor inicial                 | Limites                                     |
-| -------------------------- | ------------ | ----------------------------- | ------------------------------------------- |
-| `defaultModel`             | `models`     | `LLM_DEFAULT_MODEL`           | código OpenRouter com suporte a JSON Schema |
-| `fallbackModels`           | `models`     | `LLM_FALLBACK_MODELS`         | até 3, sem repetidos nem o `defaultModel`   |
-| `totalTimeoutMs`           | `models`     | `LLM_TOTAL_TIMEOUT_MS`        | 2000–115000                                 |
-| `maxAttempts`              | `models`     | `LLM_MAX_ATTEMPTS`            | 1–5                                         |
-| `breakerThreshold`         | `models`     | `LLM_BREAKER_THRESHOLD`       | 1–20                                        |
-| `breakerOpenMs`            | `models`     | `LLM_BREAKER_OPEN_MS`         | 1000–3600000                                |
-| `streamEnabled`            | `requests`   | `STREAM_ENABLED`              | booleano                                    |
-| `rateLimitPerMinute`       | `requests`   | `RATE_LIMIT_PER_MINUTE`       | 0–100000 (0 = sem limite)                   |
-| `stepAccessTimeoutMs`      | `stepAccess` | `STEPACCESS_TIMEOUT_MS`       | 100–30000                                   |
-| `stepAccessUsageTimeoutMs` | `stepAccess` | `STEPACCESS_USAGE_TIMEOUT_MS` | 100–60000                                   |
-| `memoryMaxChars`           | `memories`   | 500 (código)                  | 50–2000                                     |
-| `memoryPerOrg`             | `memories`   | 50 (código)                   | 1–200                                       |
-| `memoryPerUser`            | `memories`   | 20 (código)                   | 1–100                                       |
-| `tracesEnabled`            | `traces`     | `true` (código)               | booleano                                    |
-| `tracesPerTool`            | `traces`     | 100 (código)                  | 10–500                                      |
+| `key`                      | Grupo        | Valor inicial                 | Limites                                                                      |
+| -------------------------- | ------------ | ----------------------------- | ---------------------------------------------------------------------------- |
+| `defaultModel`             | `models`     | `LLM_DEFAULT_MODEL`           | código OpenRouter com suporte a JSON Schema                                  |
+| `fallbackModels`           | `models`     | `LLM_FALLBACK_MODELS`         | até 3, sem repetidos nem o `defaultModel`                                    |
+| `totalTimeoutMs`           | `models`     | `LLM_TOTAL_TIMEOUT_MS`        | 2000–115000                                                                  |
+| `maxAttempts`              | `models`     | `LLM_MAX_ATTEMPTS`            | 1–5                                                                          |
+| `breakerThreshold`         | `models`     | `LLM_BREAKER_THRESHOLD`       | 1–20                                                                         |
+| `breakerOpenMs`            | `models`     | `LLM_BREAKER_OPEN_MS`         | 1000–3600000                                                                 |
+| `streamEnabled`            | `requests`   | `STREAM_ENABLED`              | booleano                                                                     |
+| `rateLimitPerMinute`       | `requests`   | `RATE_LIMIT_PER_MINUTE`       | 0–100000 (0 = sem limite)                                                    |
+| `stepAccessTimeoutMs`      | `stepAccess` | `STEPACCESS_TIMEOUT_MS`       | 100–30000                                                                    |
+| `stepAccessUsageTimeoutMs` | `stepAccess` | `STEPACCESS_USAGE_TIMEOUT_MS` | 100–60000                                                                    |
+| `memoryMaxChars`           | `memories`   | 500 (código)                  | 50–2000                                                                      |
+| `memoryPerOrg`             | `memories`   | 50 (código)                   | 1–200                                                                        |
+| `memoryPerUser`            | `memories`   | 20 (código)                   | 1–100                                                                        |
+| `tracesEnabled`            | `traces`     | `true` (código)               | booleano                                                                     |
+| `tracesPerTool`            | `traces`     | 100 (código)                  | 10–500                                                                       |
+| `suggestThreshold`         | `tools`      | 0,6 (código)                  | 0–1: confiança mínima para a `tipification` marcar um valor como `suggested` |
 
 #### `GET /v1/admin/settings`
 

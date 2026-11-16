@@ -21,7 +21,8 @@ const nullable = <T extends ReturnType<typeof Type.Object> | ReturnType<typeof T
 /**
  * A mesma forma que o pacote Salesforce já envia ao n8n, sem o envelope (ids da org, do
  * utilizador e da sessão, que vêm do token). Dos `relatedCases` só entram os que mostram
- * reincidência (a mesma tipificação IRIS, ou um assunto parecido, nos últimos 90 dias).
+ * reincidência (o mesmo tipo e subtipo em `typification`, ou um assunto parecido, nos
+ * últimos 90 dias). Todos os campos em inglês.
  */
 const replyInput = Type.Object({
   payload: Type.Object(
@@ -32,7 +33,20 @@ const replyInput = Type.Object({
         },
         { additionalProperties: true },
       ),
-      toneParams: Type.Optional(nullable(anyObject)),
+      // Três eixos de 0 a 100: neutro → caloroso, direto → empático, informal → formal.
+      toneParams: Type.Optional(
+        Type.Union([
+          Type.Object(
+            {
+              tone: Type.Optional(Type.Number({ minimum: 0, maximum: 100 })),
+              empathy: Type.Optional(Type.Number({ minimum: 0, maximum: 100 })),
+              formality: Type.Optional(Type.Number({ minimum: 0, maximum: 100 })),
+            },
+            { additionalProperties: false },
+          ),
+          Type.Null(),
+        ]),
+      ),
       replySettings: Type.Optional(nullable(anyObject)),
     },
     { additionalProperties: true },
@@ -67,7 +81,7 @@ const replyOutput = Type.Object(
  */
 export const replyTool = defineTool({
   name: 'reply',
-  version: 1,
+  version: 2,
   description: 'Proposta de resposta ao email do cliente selecionado, para o agente rever.',
   input: replyInput,
   output: replyOutput,

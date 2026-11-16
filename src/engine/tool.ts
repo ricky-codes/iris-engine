@@ -38,7 +38,25 @@ export interface ToolDefinition<I extends TObject = TObject, O extends TObject =
    * campos que se calculam no código em vez de os pedir ao modelo). O que devolve é o `result`
    * que o cliente recebe, também no fim do streaming.
    */
-  finalize?: (output: Static<O>, input: Static<I>) => Record<string, unknown>;
+  finalize?: (output: Static<O>, input: Static<I>, ctx: ToolContext) => Record<string, unknown>;
+  /**
+   * Opcional: validação que depende do pedido (por exemplo, valores que têm de existir numa lista
+   * que vem na entrada). Devolve os problemas encontrados; com algum, a resposta conta como
+   * inválida e o motor volta a pedir, dizendo ao modelo o que estava errado. Se nenhuma tentativa
+   * passar, devolve-se a última com o formato certo, e o `finalize` tem de retirar o que não vale.
+   */
+  check?: (output: Static<O>, input: Static<I>) => string[];
+  /**
+   * Opcional: regras da entrada que o esquema não exprime (por exemplo, referências entre campos).
+   * Cada problema dá 422, como um erro de esquema, antes de se contar utilização.
+   */
+  validateInput?: (input: Static<I>) => { path: string; issue: string }[];
+}
+
+/** O que o motor dá às ferramentas no fim de um pedido: as definições que lhes dizem respeito. */
+export interface ToolContext {
+  /** Confiança mínima (0 a 1) para uma ferramenta marcar um valor como sugerido. */
+  suggestThreshold: number;
 }
 
 /** Ajuda a manter os tipos de entrada e saída ligados ao definir uma ferramenta. */

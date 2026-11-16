@@ -26,10 +26,11 @@ export interface RuntimeSettings {
   memoryPerUser: number;
   tracesEnabled: boolean;
   tracesPerTool: number;
+  suggestThreshold: number;
 }
 
 export type SettingKey = keyof RuntimeSettings;
-export type SettingGroup = 'models' | 'requests' | 'stepAccess' | 'memories' | 'traces';
+export type SettingGroup = 'models' | 'requests' | 'stepAccess' | 'memories' | 'traces' | 'tools';
 
 export const SETTINGS_REFRESH_MS = 30_000;
 
@@ -46,6 +47,7 @@ export const RANGES = {
   memoryPerOrg: { minimum: 1, maximum: 200 },
   memoryPerUser: { minimum: 1, maximum: 100 },
   tracesPerTool: { minimum: 10, maximum: 500 },
+  suggestThreshold: { minimum: 0, maximum: 1 },
 } as const;
 
 const ModelCode = Type.String({ minLength: 1, maxLength: 200, pattern: '^\\S+$' });
@@ -173,6 +175,15 @@ export const DEFINITIONS: Record<SettingKey, Definition> = {
     description:
       'Só metadados, em memória e por instância: passos, tempos, modelos e um id opaco da org. Nunca texto.',
     schema: Type.Boolean(),
+    env: null,
+    stage: 'response',
+  },
+  suggestThreshold: {
+    group: 'tools',
+    label: 'Confiança mínima para sugerir',
+    description:
+      'De 0 a 1. Abaixo disto, a tipificação devolve o valor com `suggested: false` e o Salesforce não o preenche.',
+    schema: Type.Number(RANGES.suggestThreshold),
     env: null,
     stage: 'response',
   },

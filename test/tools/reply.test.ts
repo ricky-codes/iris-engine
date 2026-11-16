@@ -27,7 +27,7 @@ const FIXTURE = JSON.parse(
 ) as ReplyInputView & Record<string, unknown>;
 
 const finalize = (reply: string, input: ReplyInputView = FIXTURE, missingInfo: string[] = []) =>
-  replyTool.finalize?.({ reply, missingInfo }, input as never);
+  replyTool.finalize?.({ reply, missingInfo }, input as never, { suggestThreshold: 0.6 });
 
 describe('reply: a mensagem para o modelo', () => {
   const msg = buildReplyMessage(FIXTURE);
@@ -104,9 +104,7 @@ describe('reply: Cases relacionados (reincidência)', () => {
   const current = {
     id: '500CURRENT',
     subject: 'Movimento não reconhecido — possível fraude',
-    irisTipo: 'Pedido',
-    irisSubTipo: 'Transferência SEPA',
-    irisClassificacao: 'Operação não reconhecida',
+    typification: ['Pedido', 'Transferência SEPA', 'Operação não reconhecida'],
     createdDate: '2026-07-19T14:35:13.000Z',
   };
   const ref = new Date('2026-07-19T14:35:13.000Z').getTime();
@@ -119,8 +117,8 @@ describe('reply: Cases relacionados (reincidência)', () => {
     ...over,
   });
 
-  it('entram só os da mesma tipificação, recentes, no máximo 3, sem números', () => {
-    const same = { irisClassificacao: 'Operação não reconhecida' };
+  it('entram só os do mesmo tipo e subtipo, recentes, no máximo 3, sem números', () => {
+    const same = { typification: ['Pedido', 'Transferência SEPA', 'Outra classificação'] };
     const out = relevantRelated(
       [
         rel({ ...same, subject: 'Transferência estranha', createdDate: '2026-07-10T00:00:00Z' }),
@@ -130,7 +128,7 @@ describe('reply: Cases relacionados (reincidência)', () => {
         // Mais de 90 dias antes.
         rel({ ...same, createdDate: '2026-01-01T00:00:00Z' }),
         // Outra tipificação, mesmo com um assunto parecido.
-        rel({ irisClassificacao: 'Erro na app', subject: 'Movimento não reconhecido' }),
+        rel({ typification: ['Pedido', 'Cartão'], subject: 'Movimento não reconhecido' }),
         // O próprio Case.
         { ...current },
       ],
@@ -142,19 +140,13 @@ describe('reply: Cases relacionados (reincidência)', () => {
       date: '10/07/2026',
       status: 'Closed',
       subject: 'Transferência estranha',
-      typification: 'Operação não reconhecida',
+      typification: 'Pedido › Transferência SEPA › Outra classificação',
     });
     expect(JSON.stringify(out)).not.toContain('00009999');
   });
 
-  it('o mesmo tipo e subtipo também contam; sem tipificação, compara o assunto', () => {
-    expect(
-      relevantRelated(
-        [rel({ irisTipo: 'Pedido', irisSubTipo: 'Transferência SEPA' })],
-        current,
-        ref,
-      ),
-    ).toHaveLength(1);
+  it('só o tipo não chega; sem tipificação, compara o assunto', () => {
+    expect(relevantRelated([rel({ typification: ['Pedido'] })], current, ref)).toHaveLength(0);
     expect(
       relevantRelated(
         [
@@ -172,14 +164,14 @@ describe('reply: Cases relacionados (reincidência)', () => {
       ...FIXTURE,
       relatedCases: [
         rel({
-          irisClassificacao: 'Operação não reconhecida',
+          typification: ['Pedido', 'Transferência SEPA'],
           subject: 'Débito desconhecido',
           createdDate: '2026-07-05T00:00:00Z',
         }),
       ],
     });
     expect(msg).toContain(
-      'CASES ANTERIORES DO CLIENTE SOBRE O MESMO TEMA (só para reconhecer a reincidência; não cites números nem detalhes desses Cases):\n[05/07/2026, Closed] Débito desconhecido · Operação não reconhecida',
+      'CASES ANTERIORES DO CLIENTE SOBRE O MESMO TEMA (só para reconhecer a reincidência; não cites números nem detalhes desses Cases):\n[05/07/2026, Closed] Débito desconhecido · Pedido › Transferência SEPA',
     );
     // No #3368 nenhum é do mesmo tema: a secção não aparece.
     expect(buildReplyMessage(FIXTURE)).not.toContain('CASES ANTERIORES');
@@ -221,7 +213,7 @@ describe('reply: emails e conversa', () => {
   });
 
   it('o tom de 0 a 100 em palavras', () => {
-    expect(toneText({ tom: 10, simpatia: 50, formalidade: 90 })).toBe(
+    expect(toneText({ tone: 10, empathy: 50, formality: 90 })).toBe(
       'tom neutro · simpatia moderada · formal',
     );
     expect(toneText(null)).toBe('profissional e cordial');
@@ -311,7 +303,7 @@ describe('POST /v1/tools/reply', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
       tool: 'reply',
-      version: 1,
+      version: 2,
       result: {
         reply: 'O seu pedido continua em análise.',
         subject: 'RE: Movimento não reconhecido — possível fraude',
@@ -322,6 +314,31 @@ describe('POST /v1/tools/reply', () => {
     });
     // O modelo recebeu a mensagem montada, não o JSON.
     expect(llm.requests[0]?.user).toMatch(/^MENSAGEM DO CLIENTE A QUE RESPONDES/);
+  });
+
+  it('422 com os eixos do tom em português (os campos são em inglês)', async () => {
+    app = await buildTestApp({
+      engine: {
+        apiSecret: SECRET,
+        engine: fakeEngine([replyTool as unknown as ToolDefinition], {
+          access: fakeAccess().access,
+          llm: fakeLlm('{}').llm,
+          ...fakeStore(),
+        }),
+      },
+    });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/tools/reply',
+      headers: { authorization: `Bearer ${SECRET}` },
+      payload: {
+        ...FIXTURE,
+        orgId: '00DAAAAAAAAAAAAAAA',
+        userId: '005AAAAAAAAAAAAAAA',
+        payload: { ...FIXTURE.payload, toneParams: { tom: 50 } },
+      },
+    });
+    expect(res.statusCode).toBe(422);
   });
 
   it('422 sem o email selecionado', async () => {

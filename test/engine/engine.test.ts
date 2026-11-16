@@ -28,6 +28,7 @@ describe('createEngine', () => {
       breakerOpenMs: 60_000,
       streamEnabled: true,
       rateLimitPerMinute: 0,
+      suggestThreshold: 0.6,
     });
   });
 

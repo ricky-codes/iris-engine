@@ -71,6 +71,7 @@ function settingsDefaults(config: AppConfig): RuntimeSettings {
     memoryPerUser: DEFAULT_MEMORY_LIMITS.perUser,
     tracesEnabled: true,
     tracesPerTool: 100,
+    suggestThreshold: 0.6,
   };
 }
 

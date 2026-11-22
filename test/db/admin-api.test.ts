@@ -16,6 +16,7 @@ import { buildTestApp, testSettings } from '../helpers.js';
 import { OrgKeys } from '../../src/auth/org-keys.js';
 import { signOrgToken } from '../../src/auth/org-token.js';
 import { PgOrgKeyStore, SecretBox } from '../../src/adapters/postgres-org-key-store.js';
+import type { DatabaseReport } from '../../src/admin/database.js';
 import { TEST_DATABASE_URL, addMemory, createTestDb, sfId, type TestDb } from './helpers.js';
 
 const SECRET = 'a'.repeat(40);
@@ -1259,5 +1260,71 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
       const res = await app!.inject({ method: 'POST', url: base(sfId('00D')), headers: READ });
       expect(res.statusCode).toBe(422);
     });
+  });
+});
+
+describe.skipIf(TEST_DATABASE_URL === undefined)('GET /v1/admin/database', () => {
+  let db: TestDb;
+  beforeAll(async () => {
+    db = await createTestDb();
+    await syncToolCatalog(db.pool, ['diagnostic']);
+  });
+  afterAll(async () => {
+    await db.close();
+  });
+
+  it('descreve as tabelas reais, com linhas, colunas e ligações, sem o conteúdo', async () => {
+    const org = sfId('00D');
+    await addMemory(db.pool, { org }, 'texto secreto da memória');
+    const app = await buildTestApp({
+      admin: {
+        secret: SECRET,
+        pool: db.pool,
+        tools: [tool],
+        settings: testSettings(),
+        breakers: undefined,
+        instanceId: 'teste:1',
+        metrics: new Metrics(),
+        status: async () => ({}),
+        topology: async () => {
+          throw new Error('não usado');
+        },
+        modules: async () => {
+          throw new Error('não usado');
+        },
+        models: {
+          list: async () => {
+            throw new Error('não usado');
+          },
+        },
+        playground: undefined,
+      },
+    });
+    const res = await app.inject({ method: 'GET', url: '/v1/admin/database', headers: READ });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain('texto secreto');
+    const body = res.json<DatabaseReport>();
+    expect(body.schema).toBe(db.schema);
+    expect(body.migrations.length).toBeGreaterThan(10);
+    expect(body.groups).toContain('memories');
+    const byName = new Map(body.tables.map((t) => [t.name, t]));
+    // Tabelas apagadas por migrações antigas não aparecem.
+    expect(byName.has('tenant')).toBe(false);
+    const memory = byName.get('memory');
+    expect(memory).toMatchObject({
+      group: 'memories',
+      rows: 1,
+      sensitive: true,
+      primaryKey: ['memory_id'],
+    });
+    expect(memory?.columns.map((c) => c.name)).toContain('content');
+    expect(byName.get('memory_tool')?.foreignKeys).toContainEqual({
+      columns: ['tool_id'],
+      references: { table: 'tool', columns: ['tool_id'] },
+    });
+    expect(byName.get('tool')?.rows).toBe(4);
+    // Todas as tabelas que existem têm descrição.
+    for (const t of body.tables) expect(t.description, t.name).not.toBe('');
   });
 });

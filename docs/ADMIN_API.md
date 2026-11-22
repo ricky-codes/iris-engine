@@ -29,6 +29,8 @@ Esta API permite à UI do StepAccess:
 7. **Modelos** — lista de modelos do OpenRouter que servem para as ferramentas.
 8. **Diagrama por ferramenta** — o caminho de um pedido, passo a passo, com o estado e o que controla cada passo (6.6), e o estado dos disjuntores (5.7).
 9. **Definições** — modelos por omissão, tempos, tentativas, disjuntor, streaming, limite de pedidos, tempos do StepAccess e limites das memórias, sem reiniciar; fechar o disjuntor à mão.
+10. **Base de dados** — as tabelas que existem, com as linhas, as colunas e as ligações (5.9).
+11. **Consola** — uma página visual, só de leitura, servida pela IRIS (5.10).
 
 O que **não** está nesta API (de propósito): segredos (chave do OpenRouter, credenciais), criar ferramentas novas (são código), reiniciar/deploy, logs em bruto.
 
@@ -381,6 +383,25 @@ Resposta `200`:
 - `byDay`: dias UTC, do mais antigo para o mais recente, no máximo 30.
 - Mostrar sempre `since` ("desde o arranque às …").
 
+**Custo** (em `totals`, `byTool[]` e `byDay[]`): `costUsd` é o custo em dólares dos pedidos que chegaram ao modelo, como o OpenRouter o indicou (somado de todas as tentativas, também nos pedidos que falharam por resposta inválida); `costedRequests` é quantos tinham custo. É o mesmo valor enviado ao StepAccess. Em memória, por instância, desde o arranque; o histórico fica no StepAccess.
+
+**`costReports`**: os envios do custo ao StepAccess nesta instância, desde o arranque. `null` sem StepAccess (`ACCESS_MODE=open` ou bypass).
+
+```json
+{
+  "delivered": 118,
+  "failed": 2,
+  "pending": 0,
+  "deliveredUsd": 0.2431,
+  "failedUsd": 0.0042,
+  "lastDeliveredAt": "2026-11-22T10:02:13.120Z",
+  "lastFailedAt": "2026-11-22T09:40:00.000Z",
+  "lastFailure": "503"
+}
+```
+
+`failed` são custos **perdidos** para o StepAccess (ficam só no log como `stepaccess cost not reported`): mostrar em vermelho. `lastFailure` é o estado HTTP ou o nome do erro (ex.: `TimeoutError`).
+
 ### 5.3 `GET /v1/admin/models`
 
 Modelos do OpenRouter, com cache de 15 minutos. Para o seletor de modelo na configuração das ferramentas.
@@ -661,6 +682,50 @@ O catálogo das saídas do caminho de um pedido: um código estável por razão,
 | `internal_error`         | `response` | 500  | `internal_error`       |
 
 `model_timeout` e `provider_error` quando só se chamou um modelo; `all_models_failed` quando a cadeia tinha mais de um e falharam todos.
+
+### 5.9 `GET /v1/admin/database`
+
+As tabelas que existem de facto no Postgres (lidas do catálogo, não de uma lista no código), quantas linhas têm, as colunas, as chaves e as ligações entre elas, e as migrações aplicadas. **Nunca devolve o conteúdo das linhas.** As contagens são exatas e feitas no momento, numa transação só de leitura com 3 s de limite.
+
+```jsonc
+{
+  "generatedAt": "2026-11-22T10:00:00.000Z",
+  "schema": "public",
+  "serverVersion": "16.4",
+  "totalBytes": 8961047,
+  "groups": ["tools", "prompts", "memories", "settings", "orgKeys", "catalogs", "system"],
+  "tables": [
+    {
+      "name": "memory",
+      "group": "memories",
+      "description": "O texto de cada memória…",
+      "usedBy": ["src/adapters/postgres-memory-store.ts"],
+      "sensitive": true, // guarda texto escrito por pessoas ou segredos cifrados
+      "rows": 42,
+      "bytes": 49152,
+      "columns": [{ "name": "content", "type": "text", "nullable": false }],
+      "primaryKey": ["memory_id"],
+      "foreignKeys": [
+        {
+          "columns": ["memory_scope_id"],
+          "references": { "table": "memory_scope", "columns": ["memory_scope_id"] },
+        },
+      ],
+    },
+  ],
+  "migrations": [{ "name": "0001_catalogs.sql", "appliedAt": "…" }],
+}
+```
+
+A descrição, o grupo e `usedBy` vêm de `src/admin/database.ts` (`TABLE_NOTES`); uma tabela nova sem nota aparece em `system` com a descrição vazia.
+
+### 5.10 `GET /v1/admin/console`
+
+A consola visual da IRIS: uma página HTML (o ficheiro `console/index.html`), **a única rota de `/v1/admin` que não pede o segredo**, porque não tem dados. A página pede o `ADMIN_API_SECRET`, guarda-o só no `sessionStorage` desse separador e chama as rotas desta API na mesma origem. Só lê: não faz nenhuma alteração.
+
+Cabeçalhos: `Content-Security-Policy` com `connect-src 'self'`, `frame-ancestors 'none'`, sem recursos externos, e `script-src` limitado ao hash do script da página; `Referrer-Policy: no-referrer`. `404 not_found` se o ficheiro não existir no servidor. O que mostra está no README (secção Consola).
+
+Atualiza a topologia, os módulos e o estado a cada 30 s, as métricas a cada 5 s e os traces das ferramentas implementadas a cada 4 s, só com o separador visível.
 
 ---
 

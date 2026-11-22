@@ -86,4 +86,30 @@ describe('StepAccessUsageReporter', () => {
     expect(f.calls).toHaveLength(2);
     expect(logs[0]?.data['status']).toBe('TypeError');
   });
+
+  it('report: conta os entregues, os perdidos e os que estão a ser enviados', async () => {
+    let status = 201;
+    const { r } = reporter(() => json(status, {}));
+    expect(r.stats()).toMatchObject({ delivered: 0, failed: 0, pending: 0, lastFailure: null });
+
+    r.report(EVENT);
+    expect(r.stats().pending).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    status = 500;
+    r.report({ ...EVENT, costUsd: undefined });
+    r.report({ ...EVENT, costUsd: 0.001 });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const stats = r.stats();
+    expect(stats).toMatchObject({
+      delivered: 1,
+      failed: 2,
+      pending: 0,
+      deliveredUsd: 0.00042,
+      failedUsd: 0.001,
+      lastFailure: '500',
+    });
+    expect(stats.lastDeliveredAt).not.toBeNull();
+    expect(stats.lastFailedAt).not.toBeNull();
+  });
 });

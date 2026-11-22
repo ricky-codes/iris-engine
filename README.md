@@ -81,16 +81,16 @@ As marcadas com **(definição)** são só o valor inicial: mudam-se sem reinici
 
 ## Endpoints
 
-| Método e caminho           | Função                                                                                                                                                                                     |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GET /healthz`             | Processo vivo                                                                                                                                                                              |
-| `GET /readyz`              | Dependências acessíveis (200 ou 503, com estado por check)                                                                                                                                 |
-| `GET /v1/tools`            | Lista as ferramentas disponíveis e se aceitam streaming (precisa de credencial)                                                                                                            |
-| `POST /v1/tools/<nome>`    | Corre uma ferramenta (precisa de credencial). Com `"stream": true`, responde em SSE (ver [Streaming](#streaming))                                                                          |
-| `GET /v1/memories`         | Regras da org e memórias do utilizador (opcional `?tool=…`). Precisa de credencial; não conta utilização no StepAccess                                                                     |
-| `POST /v1/memories`        | Guarda uma memória do utilizador (`{content, tools?}`). Precisa de credencial; não conta utilização                                                                                        |
-| `DELETE /v1/memories/<id>` | Apaga uma memória do próprio utilizador; as da org e as de colegas dão 404                                                                                                                 |
-| `/v1/admin/*`              | API de administração para o StepAccess: estado, métricas, topologia, definições, ferramentas, prompts, memórias, chaves das orgs, playground. Ver [`docs/ADMIN_API.md`](docs/ADMIN_API.md) |
+| Método e caminho           | Função                                                                                                                                                                                                                                                  |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /healthz`             | Processo vivo                                                                                                                                                                                                                                           |
+| `GET /readyz`              | Dependências acessíveis (200 ou 503, com estado por check)                                                                                                                                                                                              |
+| `GET /v1/tools`            | Lista as ferramentas disponíveis e se aceitam streaming (precisa de credencial)                                                                                                                                                                         |
+| `POST /v1/tools/<nome>`    | Corre uma ferramenta (precisa de credencial). Com `"stream": true`, responde em SSE (ver [Streaming](#streaming))                                                                                                                                       |
+| `GET /v1/memories`         | Regras da org e memórias do utilizador (opcional `?tool=…`). Precisa de credencial; não conta utilização no StepAccess                                                                                                                                  |
+| `POST /v1/memories`        | Guarda uma memória do utilizador (`{content, tools?}`). Precisa de credencial; não conta utilização                                                                                                                                                     |
+| `DELETE /v1/memories/<id>` | Apaga uma memória do próprio utilizador; as da org e as de colegas dão 404                                                                                                                                                                              |
+| `/v1/admin/*`              | API de administração para o StepAccess: estado, métricas, topologia, base de dados, definições, ferramentas, prompts, memórias, chaves das orgs, playground. Ver [`docs/ADMIN_API.md`](docs/ADMIN_API.md). A consola visual está em `/v1/admin/console` |
 
 Com `AUTH_MODE=shared_secret`, os pedidos às rotas públicas levam também `orgId` e `userId` (no corpo ou, nos `GET`/`DELETE` das memórias, na query string). Com `token` (por omissão), não: vêm do token, e mandá-los dá **422**.
 
@@ -359,6 +359,26 @@ Para ver as memórias a funcionar, crie uma regra da org e repita o pedido:
 
 Sem a configuração completa, o serviço arranca só com `/healthz` e `/readyz` e diz no log o que falta.
 
+## Consola: a IRIS por dentro
+
+Uma página só de leitura, servida pela própria IRIS em **`/v1/admin/console`**, que desenha a IRIS a partir do que está a correr e a atualiza sozinha:
+
+- **Mapa** — os módulos e as ligações (`/topology`), com o estado de cada um. Cada pedido real atravessa o mapa enquanto acontece (StepAccess, memórias, modelos, custo). Ao clicar num módulo: o que faz, o que acontece se falhar, os valores em vigor e onde se mudam.
+- **Pedido** — os dez passos de um pedido a cada ferramenta, com contagens, a cadeia de modelos com os disjuntores e os últimos pedidos, que se podem reproduzir passo a passo.
+- **Prompts** — o prompt de sistema que o modelo recebe (versão ativa ou o do código), com as memórias de uma org e de um utilizador acrescentadas como o motor faz, o histórico das versões e os esquemas de entrada e saída.
+- **Memórias** — como funcionam, onde ficam e todas as que existem.
+- **Custos** — do OpenRouter para a IRIS e para o StepAccess: custo por ferramenta e por dia, envios entregues e perdidos, créditos da chave.
+- **Configuração** — cada definição com o valor e a origem (código, `.env`, base de dados, por ferramenta) e as variáveis que só existem no `.env`.
+- **Base de dados** — as tabelas reais (`/database`), com as linhas, as colunas, as ligações e as migrações. Nunca o conteúdo.
+
+Pede o `ADMIN_API_SECRET` (guardado só nesse separador do browser) e não altera nada. A página não tem dados nem carrega nada de fora: tudo vem de `/v1/admin/*` na mesma origem, com uma CSP que só deixa correr o script da própria página. Como está em `/v1/admin`, a regra do proxy público que bloqueia a API de administração também a esconde; em produção, abre-se por um túnel:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 servidor
+```
+
+e depois `http://localhost:8080/v1/admin/console`. A página é o ficheiro `console/index.html` (sem build).
+
 ## Administração das memórias
 
 Orgs e utilizadores **não** se criam aqui: gerem-se no StepAccess. Na IRIS só se gerem memórias.
@@ -485,6 +505,7 @@ src/
     modules.ts            os cinco adaptadores descritos: função, definições e o que falta controlar
     pipeline.ts           o caminho de um pedido a uma ferramenta, para o diagrama da consola (função pura)
     topology-source.ts    junta o que está a correr numa topologia
+    database.ts           as tabelas reais (catálogo do Postgres), com linhas, colunas, ligações e descrição
     status.ts             o que o /v1/admin/status mostra
     validation.ts         validações dos dados que o administrador escreve
     api.ts                o que a interface pode fazer (e a versão sobre a base de dados)
@@ -494,6 +515,7 @@ src/
     pool.ts               ligação ao Postgres
     migrate.ts            runner de migrações (transação por ficheiro, checksum, bloqueio)
     migrate-cli.ts        `npm run migrate`
+console/index.html        a consola visual (/v1/admin/console), uma página sem build
 migrations/               SQL versionado
 test/                     testes Vitest (app.inject; test/db/ contra Postgres real)
 ```

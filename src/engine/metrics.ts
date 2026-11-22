@@ -24,6 +24,13 @@ export interface ToolCounters {
   outputTokens: number;
   /** Pedidos que só tiveram resposta com um modelo de recurso. */
   fallbacks: number;
+  /**
+   * Custo em dólares dos pedidos que chegaram ao modelo, como o OpenRouter o indicou (somado de
+   * todas as tentativas). É o mesmo valor que vai para o StepAccess.
+   */
+  costUsd: number;
+  /** Pedidos que chegaram ao modelo e de que se sabe o custo. */
+  costedRequests: number;
 }
 
 /** Porque falhou (ou foi saltada) uma chamada a um modelo. */
@@ -251,6 +258,8 @@ interface Bucket {
   inputTokens: number;
   outputTokens: number;
   fallbacks: number;
+  costUsd: number;
+  costedRequests: number;
   stops: Map<PipelineStage, Map<string, number>>;
 }
 
@@ -278,6 +287,8 @@ const emptyBucket = (): Bucket => ({
   inputTokens: 0,
   outputTokens: 0,
   fallbacks: 0,
+  costUsd: 0,
+  costedRequests: 0,
   stops: new Map(),
 });
 
@@ -307,6 +318,8 @@ function merge(target: Bucket, source: Bucket): void {
   target.inputTokens += source.inputTokens;
   target.outputTokens += source.outputTokens;
   target.fallbacks += source.fallbacks;
+  target.costUsd += source.costUsd;
+  target.costedRequests += source.costedRequests;
   for (const [code, n] of source.errorsByCode)
     target.errorsByCode.set(code, (target.errorsByCode.get(code) ?? 0) + n);
 }
@@ -324,6 +337,9 @@ function view(bucket: Bucket): ToolCounters {
     inputTokens: bucket.inputTokens,
     outputTokens: bucket.outputTokens,
     fallbacks: bucket.fallbacks,
+    // Arredondado ao milionésimo de dólar, para não mostrar erros de vírgula flutuante.
+    costUsd: Math.round(bucket.costUsd * 1e6) / 1e6,
+    costedRequests: bucket.costedRequests,
   };
 }
 
@@ -380,6 +396,25 @@ export class Metrics {
       for (const key of f.minutes.keys()) if (key <= cutoff) f.minutes.delete(key);
     }
 
+    add(this.dayBucket(), event);
+  }
+
+  /**
+   * O custo de um pedido que chegou ao modelo (com ou sem resposta válida). Conta na ferramenta e
+   * no dia; o pedido em si é contado por `record`.
+   */
+  recordCost(tool: string, costUsd: number | undefined): void {
+    if (costUsd === undefined || !Number.isFinite(costUsd) || costUsd < 0) return;
+    let bucket = this.byTool.get(tool);
+    if (bucket === undefined) this.byTool.set(tool, (bucket = emptyBucket()));
+    bucket.costUsd += costUsd;
+    bucket.costedRequests++;
+    const daily = this.dayBucket();
+    daily.costUsd += costUsd;
+    daily.costedRequests++;
+  }
+
+  private dayBucket(): Bucket {
     const day = this.clock().toISOString().slice(0, 10);
     let daily = this.byDay.get(day);
     if (daily === undefined) {
@@ -388,7 +423,7 @@ export class Metrics {
       const days = [...this.byDay.keys()].sort();
       for (const old of days.slice(0, Math.max(0, days.length - MAX_DAYS))) this.byDay.delete(old);
     }
-    add(daily, event);
+    return daily;
   }
 
   recordModelCall(call: ModelCallMetric): void {

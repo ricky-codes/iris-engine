@@ -5,6 +5,23 @@ import type { StepAccessConnection } from './stepaccess-access.js';
 
 const RETRY_DELAY_MS = 1000;
 
+/** O que aconteceu aos envios do custo nesta instância, desde o arranque. Só contagens. */
+export interface UsageReportStats {
+  /** Aceites pelo StepAccess (incluindo os 409, já registados). */
+  delivered: number;
+  /** Desistidos depois das tentativas: o custo ficou só no log. */
+  failed: number;
+  /** A ser enviados agora. */
+  pending: number;
+  /** Dólares dos eventos entregues e dos perdidos (os sem custo contam 0). */
+  deliveredUsd: number;
+  failedUsd: number;
+  lastDeliveredAt: string | null;
+  lastFailedAt: string | null;
+  /** O estado HTTP ou o erro da última falha. */
+  lastFailure: string | null;
+}
+
 /**
  * Envia o custo ao StepAccess (`POST /v1/usage/cost`) depois de responder ao Salesforce.
  * Tenta duas vezes; se não conseguir, escreve o evento completo no log para se poder
@@ -18,8 +35,41 @@ export class StepAccessUsageReporter implements UsageReporter {
     private readonly retryDelayMs = RETRY_DELAY_MS,
   ) {}
 
+  private readonly counters: UsageReportStats = {
+    delivered: 0,
+    failed: 0,
+    pending: 0,
+    deliveredUsd: 0,
+    failedUsd: 0,
+    lastDeliveredAt: null,
+    lastFailedAt: null,
+    lastFailure: null,
+  };
+
   report(event: CostEvent): void {
-    void this.send(event);
+    this.counters.pending++;
+    void this.send(event).then((ok) => {
+      const c = this.counters;
+      c.pending--;
+      const usd = event.costUsd ?? 0;
+      const at = new Date().toISOString();
+      if (ok) {
+        c.delivered++;
+        c.deliveredUsd += usd;
+        c.lastDeliveredAt = at;
+      } else {
+        c.failed++;
+        c.failedUsd += usd;
+        c.lastFailedAt = at;
+      }
+    });
+  }
+
+  /** Os envios desde o arranque (para a consola e `/v1/admin/metrics`). */
+  stats(): UsageReportStats {
+    const c = this.counters;
+    const round = (n: number): number => Math.round(n * 1e6) / 1e6;
+    return { ...c, deliveredUsd: round(c.deliveredUsd), failedUsd: round(c.failedUsd) };
   }
 
   /** Devolve `true` se o StepAccess aceitou. Exposto para os testes. */
@@ -52,6 +102,7 @@ export class StepAccessUsageReporter implements UsageReporter {
         lastStatus = err instanceof Error ? err.name : String(err);
       }
     }
+    this.counters.lastFailure = String(lastStatus);
     this.log('stepaccess cost not reported', { status: lastStatus, event });
     return false;
   }

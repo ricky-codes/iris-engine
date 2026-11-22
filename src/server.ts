@@ -52,6 +52,15 @@ function readVersion(): string {
   }
 }
 
+/** A página da consola, se existir (`console/index.html`, relativo ao diretório de trabalho). */
+function readConsole(): string | undefined {
+  try {
+    return readFileSync('console/index.html', 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
 /** Os valores iniciais das definições alteráveis: os do `.env` e, nas memórias, os do código. */
 function settingsDefaults(config: AppConfig): RuntimeSettings {
   const { engine: cfg } = config;
@@ -106,6 +115,7 @@ function buildEngine(
   metrics: Metrics,
   settings: LiveSettings,
   traces: Traces | undefined,
+  usage: StepAccessUsageReporter | undefined,
 ): Engine | undefined {
   const { engine: cfg } = config;
   if (pool === undefined || cfg.openRouter === undefined) return undefined;
@@ -120,6 +130,7 @@ function buildEngine(
     // Cada chamada a um modelo e o que o motor mediu em cada pedido entram nas métricas (só
     // nomes, resultados, contagens e tempos; nunca orgs, utilizadores nem conteúdo).
     onEvent: (e) => {
+      if (e.type !== 'model_call') metrics.recordCost(e.tool, e.costUsd);
       if (e.type === 'model_call') {
         const { tool, model, reason, fallback, attempt, durationMs } = e;
         metrics.recordModelCall({ tool, model, reason, fallback, attempt, durationMs });
@@ -144,15 +155,22 @@ function buildEngine(
       }
       traces?.record(e);
     },
-    ...(cfg.stepAccess !== undefined &&
-      typeof cfg.stepAccess === 'object' && {
-        usage: new StepAccessUsageReporter(
-          { ...cfg.stepAccess, timeoutMs: () => settings.current().stepAccessUsageTimeoutMs },
-          fetch,
-          warn,
-        ),
-      }),
+    ...(usage !== undefined && { usage }),
   });
+}
+
+/** O envio do custo de cada pedido ao StepAccess; só existe com o StepAccess ligado. */
+function usageReporter(
+  config: AppConfig,
+  settings: LiveSettings,
+): StepAccessUsageReporter | undefined {
+  const sa = config.engine.stepAccess;
+  if (sa === undefined || typeof sa !== 'object') return undefined;
+  return new StepAccessUsageReporter(
+    { ...sa, timeoutMs: () => settings.current().stepAccessUsageTimeoutMs },
+    fetch,
+    warn,
+  );
 }
 
 /** O que só o servidor sabe: configuração em vigor, rotas ligadas e verificações das dependências. */
@@ -224,6 +242,7 @@ function buildAdmin(
   settings: LiveSettings,
   traces: Traces | undefined,
   orgKeys: OrgKeys | undefined,
+  usage: StepAccessUsageReporter | undefined,
 ): AdminRoutesOptions | undefined {
   if (config.adminApiSecret === undefined || pool === undefined) return undefined;
   const { engine: cfg } = config;
@@ -248,6 +267,8 @@ function buildAdmin(
     instanceId,
     traces,
     metrics,
+    costReports: usage === undefined ? undefined : () => usage.stats(),
+    consoleHtml: readConsole(),
     status,
     topology,
     modules: async () => {
@@ -322,7 +343,8 @@ async function main(): Promise<void> {
           perTool: () => settings.current().tracesPerTool,
           orgKey: createHash('sha256').update(`iris-traces:${config.adminApiSecret}`).digest('hex'),
         });
-  const core = buildEngine(config, pool, tools, access, metrics, settings, traces);
+  const usage = usageReporter(config, settings);
+  const core = buildEngine(config, pool, tools, access, metrics, settings, traces, usage);
   const missing = missingEngineConfig(
     config.engine,
     pool !== undefined,
@@ -391,6 +413,7 @@ async function main(): Promise<void> {
     settings,
     traces,
     orgKeys,
+    usage,
   );
 
   const app = await buildApp({

@@ -35,6 +35,8 @@ describe('Metrics', () => {
       inputTokens: 30,
       outputTokens: 6,
       fallbacks: 1,
+      costUsd: 0,
+      costedRequests: 0,
     });
     expect(s.byTool.map((t) => [t.tool, t.requests])).toEqual([
       ['reply', 1],
@@ -44,6 +46,31 @@ describe('Metrics', () => {
     expect(s.byDay.map((d) => [d.day, d.requests])).toEqual([
       ['2026-10-13', 3],
       ['2026-10-14', 1],
+    ]);
+  });
+
+  it('soma o custo por ferramenta, por dia e no total; ignora custos desconhecidos', () => {
+    let now = new Date('2026-10-13T10:00:00Z');
+    const m = new Metrics(() => now);
+    m.recordCost('reply', 0.0012);
+    m.recordCost('reply', 0.0003);
+    m.recordCost('reply', undefined);
+    m.recordCost('reply', -1);
+    m.recordCost('reply', Number.NaN);
+    now = new Date('2026-10-14T09:00:00Z');
+    m.recordCost('sentiment', 0.1 + 0.2);
+    m.record({ tool: 'sentiment', errorCode: undefined, durationMs: 10 });
+
+    const s = m.snapshot();
+    expect(s.totals.costUsd).toBe(0.3015);
+    expect(s.totals.costedRequests).toBe(3);
+    expect(s.byTool.map((t) => [t.tool, t.costUsd, t.costedRequests, t.requests])).toEqual([
+      ['reply', 0.0015, 2, 0],
+      ['sentiment', 0.3, 1, 1],
+    ]);
+    expect(s.byDay.map((d) => [d.day, d.costUsd, d.requests])).toEqual([
+      ['2026-10-13', 0.0015, 0],
+      ['2026-10-14', 0.3, 1],
     ]);
   });
 

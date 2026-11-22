@@ -22,8 +22,10 @@ import {
   type ToolCatalogRow,
 } from '../../admin/tools.js';
 import type { Metrics } from '../../engine/metrics.js';
+import type { UsageReportStats } from '../../adapters/stepaccess-usage.js';
 import type { ModulesReport } from '../../admin/modules.js';
 import { ERROR_CATALOG } from '../../admin/error-catalog.js';
+import { describeDatabase } from '../../admin/database.js';
 import { buildPipeline } from '../../admin/pipeline.js';
 import type { Traces } from '../../traces/traces.js';
 import type { Topology } from '../../admin/topology.js';
@@ -70,6 +72,8 @@ export interface AdminRoutesOptions {
   /** Os últimos pedidos (só metadados, em memória). Sem eles, `/traces` devolve uma lista vazia. */
   traces?: Traces | undefined;
   metrics: Metrics;
+  /** Os envios do custo ao StepAccess. Sem StepAccess não há envios (`costReports: null`). */
+  costReports?: (() => UsageReportStats) | undefined;
   status: () => Promise<StatusReport>;
   /** Os módulos e o estado de cada um (ver src/admin/topology-source.ts). */
   topology: () => Promise<Topology>;
@@ -79,6 +83,8 @@ export interface AdminRoutesOptions {
   /** Sem dependências não há playground (falta base de dados ou OpenRouter). */
   /** As chaves das orgs. Sem elas (falta ORG_KEY_ENCRYPTION_KEY), `/orgs/:orgId/keys` dá 503. */
   orgKeys?: Pick<OrgKeys, 'create' | 'list' | 'relabel' | 'revoke' | 'stats'> | undefined;
+  /** A página da consola (`console/index.html`). Sem ela, `/v1/admin/console` dá 404. */
+  consoleHtml?: string | undefined;
   playground:
     | {
         engine: Engine;
@@ -114,6 +120,30 @@ async function guard<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 const ACTOR_HEADER = 'x-admin-actor';
+const CONSOLE_PATH = '/v1/admin/console';
+
+/**
+ * Só a própria IRIS: sem recursos externos, sem molduras, e o segredo só vai para a mesma origem.
+ * Só correm os scripts da página tal como está no servidor (pelo hash de cada um).
+ */
+export function consoleCsp(html: string): string {
+  const hashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(
+    (m) =>
+      `'sha256-${createHash('sha256')
+        .update(m[1] ?? '')
+        .digest('base64')}'`,
+  );
+  return [
+    "default-src 'none'",
+    `script-src ${hashes.join(' ') || "'none'"}`,
+    "style-src 'unsafe-inline'",
+    "connect-src 'self'",
+    "img-src 'self' data:",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ].join('; ');
+}
 
 function actorOf(request: FastifyRequest): string | undefined {
   const value = request.headers[ACTOR_HEADER];
@@ -171,6 +201,9 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
   const registered = new Map(opts.tools.map((t) => [t.name, t]));
 
   app.addHook('onRequest', async (request) => {
+    // A página da consola não tem dados: pede o segredo e chama as outras rotas com ele.
+    if (['GET', 'HEAD'].includes(request.method) && request.routeOptions.url === CONSOLE_PATH)
+      return;
     const match = /^Bearer (.+)$/.exec(request.headers.authorization ?? '');
     if (match?.[1] === undefined || !secretMatches(match[1], opts.secret)) {
       throw new AppError('unauthorized', 401, 'Credenciais inválidas.', [], {
@@ -201,14 +234,33 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
     );
   });
 
+  // ---------- consola ----------
+
+  // O mapa visual da IRIS, só de leitura. A página é estática; os dados vêm das rotas abaixo.
+  const csp = opts.consoleHtml === undefined ? undefined : consoleCsp(opts.consoleHtml);
+  app.get(CONSOLE_PATH, async (_request, reply) => {
+    if (opts.consoleHtml === undefined) {
+      throw new AppError('not_found', 404, 'A consola não está instalada neste servidor.');
+    }
+    return reply
+      .header('Content-Type', 'text/html; charset=utf-8')
+      .header('Content-Security-Policy', csp ?? "default-src 'none'")
+      .header('X-Content-Type-Options', 'nosniff')
+      .header('Referrer-Policy', 'no-referrer')
+      .header('Cache-Control', 'no-cache')
+      .send(opts.consoleHtml);
+  });
+
   // ---------- estado, métricas e modelos ----------
 
   app.get('/v1/admin/status', async () => opts.status());
 
   // `auth`: tokens aceites e recusados por razão nesta instância (só contagens); `null` sem chaves.
+  // `costReports`: os envios do custo ao StepAccess nesta instância; `null` sem StepAccess.
   app.get('/v1/admin/metrics', async () => ({
     ...opts.metrics.snapshot(),
     auth: opts.orgKeys?.stats() ?? null,
+    costReports: opts.costReports?.() ?? null,
   }));
 
   // Os módulos da IRIS, como estão ligados e o estado de cada um, para a consola desenhar.
@@ -217,6 +269,9 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
   // Cada adaptador (PgEngineStore, PgMemoryStore, StepAccessClient, StepAccessUsageReporter,
   // OpenRouterProvider) com a descrição, as definições em vigor e o que falta controlar.
   app.get('/v1/admin/modules', async () => opts.modules());
+
+  // As tabelas que existem de facto, com as linhas, as colunas e as ligações. Nunca o conteúdo.
+  app.get('/v1/admin/database', async () => describeDatabase(opts.pool));
 
   app.get(
     '/v1/admin/models',

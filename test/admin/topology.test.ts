@@ -106,6 +106,19 @@ describe('buildTopology', () => {
     });
   });
 
+  it('cada nó diz o que é; o acesso e o custo mudam com o modo; as ferramentas vêm do código', () => {
+    const t = topology({ tools: [{ ...sentiment, description: 'Analisa o sentimento.' }, reply] });
+    for (const n of t.nodes) expect(n.description, n.id).not.toBe('');
+    expect(node(t, 'tool.sentiment').description).toBe('Analisa o sentimento.');
+    expect(node(t, 'tool.reply').description).toContain('não tem implementação');
+    expect(node(t, 'adapter.access').description).toContain('GET /v1/access');
+    expect(node(t, 'adapter.usage').description).toContain('POST /v1/usage/cost');
+
+    const open = topology({ runtime: runtime({ access: 'open' }) });
+    expect(node(open, 'adapter.access').description).toContain('Deixa passar');
+    expect(node(open, 'adapter.usage').description).toContain('só nos logs');
+  });
+
   it('chaves das orgs: nó, interface, adaptador e ligações a partir das rotas públicas', () => {
     const t = topology();
     expect(node(t, 'core.orgKeys')).toMatchObject({

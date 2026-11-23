@@ -84,6 +84,7 @@ export async function collectTopology(d: TopologySourceDeps): Promise<Topology> 
       requests: usage.get(row.name)?.requests ?? 0,
       failed: usage.get(row.name)?.failed ?? 0,
       fallbacks: usage.get(row.name)?.fallbacks ?? 0,
+      description: code?.description ?? null,
     };
   });
   return buildTopology({

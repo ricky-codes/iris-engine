@@ -46,6 +46,11 @@ export interface PipelineStageView {
   overrides: (keyof ToolOverrides)[];
   /** Variáveis só do `.env` que o afetam (só os nomes). */
   env: string[];
+  /**
+   * Os nós da topologia (`GET /v1/admin/topology`) por onde o pedido passa neste passo, pela
+   * ordem em que os usa. Seguem a configuração: sem StepAccess, `access` não chega ao StepAccess.
+   */
+  nodes: string[];
   details: Record<string, Scalar>;
 }
 
@@ -360,6 +365,36 @@ export function buildPipeline(input: PipelineInput, now: Date = new Date()): Pip
     }
   };
 
+  // Por onde passa cada passo: só os nós e as ligações que existem nesta topologia.
+  const linked = (from: string, to: string): boolean =>
+    input.topology.edges.some((e) => e.from === from && e.to === to);
+  const exists = (id: string): boolean => node(id) !== undefined;
+  const toolNode = `tool.${input.tool}`;
+  const via = (adapter: string, external: string): string[] =>
+    exists(adapter) ? [adapter, ...(linked(adapter, external) ? [external] : [])] : [];
+  const NODES: Record<PipelineStage, string[]> = {
+    auth: [
+      'http.tools',
+      ...(linked('http.tools', 'core.orgKeys')
+        ? ['core.orgKeys', ...via('adapter.pgOrgKeyStore', 'external.postgres')]
+        : []),
+    ],
+    request: ['http.tools', toolNode],
+    gate: ['core.engine', ...via('adapter.pgEngineStore', 'external.postgres')],
+    rate: ['core.engine'],
+    access: ['core.engine', ...via('adapter.access', 'external.stepaccess')],
+    memories: ['core.engine', ...via('adapter.pgMemoryStore', 'external.postgres')],
+    prompt: ['core.engine', toolNode],
+    models: ['core.engine', ...via('adapter.llm', 'external.openrouter')],
+    validate: ['core.engine', toolNode],
+    response: [
+      'http.tools',
+      ...(linked('adapter.usage', 'external.stepaccess')
+        ? ['adapter.usage', 'external.stepaccess']
+        : []),
+    ],
+  };
+
   const stages = PIPELINE_STAGES.map((id): PipelineStageView => {
     const d = describe(id);
     const { label, ...controls } = CONTROLS[id];
@@ -377,6 +412,7 @@ export function buildPipeline(input: PipelineInput, now: Date = new Date()): Pip
       counts: { passed: counts[id].passed, stopped: counts[id].stopped },
       stoppedByCode: metrics.stops[id],
       ...controls,
+      nodes: NODES[id].filter(exists),
       details: d.details,
     };
   });

@@ -1263,68 +1263,157 @@ describe.skipIf(TEST_DATABASE_URL === undefined)('API de administração', () =>
   });
 });
 
-describe.skipIf(TEST_DATABASE_URL === undefined)('GET /v1/admin/database', () => {
-  let db: TestDb;
-  beforeAll(async () => {
-    db = await createTestDb();
-    await syncToolCatalog(db.pool, ['diagnostic']);
-  });
-  afterAll(async () => {
-    await db.close();
-  });
+describe.skipIf(TEST_DATABASE_URL === undefined)(
+  'rotas só de leitura da API de administração',
+  () => {
+    let db: TestDb;
+    let app: FastifyInstance;
+    const unused = async (): Promise<never> => {
+      throw new Error('não usado');
+    };
+    beforeAll(async () => {
+      db = await createTestDb();
+      await syncToolCatalog(db.pool, ['diagnostic']);
+      app = await buildTestApp({
+        admin: {
+          secret: SECRET,
+          pool: db.pool,
+          tools: [tool],
+          settings: testSettings(),
+          breakers: undefined,
+          instanceId: 'teste:1',
+          metrics: new Metrics(),
+          status: async () => ({}),
+          topology: unused,
+          modules: unused,
+          models: { list: unused },
+          playground: undefined,
+        },
+      });
+    });
+    afterAll(async () => {
+      await app.close();
+      await db.close();
+    });
+    const get = (url: string) => app.inject({ method: 'GET', url, headers: READ });
 
-  it('descreve as tabelas reais, com linhas, colunas e ligações, sem o conteúdo', async () => {
-    const org = sfId('00D');
-    await addMemory(db.pool, { org }, 'texto secreto da memória');
-    const app = await buildTestApp({
-      admin: {
-        secret: SECRET,
-        pool: db.pool,
-        tools: [tool],
-        settings: testSettings(),
-        breakers: undefined,
-        instanceId: 'teste:1',
-        metrics: new Metrics(),
-        status: async () => ({}),
-        topology: async () => {
-          throw new Error('não usado');
-        },
-        modules: async () => {
-          throw new Error('não usado');
-        },
-        models: {
-          list: async () => {
-            throw new Error('não usado');
-          },
-        },
-        playground: undefined,
-      },
+    it('GET /database descreve as tabelas reais, com linhas, colunas e ligações, sem o conteúdo', async () => {
+      const org = sfId('00D');
+      await addMemory(db.pool, { org }, 'texto secreto da memória');
+      const res = await get('/v1/admin/database');
+      expect(res.statusCode).toBe(200);
+      expect(res.body).not.toContain('texto secreto');
+      const body = res.json<DatabaseReport>();
+      expect(body.schema).toBe(db.schema);
+      expect(body.migrations.length).toBeGreaterThan(10);
+      expect(body.groups).toContain('memories');
+      const byName = new Map(body.tables.map((t) => [t.name, t]));
+      // Tabelas apagadas por migrações antigas não aparecem.
+      expect(byName.has('tenant')).toBe(false);
+      const memory = byName.get('memory');
+      expect(memory).toMatchObject({
+        group: 'memories',
+        sensitive: true,
+        primaryKey: ['memory_id'],
+      });
+      expect(memory?.rows).toBeGreaterThanOrEqual(1);
+      expect(memory?.columns.map((c) => c.name)).toContain('content');
+      expect(byName.get('memory_tool')?.foreignKeys).toContainEqual({
+        columns: ['tool_id'],
+        references: { table: 'tool', columns: ['tool_id'] },
+      });
+      expect(byName.get('tool')?.rows).toBe(4);
+      // Todas as tabelas que existem têm descrição.
+      for (const t of body.tables) expect(t.description, t.name).not.toBe('');
     });
-    const res = await app.inject({ method: 'GET', url: '/v1/admin/database', headers: READ });
-    await app.close();
-    expect(res.statusCode).toBe(200);
-    expect(res.body).not.toContain('texto secreto');
-    const body = res.json<DatabaseReport>();
-    expect(body.schema).toBe(db.schema);
-    expect(body.migrations.length).toBeGreaterThan(10);
-    expect(body.groups).toContain('memories');
-    const byName = new Map(body.tables.map((t) => [t.name, t]));
-    // Tabelas apagadas por migrações antigas não aparecem.
-    expect(byName.has('tenant')).toBe(false);
-    const memory = byName.get('memory');
-    expect(memory).toMatchObject({
-      group: 'memories',
-      rows: 1,
-      sensitive: true,
-      primaryKey: ['memory_id'],
+
+    describe('GET /tools/:name/prompt', () => {
+      interface PromptView {
+        source: string;
+        activeVersion: number | null;
+        orgId: string | null;
+        userId: string | null;
+        memories: { org: string[]; user: string[] };
+        basePrompt: string | null;
+        systemPrompt: string | null;
+        chars: number;
+        estimatedTokens: number;
+      }
+      const prompt = async (query = '') => {
+        const res = await get(`/v1/admin/tools/diagnostic/prompt${query}`);
+        expect(res.statusCode).toBe(200);
+        return res.json<PromptView>();
+      };
+
+      it('sem org: o prompt do código, sem memórias', async () => {
+        const p = await prompt();
+        expect(p).toMatchObject({ source: 'code', activeVersion: null, orgId: null, userId: null });
+        expect(p.basePrompt).toBe(diagnosticTool.systemPrompt);
+        expect(p.systemPrompt).toBe(diagnosticTool.systemPrompt);
+        expect(p.memories).toEqual({ org: [], user: [] });
+        expect(p.chars).toBe(diagnosticTool.systemPrompt.length);
+        expect(p.estimatedTokens).toBe(Math.ceil(p.chars / 4));
+      });
+
+      it('com org e utilizador: junta as memórias que valem para a ferramenta, como o motor', async () => {
+        const org = sfId('00D');
+        const user = sfId('005');
+        await addMemory(db.pool, { org }, 'Regra da empresa.');
+        await addMemory(db.pool, { org, user }, 'Preferência do utilizador.');
+        await addMemory(db.pool, { org, user: sfId('005') }, 'De outro utilizador.');
+        const other = await addMemory(db.pool, { org }, 'Só para a sentiment.');
+        await db.pool.query(
+          `INSERT INTO memory_tool (memory_id, tool_id) SELECT $1, tool_id FROM tool WHERE code = 'sentiment'`,
+          [other],
+        );
+
+        const onlyOrg = await prompt(`?orgId=${org}`);
+        expect(onlyOrg.memories).toEqual({ org: ['Regra da empresa.'], user: [] });
+
+        const p = await prompt(`?orgId=${org}&userId=${user}`);
+        expect(p.memories).toEqual({
+          org: ['Regra da empresa.'],
+          user: ['Preferência do utilizador.'],
+        });
+        expect(p.systemPrompt?.startsWith(diagnosticTool.systemPrompt.trimEnd())).toBe(true);
+        expect(p.systemPrompt).toContain(
+          'Regras da empresa (prevalecem sempre):\n- Regra da empresa.',
+        );
+        expect(p.systemPrompt).toContain('- Preferência do utilizador.');
+        expect(p.systemPrompt).not.toContain('Só para a sentiment');
+        expect(p.systemPrompt).not.toContain('De outro utilizador');
+      });
+
+      it('com uma versão ativa, usa-a em vez do prompt do código', async () => {
+        const created = await app.inject({
+          method: 'POST',
+          url: '/v1/admin/tools/diagnostic/prompt-versions',
+          headers: WRITE,
+          payload: { systemTemplate: 'Prompt da versão.', activate: true },
+        });
+        expect(created.statusCode).toBe(201);
+        const p = await prompt();
+        expect(p).toMatchObject({
+          source: 'database',
+          activeVersion: 1,
+          basePrompt: 'Prompt da versão.',
+          systemPrompt: 'Prompt da versão.',
+        });
+      });
+
+      it('erros: utilizador sem org, ids mal formados e ferramenta desconhecida', async () => {
+        const noOrg = await get(`/v1/admin/tools/diagnostic/prompt?userId=${sfId('005')}`);
+        expect(noOrg.statusCode).toBe(422);
+        expect(noOrg.json<{ error: { details: unknown[] } }>().error.details).toEqual([
+          { path: 'querystring.orgId', issue: 'obrigatório com userId' },
+        ]);
+        expect((await get('/v1/admin/tools/diagnostic/prompt?orgId=abc')).statusCode).toBe(422);
+        expect((await get('/v1/admin/tools/nao_existe/prompt')).statusCode).toBe(404);
+        expect(
+          (await app.inject({ method: 'GET', url: '/v1/admin/tools/diagnostic/prompt' }))
+            .statusCode,
+        ).toBe(401);
+      });
     });
-    expect(memory?.columns.map((c) => c.name)).toContain('content');
-    expect(byName.get('memory_tool')?.foreignKeys).toContainEqual({
-      columns: ['tool_id'],
-      references: { table: 'tool', columns: ['tool_id'] },
-    });
-    expect(byName.get('tool')?.rows).toBe(4);
-    // Todas as tabelas que existem têm descrição.
-    for (const t of body.tables) expect(t.description, t.name).not.toBe('');
-  });
-});
+  },
+);

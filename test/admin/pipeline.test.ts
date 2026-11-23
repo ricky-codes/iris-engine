@@ -49,7 +49,68 @@ function input(metrics: Metrics, over: Partial<PipelineInput> = {}): PipelineInp
   };
 }
 
+const replyFact = {
+  name: 'reply',
+  implemented: true,
+  version: 2,
+  enabled: true,
+  model: 'g/primario',
+  modelSource: 'default' as const,
+  prompt: { source: 'code' as const, version: null },
+  fallbackModels: [],
+  requests: 0,
+  failed: 0,
+  fallbacks: 0,
+};
+const topologyWith = (rt: RuntimeFacts) =>
+  buildTopology({
+    runtime: rt,
+    tools: [replyFact],
+    breakers: [],
+    memories: { org: 0, user: 0, limits: { chars: 500, perOrg: 50, perUser: 20 } },
+    orgKeys: {
+      activeKeys: 1,
+      orgsWithKeys: 1,
+      lastUsedAt: null,
+      tokensAccepted: 0,
+      tokensRejected: 0,
+    },
+  });
+
 describe('buildPipeline', () => {
+  it('cada passo diz por que nós da topologia passa, conforme a configuração', () => {
+    const live = buildPipeline(
+      input(new Metrics(), { topology: topologyWith({ ...runtime, auth: 'token' }) }),
+    );
+    const nodes = Object.fromEntries(live.stages.map((s) => [s.id, s.nodes]));
+    expect(nodes).toEqual({
+      auth: ['http.tools', 'core.orgKeys', 'adapter.pgOrgKeyStore', 'external.postgres'],
+      request: ['http.tools', 'tool.reply'],
+      gate: ['core.engine', 'adapter.pgEngineStore', 'external.postgres'],
+      rate: ['core.engine'],
+      access: ['core.engine', 'adapter.access', 'external.stepaccess'],
+      memories: ['core.engine', 'adapter.pgMemoryStore', 'external.postgres'],
+      prompt: ['core.engine', 'tool.reply'],
+      models: ['core.engine', 'adapter.llm', 'external.openrouter'],
+      validate: ['core.engine', 'tool.reply'],
+      response: ['http.tools', 'adapter.usage', 'external.stepaccess'],
+    });
+    const topo = topologyWith({ ...runtime, auth: 'token' });
+    const ids = new Set(topo.nodes.map((n) => n.id));
+    for (const s of live.stages) for (const id of s.nodes) expect(ids.has(id), id).toBe(true);
+
+    // Modo aberto e segredo partilhado: não passa pelo StepAccess nem pelas chaves das orgs.
+    const open = buildPipeline(
+      input(new Metrics(), {
+        topology: topologyWith({ ...runtime, access: 'open', auth: 'shared_secret' }),
+      }),
+    );
+    const openNodes = Object.fromEntries(open.stages.map((s) => [s.id, s.nodes]));
+    expect(openNodes['auth']).toEqual(['http.tools']);
+    expect(openNodes['access']).toEqual(['core.engine', 'adapter.access']);
+    expect(openNodes['response']).toEqual(['http.tools']);
+  });
+
   it('conta, em cada passo, os que passaram e os que pararam, pela ordem do pedido', () => {
     const m = new Metrics();
     const fail = (stage: 'request' | 'rate' | 'access' | 'validate', code: string) => {

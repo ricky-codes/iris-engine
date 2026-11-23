@@ -50,6 +50,8 @@ export interface ToolFact {
   failed: number;
   /** Pedidos que só tiveram resposta com um modelo de recurso. */
   fallbacks: number;
+  /** A descrição da ferramenta no código (`null` se não estiver implementada aqui). */
+  description?: string | null;
 }
 
 /** Modelos que o disjuntor está a saltar agora. */
@@ -103,6 +105,8 @@ export interface TopologyNode {
   status: NodeStatus;
   /** Uma frase sobre o estado, para mostrar ao lado do nó. */
   summary: string;
+  /** O que o módulo é e faz, em uma ou duas frases (não muda com o estado). */
+  description: string;
   details: Record<string, string | number | boolean | null>;
   configure: ConfigureAt | null;
 }
@@ -184,6 +188,66 @@ const chainText = (t: ToolFact): string | null =>
 /** Pelo menos 5 pedidos e 20% ou mais servidos por um modelo de recurso. */
 export const FALLBACK_WARNING = { minRequests: 5, rate: 0.2 };
 
+/**
+ * O que é cada módulo. Ao lado do código que descreve, para não ser escrito à mão nas UIs.
+ * As do acesso e do custo dependem do modo de acesso; as das ferramentas vêm do código.
+ */
+function describeNode(id: string, access: AccessMode): string {
+  const fixed: Record<string, string> = {
+    'client.salesforce':
+      'O componente IRIS no Salesforce. Chama /v1/tools/<ferramenta> com os dados do Case e /v1/memories para as memórias do próprio utilizador.',
+    'client.console':
+      'Quem administra a IRIS (o backend do StepAccess/StepHub) através da API de administração.',
+    'http.tools':
+      'As rotas que o Salesforce chama para correr uma ferramenta. Autenticam quem chama, validam a entrada e passam o pedido ao motor; respondem em JSON ou em streaming (SSE).',
+    'http.memories':
+      'As rotas com que cada utilizador vê, cria e apaga as suas memórias a partir do Salesforce. Não contam utilização no StepAccess.',
+    'http.admin':
+      'A API de administração (/v1/admin): estado, métricas, topologia, base de dados, definições, ferramentas, prompts, memórias, chaves das orgs e playground.',
+    'core.engine':
+      'O motor. Em cada pedido lê a configuração da ferramenta, aplica o limite de pedidos, pergunta ao StepAccess, junta as memórias ao prompt, chama a cadeia de modelos e valida o JSON da resposta (src/engine/).',
+    'core.memories':
+      'As regras das memórias: limites por org e por utilizador, quem pode criar e apagar, e quais se aplicam a cada ferramenta. As da org prevalecem sobre as do utilizador (src/engine/memory.ts).',
+    'core.orgKeys':
+      'Verifica os tokens com que cada org assina os pedidos (JWT HS256, até 300 s, sem repetir o jti) e gere as chaves das orgs (src/auth/).',
+    'port.engineStore':
+      'A interface por onde o motor lê a configuração de uma ferramenta: modelo, recurso, parâmetros, ligada ou não e prompt ativo.',
+    'port.memoryStore': 'A interface por onde o motor e as rotas leem e gravam as memórias.',
+    'port.access': 'A interface que decide se um utilizador pode usar a IRIS neste pedido.',
+    'port.usage': 'A interface que recebe o custo de cada pedido que chegou ao modelo.',
+    'port.llm':
+      'A interface do fornecedor de modelos: um pedido com JSON Schema, uma resposta com texto, tokens e custo.',
+    'port.orgKeyStore': 'A interface por onde se leem e gravam as chaves das orgs.',
+    'adapter.pgEngineStore':
+      'Lê numa só consulta, em cada pedido, a configuração e o prompt ativo da ferramenta (tabelas tool_config, tool_config_fallback e prompt_version). Sem configuração gravada, valem os valores do código.',
+    'adapter.pgMemoryStore':
+      'Guarda as memórias no Postgres (memory, org_memory, user_memory, memory_tool), com os limites garantidos pela própria base de dados.',
+    'adapter.llm':
+      'Chama o OpenRouter com o JSON Schema da ferramenta, só a fornecedores que não guardam nem treinam com os dados, e devolve o texto, o modelo, os tokens e o custo. A cadeia de recurso e o disjuntor ficam no motor.',
+    'adapter.pgOrgKeyStore':
+      'Guarda as chaves das orgs na tabela org_key, com o segredo cifrado com a ORG_KEY_ENCRYPTION_KEY (AES-256-GCM).',
+    'external.postgres':
+      'A base de dados da IRIS: configuração das ferramentas, prompts, memórias, definições e chaves das orgs. Não guarda pedidos, respostas nem custos.',
+    'external.stepaccess':
+      'O serviço de licenças da Step: diz se o utilizador tem acesso, conta a utilização e recebe o custo de cada pedido.',
+    'external.openrouter':
+      'O fornecedor dos modelos de IA. Cobra cada chamada e devolve o custo na resposta.',
+  };
+  if (id === 'adapter.access') {
+    return access === 'live'
+      ? 'Pergunta ao StepAccess (GET /v1/access) se o utilizador tem acesso, antes de chamar o modelo. Cada pergunta conta utilização; qualquer resposta inesperada recusa o pedido.'
+      : access === 'missing'
+        ? 'Sem StepAccess configurado: recusa todos os pedidos que precisam de verificar acesso.'
+        : 'Deixa passar todos os pedidos: o acesso é só pela credencial da API (ACCESS_MODE=open ou STEPACCESS_BYPASS).';
+  }
+  if (id === 'adapter.usage') {
+    return access === 'live'
+      ? 'Depois de responder, envia ao StepAccess (POST /v1/usage/cost) o custo, os tokens e o resultado do pedido, em segundo plano. Duas tentativas; se falharem, o custo fica só no log.'
+      : 'Sem StepAccess não há para onde enviar o custo: fica só nos logs.';
+  }
+  return fixed[id] ?? '';
+}
+
 function toolNode(t: ToolFact): TopologyNode {
   const failureRate = t.requests === 0 ? 0 : t.failed / t.requests;
   const status: NodeStatus = !t.implemented
@@ -206,6 +270,9 @@ function toolNode(t: ToolFact): TopologyNode {
     label: t.version === null ? t.name : `${t.name} v${String(t.version)}`,
     status,
     summary,
+    description:
+      t.description ??
+      'Está no catálogo da base de dados mas não tem implementação neste servidor: não corre.',
     details: {
       implemented: t.implemented,
       enabled: t.enabled,
@@ -278,7 +345,11 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
         : `${String(keys.activeKeys)} chave(s) ativa(s) em ${String(keys.orgsWithKeys)} org(s)`;
   const keyStore: NodeStatus = keys === undefined ? 'off' : db;
 
-  const nodes: TopologyNode[] = [
+  const described = (n: Omit<TopologyNode, 'description'>): TopologyNode => ({
+    ...n,
+    description: describeNode(n.id, rt.access),
+  });
+  const base: Omit<TopologyNode, 'description'>[] = [
     // quem chama
     {
       id: 'client.salesforce',
@@ -553,9 +624,9 @@ export function buildTopology(input: TopologyInput, now: Date = new Date()): Top
       },
       configure: ENV_OPENROUTER,
     },
-    // ferramentas
-    ...tools.map(toolNode),
   ];
+  // As ferramentas trazem a descrição do código.
+  const nodes: TopologyNode[] = [...base.map(described), ...tools.map(toolNode)];
 
   const edges: TopologyEdge[] = [
     { from: 'client.salesforce', to: 'http.tools' },

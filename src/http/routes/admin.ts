@@ -33,6 +33,8 @@ import type { ModelInfo } from '../../adapters/openrouter-models.js';
 import type { BreakerStatus } from '../../engine/breaker.js';
 import type { Engine } from '../../engine/engine.js';
 import { MEMORY_CHARS_CAP } from '../../engine/memory.js';
+import { buildSystemPrompt } from '../../engine/prompt.js';
+import { PgMemoryStore } from '../../adapters/postgres-memory-store.js';
 import { OrgKeyError, type OrgKeyInfo, type OrgKeys } from '../../auth/org-keys.js';
 import {
   fallbackChain,
@@ -83,8 +85,6 @@ export interface AdminRoutesOptions {
   /** Sem dependências não há playground (falta base de dados ou OpenRouter). */
   /** As chaves das orgs. Sem elas (falta ORG_KEY_ENCRYPTION_KEY), `/orgs/:orgId/keys` dá 503. */
   orgKeys?: Pick<OrgKeys, 'create' | 'list' | 'relabel' | 'revoke' | 'stats'> | undefined;
-  /** A página da consola (`console/index.html`). Sem ela, `/v1/admin/console` dá 404. */
-  consoleHtml?: string | undefined;
   playground:
     | {
         engine: Engine;
@@ -120,30 +120,6 @@ async function guard<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 const ACTOR_HEADER = 'x-admin-actor';
-const CONSOLE_PATH = '/v1/admin/console';
-
-/**
- * Só a própria IRIS: sem recursos externos, sem molduras, e o segredo só vai para a mesma origem.
- * Só correm os scripts da página tal como está no servidor (pelo hash de cada um).
- */
-export function consoleCsp(html: string): string {
-  const hashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(
-    (m) =>
-      `'sha256-${createHash('sha256')
-        .update(m[1] ?? '')
-        .digest('base64')}'`,
-  );
-  return [
-    "default-src 'none'",
-    `script-src ${hashes.join(' ') || "'none'"}`,
-    "style-src 'unsafe-inline'",
-    "connect-src 'self'",
-    "img-src 'self' data:",
-    "base-uri 'none'",
-    "form-action 'none'",
-    "frame-ancestors 'none'",
-  ].join('; ');
-}
 
 function actorOf(request: FastifyRequest): string | undefined {
   const value = request.headers[ACTOR_HEADER];
@@ -201,9 +177,6 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
   const registered = new Map(opts.tools.map((t) => [t.name, t]));
 
   app.addHook('onRequest', async (request) => {
-    // A página da consola não tem dados: pede o segredo e chama as outras rotas com ele.
-    if (['GET', 'HEAD'].includes(request.method) && request.routeOptions.url === CONSOLE_PATH)
-      return;
     const match = /^Bearer (.+)$/.exec(request.headers.authorization ?? '');
     if (match?.[1] === undefined || !secretMatches(match[1], opts.secret)) {
       throw new AppError('unauthorized', 401, 'Credenciais inválidas.', [], {
@@ -232,23 +205,6 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
       },
       'admin action',
     );
-  });
-
-  // ---------- consola ----------
-
-  // O mapa visual da IRIS, só de leitura. A página é estática; os dados vêm das rotas abaixo.
-  const csp = opts.consoleHtml === undefined ? undefined : consoleCsp(opts.consoleHtml);
-  app.get(CONSOLE_PATH, async (_request, reply) => {
-    if (opts.consoleHtml === undefined) {
-      throw new AppError('not_found', 404, 'A consola não está instalada neste servidor.');
-    }
-    return reply
-      .header('Content-Type', 'text/html; charset=utf-8')
-      .header('Content-Security-Policy', csp ?? "default-src 'none'")
-      .header('X-Content-Type-Options', 'nosniff')
-      .header('Referrer-Policy', 'no-referrer')
-      .header('Cache-Control', 'no-cache')
-      .send(opts.consoleHtml);
   });
 
   // ---------- estado, métricas e modelos ----------
@@ -486,6 +442,57 @@ export const adminRoutes: FastifyPluginAsyncTypebox<AdminRoutesOptions> = async 
 
   app.get('/v1/admin/tools/:name', { schema: { params: NameParams } }, async (request) =>
     toolDetail(request.params.name),
+  );
+
+  // O prompt de sistema que o modelo recebe nesta ferramenta, com as memórias de uma org e de um
+  // utilizador juntas como o motor as junta. Só lê: não chama o modelo nem conta utilização.
+  app.get(
+    '/v1/admin/tools/:name/prompt',
+    {
+      schema: {
+        params: NameParams,
+        querystring: Type.Object(
+          { orgId: Type.Optional(OrgId), userId: Type.Optional(UserId) },
+          { additionalProperties: false },
+        ),
+      },
+    },
+    async (request) => {
+      const { name } = request.params;
+      const { orgId, userId } = request.query;
+      if (userId !== undefined && orgId === undefined) {
+        throw new AppError('invalid_request', 422, 'O pedido não é válido.', [
+          { path: 'querystring.orgId', issue: 'obrigatório com userId' },
+        ]);
+      }
+      await catalogRow(name);
+      const code = registered.get(name);
+      const active = (await listPromptVersions(opts.pool, name)).find((v) => v.isActive);
+      const base = active?.systemTemplate ?? code?.systemPrompt ?? null;
+      // A mesma consulta do motor; sem utilizador, só as memórias da org.
+      const memories =
+        orgId === undefined
+          ? { org: [], user: [] }
+          : await new PgMemoryStore(opts.pool).forRequest({
+              orgId,
+              userId: userId ?? '',
+              tool: name,
+            });
+      const systemPrompt = base === null ? null : buildSystemPrompt(base, memories);
+      return {
+        tool: name,
+        source: active !== undefined ? 'database' : code !== undefined ? 'code' : 'none',
+        activeVersion: active?.version ?? null,
+        orgId: orgId ?? null,
+        userId: userId ?? null,
+        memories,
+        basePrompt: base,
+        systemPrompt,
+        chars: systemPrompt?.length ?? 0,
+        // Estimativa grosseira, como no dry-run: ~4 caracteres por token.
+        estimatedTokens: systemPrompt === null ? 0 : Math.ceil(systemPrompt.length / 4),
+      };
+    },
   );
 
   // O caminho de um pedido a esta ferramenta, passo a passo, para o diagrama da consola.

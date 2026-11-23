@@ -52,15 +52,6 @@ function readVersion(): string {
   }
 }
 
-/** A página da consola, se existir (`console/index.html`, relativo ao diretório de trabalho). */
-function readConsole(): string | undefined {
-  try {
-    return readFileSync('console/index.html', 'utf8');
-  } catch {
-    return undefined;
-  }
-}
-
 /** Os valores iniciais das definições alteráveis: os do `.env` e, nas memórias, os do código. */
 function settingsDefaults(config: AppConfig): RuntimeSettings {
   const { engine: cfg } = config;
@@ -268,7 +259,6 @@ function buildAdmin(
     traces,
     metrics,
     costReports: usage === undefined ? undefined : () => usage.stats(),
-    consoleHtml: readConsole(),
     status,
     topology,
     modules: async () => {

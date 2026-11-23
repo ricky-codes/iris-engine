@@ -74,7 +74,7 @@ Legenda das definições: **API** = muda-se pela API de administração sem rein
 
 **O que é.** `POST /v1/usage/cost` depois de responder: custo em dólares, tokens e resultado, nunca conteúdo. Em segundo plano, sem atrasar o pedido. Duas tentativas; um 409 conta como entregue (`requestId` é a chave de idempotência). Se falhar, o evento completo fica no log.
 
-**Se falhar:** o pedido não é afetado, mas **o custo perde-se do StepAccess**: não há fila para reenviar. Os entregues e os perdidos desta instância contam-se em `GET /v1/admin/metrics` (`costReports`) e aparecem na consola.
+**Se falhar:** o pedido não é afetado, mas **o custo perde-se do StepAccess**: não há fila para reenviar. Os entregues e os perdidos desta instância contam-se em `GET /v1/admin/metrics` (`costReports`).
 
 | Definição                         | Hoje                                                            |
 | --------------------------------- | --------------------------------------------------------------- |

@@ -23,14 +23,13 @@ Esta API permite à UI do StepAccess:
 1. **Estado** — ver se o motor está pronto e se a base de dados, o StepAccess e o OpenRouter respondem.
 2. **Atividade** — contadores agregados dos pedidos (sem conteúdo, sem ids).
 3. **Ferramentas** — ver o catálogo, ligar/desligar, escolher modelo, temperatura, limites.
-4. **Prompts** — criar versões, ativar, comparar, voltar ao prompt de origem.
+4. **Prompts** — criar versões, ativar, comparar, voltar ao prompt de origem, e ver o prompt efetivo com as memórias de uma org e de um utilizador.
 5. **Memórias** — listar, criar regras da org, editar, apagar, apagar tudo de quem sai.
 6. **Playground** — testar uma ferramenta e ver o prompt final (com memórias) e a resposta.
 7. **Modelos** — lista de modelos do OpenRouter que servem para as ferramentas.
 8. **Diagrama por ferramenta** — o caminho de um pedido, passo a passo, com o estado e o que controla cada passo (6.6), e o estado dos disjuntores (5.7).
 9. **Definições** — modelos por omissão, tempos, tentativas, disjuntor, streaming, limite de pedidos, tempos do StepAccess e limites das memórias, sem reiniciar; fechar o disjuntor à mão.
 10. **Base de dados** — as tabelas que existem, com as linhas, as colunas e as ligações (5.9).
-11. **Consola** — uma página visual, só de leitura, servida pela IRIS (5.10).
 
 O que **não** está nesta API (de propósito): segredos (chave do OpenRouter, credenciais), criar ferramentas novas (são código), reiniciar/deploy, logs em bruto.
 
@@ -455,6 +454,7 @@ Resposta `200` (excerto):
       "label": "StepAccessClient",
       "status": "ok",
       "summary": "Confirma a licença e conta cada pedido",
+      "description": "Pergunta ao StepAccess (GET /v1/access) se o utilizador tem acesso, antes de chamar o modelo. Cada pergunta conta utilização; qualquer resposta inesperada recusa o pedido.",
       "details": { "mode": "live" },
       "configure": { "where": "env", "keys": ["ACCESS_MODE", "STEPACCESS_URL", "…"] }
     },
@@ -483,16 +483,17 @@ Resposta `200` (excerto):
 }
 ```
 
-| Campo               | Significado                                                                                                                                                                                                                                                                                               |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `layers`            | As camadas, de cima para baixo: quem chama (`client`), rotas (`http`), núcleo (`core`), interfaces do núcleo (`port`), implementações (`adapter`), serviços externos (`external`) e ferramentas (`tool`).                                                                                                 |
-| `nodes[].id`        | Estável entre chamadas (ex.: `core.engine`, `external.postgres`, `tool.<nome>`). Usar como chave na UI.                                                                                                                                                                                                   |
-| `nodes[].status`    | `ok` · `warning` (funciona com reservas: `bypass`, créditos perto do limite, ≥ 20% de falhas numa ferramenta) · `error` (não funciona) · `off` (desligado ou não configurado — **não é um erro**).                                                                                                        |
-| `nodes[].summary`   | Uma frase pronta a mostrar junto ao módulo.                                                                                                                                                                                                                                                               |
-| `nodes[].details`   | Valores para o painel lateral (modelo, tentativas, contagens, latência…). Só números, texto, booleanos ou `null`.                                                                                                                                                                                         |
-| `nodes[].configure` | Onde se muda: `{ "where": "admin_api", "path": "…" }` → abrir o ecrã dessa rota (com `path: "/v1/admin/settings"` vem também `keys`: as definições desse módulo); `{ "where": "env", "keys": [...] }` → só no `.env` do servidor (mostrar as variáveis, sem botão de editar); `null` → nada a configurar. |
-| `overall`           | O pior estado dos módulos ligados (os `off` não contam).                                                                                                                                                                                                                                                  |
-| `edges`             | Ligações `from → to`, com `label` opcional (ex.: o pedido HTTP ao StepAccess).                                                                                                                                                                                                                            |
+| Campo                 | Significado                                                                                                                                                                                                                                                                                               |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `layers`              | As camadas, de cima para baixo: quem chama (`client`), rotas (`http`), núcleo (`core`), interfaces do núcleo (`port`), implementações (`adapter`), serviços externos (`external`) e ferramentas (`tool`).                                                                                                 |
+| `nodes[].id`          | Estável entre chamadas (ex.: `core.engine`, `external.postgres`, `tool.<nome>`). Usar como chave na UI.                                                                                                                                                                                                   |
+| `nodes[].status`      | `ok` · `warning` (funciona com reservas: `bypass`, créditos perto do limite, ≥ 20% de falhas numa ferramenta) · `error` (não funciona) · `off` (desligado ou não configurado — **não é um erro**).                                                                                                        |
+| `nodes[].summary`     | Uma frase pronta a mostrar junto ao módulo.                                                                                                                                                                                                                                                               |
+| `nodes[].description` | O que o módulo é e faz, em uma ou duas frases, para o painel lateral. Não muda com o estado; a do acesso (`adapter.access`) e a do custo (`adapter.usage`) mudam com o modo de acesso; a das ferramentas é a do código (`description` da ferramenta). Nunca vazia.                                        |
+| `nodes[].details`     | Valores para o painel lateral (modelo, tentativas, contagens, latência…). Só números, texto, booleanos ou `null`.                                                                                                                                                                                         |
+| `nodes[].configure`   | Onde se muda: `{ "where": "admin_api", "path": "…" }` → abrir o ecrã dessa rota (com `path: "/v1/admin/settings"` vem também `keys`: as definições desse módulo); `{ "where": "env", "keys": [...] }` → só no `.env` do servidor (mostrar as variáveis, sem botão de editar); `null` → nada a configurar. |
+| `overall`             | O pior estado dos módulos ligados (os `off` não contam).                                                                                                                                                                                                                                                  |
+| `edges`               | Ligações `from → to`, com `label` opcional (ex.: o pedido HTTP ao StepAccess).                                                                                                                                                                                                                            |
 
 Modelos (`adapter.llm`): `details.chain` é a cadeia de modelos (sem o fornecedor, ex.: `"gemini-2.5-flash → gpt-4.1-mini"`) quando é igual em todas as ferramentas implementadas, ou `"várias"`; `details.fallbacks` é o total de pedidos servidos por um modelo de recurso desde o arranque; `details.openBreakers` é **quantos** modelos têm o disjuntor aberto (`0` se nenhum; o estado de cada um está em `GET /v1/admin/breakers`, 5.7). Fica `warning` com ≥ 20% dos pedidos (mínimo 5) servidos por recurso, ou com algum disjuntor aberto. Cada `tool.<nome>` tem `details.fallbacks` e `details.chain`.
 
@@ -719,14 +720,6 @@ As tabelas que existem de facto no Postgres (lidas do catálogo, não de uma lis
 
 A descrição, o grupo e `usedBy` vêm de `src/admin/database.ts` (`TABLE_NOTES`); uma tabela nova sem nota aparece em `system` com a descrição vazia.
 
-### 5.10 `GET /v1/admin/console`
-
-A consola visual da IRIS: uma página HTML (o ficheiro `console/index.html`), **a única rota de `/v1/admin` que não pede o segredo**, porque não tem dados. A página pede o `ADMIN_API_SECRET`, guarda-o só no `sessionStorage` desse separador e chama as rotas desta API na mesma origem. Só lê: não faz nenhuma alteração.
-
-Cabeçalhos: `Content-Security-Policy` com `connect-src 'self'`, `frame-ancestors 'none'`, sem recursos externos, e `script-src` limitado ao hash do script da página; `Referrer-Policy: no-referrer`. `404 not_found` se o ficheiro não existir no servidor. O que mostra está no README (secção Consola).
-
-Atualiza a topologia, os módulos e o estado a cada 30 s, as métricas a cada 5 s e os traces das ferramentas implementadas a cada 4 s, só com o separador visível.
-
 ---
 
 ## 6. Ferramentas e prompts
@@ -912,6 +905,45 @@ Resposta `201`: a versão criada (`{ version, isActive, systemTemplate, changeNo
 
 Resposta `200`: `{ "tool": "diagnostic", "activeVersion": 3 }`. Erros: `404 not_found` (versão não existe), `404 unknown_tool`.
 
+#### `GET /v1/admin/tools/:name/prompt?orgId=00D…&userId=005…`
+
+O prompt de sistema que o modelo recebe nesta ferramenta, **com as memórias juntas como o motor as junta** (`src/engine/prompt.ts`), lidas com a mesma consulta que um pedido real. Só lê: não chama o modelo, não conta utilização, não exige `X-Admin-Actor` nem uma entrada da ferramenta (ao contrário de `playground/:name/preview`, 8.1). Não inclui a mensagem do utilizador, que a ferramenta monta a partir do Case.
+
+| Parâmetro | Regras                                  | Efeito                                               |
+| --------- | --------------------------------------- | ---------------------------------------------------- |
+| `orgId`   | opcional, `00D…` 18 car.                | Junta as memórias da org que valem para a ferramenta |
+| `userId`  | opcional, `005…` 18 car.; exige `orgId` | Junta também as memórias desse utilizador nessa org  |
+
+Resposta `200`:
+
+```json
+{
+  "tool": "reply",
+  "source": "database",
+  "activeVersion": 3,
+  "orgId": "00DgL00000O7vLVUAZ",
+  "userId": "005gL00000GpOQTQA3",
+  "memories": {
+    "org": ["Tratar sempre o cliente por você."],
+    "user": ["Prefiro respostas curtas."]
+  },
+  "basePrompt": "És a IRIS…",
+  "systemPrompt": "És a IRIS…\n\n---\nMemórias guardadas para este pedido. …\n\nRegras da empresa (prevalecem sempre):\n- Tratar sempre o cliente por você.\n\nPreferências do utilizador (só quando não contradizem as regras da empresa):\n- Prefiro respostas curtas.",
+  "chars": 2140,
+  "estimatedTokens": 535
+}
+```
+
+| Campo             | Significado                                                                                                                           |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `source`          | `database` (versão ativa), `code` (prompt de origem, em `src/tools/<ferramenta>.ts`) ou `none` (não implementada e sem versão ativa). |
+| `basePrompt`      | O prompt sem memórias. `null` com `source: "none"`.                                                                                   |
+| `memories`        | As memórias aplicadas, pela ordem em que entram. Sem `orgId`, vazias. Só as que valem para esta ferramenta (ou para todas).           |
+| `systemPrompt`    | O prompt final. Sem memórias, igual a `basePrompt`. `null` com `source: "none"`.                                                      |
+| `estimatedTokens` | Estimativa grosseira (~4 caracteres por token).                                                                                       |
+
+Erros: `404 unknown_tool`; `422 invalid_request` com ids mal formados ou com `userId` sem `orgId` (`details[].path = "querystring.orgId"`).
+
 ### 6.6 `GET /v1/admin/tools/:name/pipeline`
 
 O caminho de um pedido a esta ferramenta, **pela ordem do código** (`src/engine/pipeline.ts`), com o estado de cada passo, o que o controla e as contagens desde o arranque (por instância). Para o diagrama da consola: cada passo abre o que o controla. Funciona também com ferramentas não implementadas (todos os passos `off`, `models: []`). Erro: `404 unknown_tool`.
@@ -933,6 +965,7 @@ O caminho de um pedido a esta ferramenta, **pela ordem do código** (`src/engine
       "settings": ["rateLimitPerMinute"], // chaves de /settings (globais)
       "overrides": ["rateLimitPerMinute"], // as que esta ferramenta pode substituir
       "env": [], // variáveis só do .env (nomes, nunca valores)
+      "nodes": ["core.engine"], // nós da topologia (5.4) por onde passa
       "details": { "limitPerMinute": 60, "source": "tool" },
     },
   ],
@@ -974,6 +1007,21 @@ O caminho de um pedido a esta ferramenta, **pela ordem do código** (`src/engine
 - `counts.passed` de um passo = os que lá chegaram menos os que lá pararam; o primeiro recebe todos os pedidos à ferramenta. `response.passed` = respostas com sucesso.
 - `status`: `auth` segue o nó `core.orgKeys` da topologia (e fica `warning` com ≥ 20% dos pedidos recusados, mínimo 5); `gate` fica `off` com a ferramenta desligada; `access` e `memories` seguem o nó correspondente da topologia (`adapter.access`, `adapter.pgMemoryStore`); `models` fica `warning` com um disjuntor aberto na cadeia e `error` com todos; `rate`, `validate` e `response` ficam `warning` com ≥ 20% (mínimo 5) parados, inválidos ou falhados.
 - `models`: a cadeia em vigor, por ordem, com o disjuntor de cada modelo (5.7) e as chamadas feitas **por esta ferramenta**. `failedByReason.skipped_breaker` conta os saltos (não são chamadas).
+- `nodes`: os ids dos nós da topologia (5.4) por onde o pedido passa nesse passo, pela ordem em que os usa. Servem para acender no diagrama geral o caminho de um passo ou de um pedido real (6.7). Seguem a configuração: só aparecem nós e ligações que existem na topologia (ex.: em `ACCESS_MODE=open`, `access` é `["core.engine", "adapter.access"]`, sem o StepAccess).
+
+  | Passo      | `nodes` (com tudo ligado)                                                                                             |
+  | ---------- | --------------------------------------------------------------------------------------------------------------------- |
+  | `auth`     | `http.tools`, `core.orgKeys`, `adapter.pgOrgKeyStore`, `external.postgres` (os três últimos só com `AUTH_MODE=token`) |
+  | `request`  | `http.tools`, `tool.<nome>`                                                                                           |
+  | `gate`     | `core.engine`, `adapter.pgEngineStore`, `external.postgres`                                                           |
+  | `rate`     | `core.engine`                                                                                                         |
+  | `access`   | `core.engine`, `adapter.access`, `external.stepaccess`                                                                |
+  | `memories` | `core.engine`, `adapter.pgMemoryStore`, `external.postgres`                                                           |
+  | `prompt`   | `core.engine`, `tool.<nome>`                                                                                          |
+  | `models`   | `core.engine`, `adapter.llm`, `external.openrouter`                                                                   |
+  | `validate` | `core.engine`, `tool.<nome>`                                                                                          |
+  | `response` | `http.tools`, `adapter.usage`, `external.stepaccess` (os dois últimos só com StepAccess)                              |
+
 - Cada passo traz também `kind` (o tipo de desenho: `auth`, `request`, `gate`, `rate`, `access`, `memories`, `prompt`, `model`, `validate`, `response`) e `exits`: as saídas possíveis nesse passo, `[{ code, httpStatus, label }]`, do catálogo (5.8).
 - `modelChain`: a cadeia no formato curto, `[{ model, role, order, breaker: "closed" | "open" | "half_open", openedAt?, reopensAt? }]`.
 - Nunca inclui segredos, valores do `.env`, ids de org ou de utilizador, nem conteúdo de pedidos.
@@ -1401,7 +1449,7 @@ Uma secção **IRIS** no menu do StepAccess, com:
 3. **Atividade** — `/metrics`: totais, gráfico por dia (pedidos ok vs falhados), tabela por ferramenta, erros por código. Mostrar "desde <since>" e explicar que recomeça ao reiniciar.
 4. **Ferramentas** — o diagrama de `/tools/:name/pipeline`: um bloco por passo, com `status`, `summary` e `counts`; ao abrir um passo, os campos de `toolConfig` (formulário da ferramenta), `overrides` (valor próprio ou "segue a global"), `settings` (link para Definições) e `env` (só leitura). Tabela (`name`, implementada, ligada, modelo, origem da config e do prompt).
    - Detalhe: formulário da configuração (seletor de modelo alimentado por `/models`, temperatura 0–2, tokens, tempo limite, ligada); "Repor valores de origem".
-   - Separador **Prompt**: versão ativa; histórico; **comparação lado a lado (diff)** entre versões e com o prompt do código; "Nova versão" (editor de texto grande + nota de alteração + "ativar já"); "Ativar esta versão"; "Usar o prompt de origem".
+   - Separador **Prompt**: versão ativa; o prompt efetivo com as memórias de uma org e de um utilizador escolhidos (`GET /tools/:name/prompt`); histórico; **comparação lado a lado (diff)** entre versões e com o prompt do código; "Nova versão" (editor de texto grande + nota de alteração + "ativar já"); "Ativar esta versão"; "Usar o prompt de origem".
    - Botão "Testar no playground" com o prompt/modelo em edição antes de gravar.
 5. **Memórias**
    - Filtros: org, utilizador, âmbito, ferramenta, pesquisa; paginação.
